@@ -67,6 +67,8 @@
     padding: 10px 16px; border-radius: 10px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: calc(100% - 32px); }
   #toast.show { opacity: 1; }
   .empty { color: var(--muted); padding: 6px 0; }
+  .warn { background: color-mix(in srgb, var(--warn) 15%, transparent); border: 1px solid var(--warn);
+    border-radius: 8px; padding: 8px 10px; margin: 0 0 10px; font-size: 14px; }
 </style>
 </head>
 <body>
@@ -144,8 +146,9 @@ function renderPlayer() {
     sub = b.track.auto ? `Default playlist${b.defaultPlaylist.name ? " · " + esc(b.defaultPlaylist.name) : ""}` : b.track.requestedBy ? "Requested by " + esc(b.track.requestedBy) : "";
     bar = `<div class="bar"><div id="prog"></div></div><div class="times"><span id="el"></span><span>${fmt(b.track.duration)}</span></div>`;
   } else if (b.radio) { now = "📻 " + esc(b.radio.name); sub = b.radioTitle ? "♪ " + esc(b.radioTitle) : "Live radio"; }
+  const warn = b.talkBlocked ? `<div class="warn">⚠ Nobody can hear the bot in #${esc(b.channel || "?")}: the channel needs talk power ${b.talkBlocked.needed}, the bot has ${b.talkBlocked.have}. Grant it talk power in TeamSpeak, give its server group more, or move it to another channel.</div>` : "";
   $("#player").innerHTML = `
-    <h2><span class="dot ${dot}"></span>${esc(b.name)} <span class="muted small">${where}</span></h2>
+    <h2><span class="dot ${dot}"></span>${esc(b.name)} <span class="muted small">${where}</span></h2>${warn}
     <div class="now">${now}</div><div class="sub">${sub}</div>${bar}
     <div class="row controls">
       <button data-a="${b.userPaused ? "resume" : b.track || b.radio ? "pause" : "start"}" title="Play / pause">${b.userPaused || !(b.track || b.radio) ? "▶" : "⏸"}</button>

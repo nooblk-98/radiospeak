@@ -11,7 +11,7 @@ import {
   type ClientEntry,
   type ClientID,
 } from "@honeybbq/teamspeak";
-import { Client, generateIdentity, parseIdentity, type Identity } from "@honeybbq/teamspeak/client";
+import { Client, generateIdentity, parseIdentity, subscribeAllChannels, type Identity } from "@honeybbq/teamspeak/client";
 import { handleChatMessage } from "./commands.ts";
 import type { AppConfig, BotConfig } from "./config.ts";
 import { fetchIcyTitle } from "./icy.ts";
@@ -66,6 +66,8 @@ export class MusicBot {
   #descriptionDenied = false;
   #titleUrl: string | undefined;
   #defaultLoaded = false;
+  /** Set while the channel needs more talk power than the bot has: the server drops its audio. */
+  talkBlocked: { needed: number; have: number } | undefined;
 
   constructor(app: App, cfg: BotConfig, index: number) {
     this.#app = app;
@@ -185,6 +187,12 @@ export class MusicBot {
   }
 
   status(): string {
+    const tb = this.talkBlocked;
+    const warning = tb ? `⚠ Nobody can hear me here: this channel needs talk power ${tb.needed}, I have ${tb.have}.\n` : "";
+    return warning + this.#nowPlaying();
+  }
+
+  #nowPlaying(): string {
     const pl = this.player;
     const paused = pl.userPaused ? " (paused)" : pl.autoPaused ? " (paused: nobody listening)" : "";
     if (pl.track) {
@@ -274,6 +282,12 @@ export class MusicBot {
         this.#defaultLoaded = true;
         void this.loadDefaultPlaylist();
       }
+      this.talkBlocked = undefined;
+      // Like the official client: see who is in every channel, so !join can find the caller.
+      void subscribeAllChannels(c).catch((err: unknown) =>
+        this.log("warn", `Could not subscribe to channels: ${err instanceof Error ? err.message : String(err)}`),
+      );
+      void c.view.whenReady().then(() => this.#checkTalkPower());
       this.#schedulePresence();
     });
 
@@ -285,7 +299,10 @@ export class MusicBot {
       if (wasConnected && !willReconnect && !this.#shuttingDown && c === this.client) void this.#connectLoop(identity);
     });
 
-    c.on("viewChanged", () => this.#checkListeners());
+    c.on("viewChanged", () => {
+      this.#checkListeners();
+      this.#checkTalkPower();
+    });
 
     c.on("textMessage", (msg) => {
       if (this.#app.bots.some((b) => b.clientID === msg.invokerID)) return;
@@ -342,6 +359,34 @@ export class MusicBot {
         this.log("warn", `Voice send failed, dropping audio: ${err instanceof Error ? err.message : String(err)}`);
       }
       this.#voiceFailing = true;
+    }
+  }
+
+  /**
+   * TeamSpeak silently discards audio from a client whose talk power is below
+   * the channel's requirement, so say so loudly and raise the bot's hand.
+   */
+  #checkTalkPower(): void {
+    const c = this.client;
+    const cid = this.channelID;
+    const self = c?.view.self;
+    const channel = cid === undefined ? undefined : c?.view.channel(cid);
+    if (!c || !self || !channel) return;
+    const needed = channel.neededTalkPower ?? 0;
+    const have = self.talkPower ?? 0;
+    const blocked = needed > have && !self.isTalker;
+    if (blocked === (this.talkBlocked !== undefined)) return;
+    this.talkBlocked = blocked ? { needed, have } : undefined;
+    if (blocked) {
+      const msg =
+        `Can't be heard in #${channel.name}: it needs talk power ${needed}, the bot has ${have}. ` +
+        `Grant the bot talk power, give its server group more, or move it to another channel.`;
+      this.log("warn", msg);
+      void sendChannelMessage(c, `⚠ ${msg}`).catch(() => {});
+      void updateClient(c, { isRequestingTalk: true, talkRequestMessage: "Music bot: please grant talk power" }).catch(() => {});
+    } else {
+      this.log("info", `Talk power OK in #${channel.name}`);
+      if (self.isRequestingTalk) void updateClient(c, { isRequestingTalk: false }).catch(() => {});
     }
   }
 

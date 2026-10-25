@@ -160,11 +160,13 @@ export async function runCommand(app: App, bot: MusicBot, msg: TextMessageEvent)
     case "yt":
     case "sc": {
       if (!arg) {
-        if (player.paused && player.userPaused) {
+        if (player.userPaused) {
           player.resume();
-          return "Resumed.";
+          return `Resumed.\n${bot.status()}`;
         }
-        return player.playIfIdle() ? bot.status() : `Nothing to play. ${p}play <song name or link>`;
+        // Already playing (or loaded): say what, rather than "nothing to play".
+        if (player.isActive || player.playIfIdle()) return bot.status();
+        return `Nothing to play. ${p}play <song name or link>`;
       }
       return bot.play(arg, { requestedBy: msg.invokerName });
     }

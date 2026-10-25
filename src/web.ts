@@ -34,6 +34,7 @@ function botState(bot: MusicBot) {
     name: bot.name,
     connected: bot.connected,
     channel: bot.channelName ?? null,
+    talkBlocked: bot.talkBlocked ?? null,
     track: pl.track ? trackJson(pl.track) : null,
     elapsed: pl.elapsed,
     queue: pl.queue.map(trackJson),
