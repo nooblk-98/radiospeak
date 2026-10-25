@@ -9,26 +9,26 @@ services:
       FMBOT_NICKNAME: "FM Radio"
       FMBOT_CHANNEL: ""
       FMBOT_CHANNEL_PASSWORD: ""
-      FMBOT_DEFAULT_STATION: "shaafm"
       FMBOT_VOLUME: "50"
-      FMBOT_TIMEZONE: "Asia/Colombo"
-      # Admin commands (!add, !remove, !schedule add...): client unique IDs and/or server group IDs,
-      # comma-separated. Leave both empty to let everyone use them.
+      # Played whenever nobody has requested anything (a playlist link, or a song link from inside one).
+      FMBOT_DEFAULT_PLAYLIST: "https://www.youtube.com/watch?v=R96p0qPSUTY&list=PL_D0g1ys7yh_R8ZS5EKQLX4ml0lzNaJ32"
+      # Admin commands (!pl delete): client unique IDs and/or server group IDs, comma-separated.
+      # Leave both empty to let everyone use them.
       FMBOT_ADMINS: ""
       FMBOT_ADMIN_GROUPS: ""
       FMBOT_PAUSE_WHEN_EMPTY: "true"
-      FMBOT_STATION_IN_NICKNAME: "true"
+      FMBOT_SONG_IN_NICKNAME: "true"
       # Web control panel at http://<server>:8080 (user name: anything, password below)
       FMBOT_WEB_ENABLED: "true"
       FMBOT_WEB_HOST: "0.0.0.0"
       FMBOT_WEB_PORT: "8080"
       FMBOT_WEB_PASSWORD: "12345678"
       # More bots (e.g. one per channel): a JSON list, each inheriting the settings above.
-      # FMBOT_BOTS: '[{"name":"lobby","channel":"Lobby"},{"name":"music","channel":"Music","defaultStation":"hirufm"}]'
+      # FMBOT_BOTS: '[{"name":"lobby","channel":"Lobby"},{"name":"music","channel":"Music","defaultPlaylist":""}]'
     ports:
       - "48080:8080"
     volumes:
-      # Holds identity files, stations.json and schedule.json (and optionally config.json).
-      # Keep it so the bots keep their identities, stations and schedule.
+      # Holds identity files and playlists.json (and optionally config.json).
+      # Keep it so the bots keep their identities and your saved playlists.
       - ./data:/data
     stop_grace_period: 10s

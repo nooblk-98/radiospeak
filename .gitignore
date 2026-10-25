@@ -2,6 +2,6 @@ node_modules/
 config.json
 identity.txt
 identity-*.txt
-schedule.json
+playlists.json
 data/
 *.log

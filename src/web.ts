@@ -2,10 +2,10 @@ import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
-import { log, type App, type RadioBot } from "./bot.ts";
-import { clampVolume, type ScheduleEntry } from "./config.ts";
-import { searchStations } from "./radiobrowser.ts";
-import { ScheduleStore } from "./store.ts";
+import { log, type App, type MusicBot } from "./bot.ts";
+import { clampVolume } from "./config.ts";
+import type { LoopMode, Track } from "./player.ts";
+import { resolve } from "./ytdlp.ts";
 
 const PAGE = readFileSync(join(import.meta.dirname, "web", "index.html"));
 
@@ -20,24 +20,31 @@ class HttpError extends Error {
   }
 }
 
-function botState(bot: RadioBot) {
-  const r = bot.radio;
+const trackJson = (t: Track) => ({
+  url: t.url,
+  title: t.title,
+  duration: t.duration ?? null,
+  requestedBy: t.requestedBy ?? null,
+  auto: !!t.auto,
+});
+
+function botState(bot: MusicBot) {
+  const pl = bot.player;
   return {
     name: bot.name,
     connected: bot.connected,
-    clientID: bot.clientID ?? null,
-    nickname: bot.client && bot.clientID !== undefined ? (bot.client.view.client(bot.clientID)?.nickname ?? null) : null,
     channel: bot.channelName ?? null,
-    station: r.station ? { id: r.station.id, name: r.station.name } : null,
-    song: bot.songTitle ?? null,
-    track: r.track ? { title: r.track.title, url: r.track.url } : null,
-    queue: r.queue.map((t) => ({ title: t.title, url: t.url })),
-    volume: r.volume,
-    paused: r.paused,
-    listeners: bot.listeners().map((c) => ({ id: c.id, nickname: c.nickname })),
-    channelClients: bot.channelID === undefined
-      ? []
-      : (bot.client?.view.clientsIn(bot.channelID) ?? []).map((c) => ({ id: c.id, nickname: c.nickname, type: c.type })),
+    track: pl.track ? trackJson(pl.track) : null,
+    elapsed: pl.elapsed,
+    queue: pl.queue.map(trackJson),
+    radio: pl.radio ?? null,
+    radioTitle: bot.radioTitle ?? null,
+    defaultPlaylist: pl.defaultPlaylist,
+    volume: pl.volume,
+    userPaused: pl.userPaused,
+    autoPaused: pl.autoPaused,
+    loop: pl.loop,
+    listeners: bot.listeners().map((c) => c.nickname),
   };
 }
 
@@ -58,7 +65,7 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
     size += (chunk as Buffer).length;
-    if (size > 64 * 1024) throw new HttpError(413, "Body too large");
+    if (size > 256 * 1024) throw new HttpError(413, "Body too large");
     chunks.push(chunk as Buffer);
   }
   if (size === 0) return {};
@@ -71,99 +78,145 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
 
 const str = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
 
+/** Tracks posted back from search results; only http(s) links are accepted. */
+function tracksFrom(v: unknown): Track[] {
+  if (!Array.isArray(v)) return [];
+  return v
+    .map((t): Track | undefined => {
+      const o = t as Record<string, unknown>;
+      const url = str(o.url);
+      if (!/^https?:\/\//i.test(url)) return undefined;
+      const duration = Number(o.duration);
+      return { url, title: str(o.title) || url, ...(duration > 0 ? { duration } : {}) };
+    })
+    .filter((t): t is Track => !!t);
+}
+
+async function botAction(app: App, bot: MusicBot, action: string, body: Record<string, unknown>): Promise<string> {
+  const pl = bot.player;
+  switch (action) {
+    case "play": {
+      const input = str(body.input);
+      if (!input) throw new HttpError(400, "Enter a link or search words");
+      return bot.play(input, { requestedBy: "web", next: body.next === true, wholePlaylist: body.all === true });
+    }
+    case "enqueue":
+      return bot.enqueue(tracksFrom(body.tracks), { requestedBy: "web", next: body.next === true });
+    case "start":
+      return pl.playIfIdle() ? "Playing." : "Nothing to play.";
+    case "pause":
+      pl.pause();
+      return "Paused.";
+    case "resume":
+      pl.resume();
+      return "Resumed.";
+    case "skip":
+      return pl.skip(Math.max(1, Number(body.count) || 1)) ? "Skipped." : "Nothing playing.";
+    case "stop":
+      return bot.stop();
+    case "clear":
+      pl.clearQueue();
+      return "Queue cleared.";
+    case "shuffle":
+      pl.shuffle();
+      return "Shuffled.";
+    case "loop": {
+      const mode = str(body.mode) as LoopMode;
+      if (!["off", "one", "all"].includes(mode)) throw new HttpError(400, "Loop must be off, one or all");
+      pl.setLoop(mode);
+      return `Loop: ${mode}`;
+    }
+    case "volume":
+      return bot.setVolume(clampVolume(Number(body.volume)));
+    case "remove": {
+      const removed = pl.removeAt(Number(body.position));
+      if (!removed) throw new HttpError(404, "No such queue position");
+      return `Removed ${removed.title}`;
+    }
+    case "radio":
+      return bot.playRadio(str(body.url) || undefined);
+  }
+  throw new HttpError(404, "Unknown action");
+}
+
 async function route(app: App, req: IncomingMessage, url: URL): Promise<unknown> {
   const method = req.method ?? "GET";
   const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+  const store = app.playlists;
 
   if (method === "GET" && url.pathname === "/api/state") {
     return {
       bots: app.bots.map(botState),
-      stations: app.stations.items,
-      schedule: app.schedule.items.map((e) => ({ ...e, text: ScheduleStore.describe(e) })),
-      timezone: app.config.timezone,
+      playlists: store.all.map((p) => ({ name: p.name, tracks: p.tracks.map(trackJson) })),
     };
   }
 
   if (method === "GET" && url.pathname === "/api/search") {
-    return searchStations(url.searchParams.get("q") ?? "", 20);
+    const q = url.searchParams.get("q") ?? "";
+    const { tracks } = await resolve(app.config.ytdlpPath, q, { maxItems: 10, results: 10 });
+    return tracks.map(trackJson);
   }
 
-  if (parts[0] === "api" && parts[1] === "bots" && parts[2] && method === "POST") {
+  if (parts[0] === "api" && parts[1] === "bots" && parts[2] && parts[3] && method === "POST") {
     const bot = app.bots.find((b) => b.name === parts[2]);
     if (!bot) throw new HttpError(404, "No such bot");
-    const body = await readJson(req);
-    switch (parts[3]) {
-      case "play": {
-        const station = app.stations.find(str(body.station));
-        if (!station) throw new HttpError(404, "Unknown station");
-        return { message: plain(bot.playStation(station)) };
-      }
-      case "stop":
-        return { message: plain(bot.stop()) };
-      case "next":
-        return { message: plain(bot.switchStation(1)) };
-      case "prev":
-        return { message: plain(bot.switchStation(-1)) };
-      case "volume":
-        return { message: plain(bot.setVolume(clampVolume(Number(body.volume)))) };
-      case "queue": {
-        const input = str(body.input);
-        if (!input) throw new HttpError(400, "Missing link or search");
-        return { message: plain(await bot.enqueue(input, "web")) };
-      }
-      case "skip":
-        return { message: bot.radio.skip() ? "Skipped." : "No track playing." };
-      case "clear":
-        bot.radio.clearQueue();
-        return { message: "Queue cleared." };
-    }
-    throw new HttpError(404, "Unknown action");
+    return { message: plain(await botAction(app, bot, parts[3], await readJson(req))) };
   }
 
-  if (url.pathname === "/api/stations" && method === "POST") {
+  if (url.pathname === "/api/playlists" && method === "POST") {
     const body = await readJson(req);
-    const name = str(body.name);
-    const stationUrl = str(body.url);
-    if (!name || !/^https?:\/\//i.test(stationUrl)) throw new HttpError(400, "Name and http(s) URL required");
-    const backupUrls = Array.isArray(body.backupUrls)
-      ? body.backupUrls.map(str).filter((u) => /^https?:\/\//i.test(u))
-      : [];
-    const station = app.stations.add({
-      id: app.stations.uniqueId(str(body.id) || name),
-      name,
-      url: stationUrl,
-      ...(backupUrls.length ? { backupUrls } : {}),
-    });
-    return { message: `Added ${station.name}`, station };
-  }
-
-  if (parts[0] === "api" && parts[1] === "stations" && parts[2] && method === "DELETE") {
-    const removed = app.stations.remove(parts[2]);
-    if (!removed) throw new HttpError(404, "Unknown station");
-    for (const b of app.bots) if (b.radio.station?.id === removed.id) b.radio.stop();
-    return { message: `Removed ${removed.name}` };
-  }
-
-  if (url.pathname === "/api/schedule" && method === "POST") {
-    const body = await readJson(req);
-    const target = str(body.station);
-    const station = target === "stop" ? "stop" : app.stations.find(target)?.id;
-    if (!station) throw new HttpError(400, "Unknown station");
-    const entry: ScheduleEntry = { time: str(body.time), station };
-    if (Array.isArray(body.days) && body.days.length) entry.days = body.days.map(str);
-    if (body.volume !== undefined && body.volume !== "") entry.volume = clampVolume(Number(body.volume));
-    if (str(body.bot)) entry.bot = str(body.bot);
     try {
-      return { message: `Added ${ScheduleStore.describe(app.schedule.add(entry))}` };
+      return { message: `Created ${store.create(str(body.name)).name}` };
     } catch (err) {
       throw new HttpError(400, err instanceof Error ? err.message : String(err));
     }
   }
 
-  if (parts[0] === "api" && parts[1] === "schedule" && parts[2] && method === "DELETE") {
-    const removed = app.schedule.removeAt(Number(parts[2]));
-    if (!removed) throw new HttpError(404, "No such entry");
-    return { message: `Removed ${ScheduleStore.describe(removed)}` };
+  if (parts[0] === "api" && parts[1] === "playlists" && parts[2]) {
+    const list = store.find(parts[2]);
+    if (!list) throw new HttpError(404, "No such playlist");
+
+    if (method === "DELETE" && parts.length === 3) {
+      store.delete(list);
+      return { message: `Deleted ${list.name}` };
+    }
+    if (method === "DELETE" && parts[3] === "tracks" && parts[4]) {
+      const removed = store.removeTrack(list, Number(parts[4]));
+      if (!removed) throw new HttpError(404, "No such song");
+      return { message: `Removed ${removed.title}` };
+    }
+    if (method === "POST" && parts[3]) {
+      const body = await readJson(req);
+      const bot = app.bots.find((b) => b.name === str(body.bot)) ?? app.bots[0]!;
+      switch (parts[3]) {
+        case "add": {
+          const input = str(body.input);
+          let tracks = tracksFrom(body.tracks);
+          if (input) tracks = (await resolve(app.config.ytdlpPath, input, { maxItems: app.config.maxPlaylistItems })).tracks;
+          else if (body.current === true && bot.player.track) tracks = [bot.player.track];
+          if (tracks.length === 0) throw new HttpError(400, "Nothing to add");
+          const total = store.addTracks(list, tracks);
+          return { message: `Added ${tracks.length === 1 ? tracks[0]!.title : `${tracks.length} songs`} to ${list.name} (${total})` };
+        }
+        case "play": {
+          const tracks = [...list.tracks];
+          if (tracks.length === 0) throw new HttpError(400, "Playlist is empty");
+          if (body.shuffle === true) {
+            for (let i = tracks.length - 1; i > 0; i--) {
+              const j = Math.floor(Math.random() * (i + 1));
+              [tracks[i], tracks[j]] = [tracks[j]!, tracks[i]!];
+            }
+          }
+          return { message: plain(bot.enqueue(tracks, { requestedBy: "web", playlistName: list.name })) };
+        }
+        case "save": {
+          const current = [...(bot.player.track && !bot.player.track.auto ? [bot.player.track] : []), ...bot.player.queue];
+          if (current.length === 0) throw new HttpError(400, "The queue is empty");
+          const total = store.addTracks(list, current);
+          return { message: `Saved ${current.length} songs to ${list.name} (${total})` };
+        }
+      }
+    }
   }
 
   throw new HttpError(404, "Not found");
@@ -184,12 +237,12 @@ export function startWebServer(app: App): void {
     }
     route(app, req, url)
       .then((data) => {
-        res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end(JSON.stringify(data));
+        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }).end(JSON.stringify(data));
       })
       .catch((err: unknown) => {
         const status = err instanceof HttpError ? err.status : 500;
         const message = err instanceof Error ? err.message : String(err);
-        res.writeHead(status, { "Content-Type": "application/json" }).end(JSON.stringify({ error: message }));
+        res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" }).end(JSON.stringify({ error: message }));
       });
   });
 

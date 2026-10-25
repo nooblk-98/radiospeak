@@ -13,21 +13,19 @@ import {
 } from "@honeybbq/teamspeak";
 import { Client, generateIdentity, parseIdentity, type Identity } from "@honeybbq/teamspeak/client";
 import { handleChatMessage } from "./commands.ts";
-import type { AppConfig, BotConfig, Station } from "./config.ts";
+import type { AppConfig, BotConfig } from "./config.ts";
 import { fetchIcyTitle } from "./icy.ts";
-import { RadioPlayer, type PlayerEvent, type Track } from "./radio.ts";
-import type { FoundStation } from "./radiobrowser.ts";
-import type { ScheduleStore, StationStore } from "./store.ts";
-import { resolveTrack } from "./ytdlp.ts";
+import { Player, type PlayerEvent, type Track } from "./player.ts";
+import type { PlaylistStore } from "./store.ts";
+import { formatDuration, resolve } from "./ytdlp.ts";
 
-/** What every bot shares: config, the station list, the schedule and each other. */
+/** What every bot shares: config, saved playlists and each other. */
 export interface App {
   config: AppConfig;
-  stations: StationStore;
-  schedule: ScheduleStore;
-  bots: RadioBot[];
-  /** Last !search results per user unique ID, so "!add 3" can pick one. */
-  searchResults: Map<string, FoundStation[]>;
+  playlists: PlaylistStore;
+  bots: MusicBot[];
+  /** Last !search results per user unique ID, so "!pick 3" can choose one. */
+  searchResults: Map<string, Track[]>;
 }
 
 export type LogLevel = "info" | "warn" | "error";
@@ -40,18 +38,19 @@ export function log(level: LogLevel, msg: string): void {
 
 const TITLE_POLL_MS = 20_000;
 const LISTENER_CHECK_MS = 5_000;
+const DEFAULT_PLAYLIST_REFRESH_MS = 6 * 60 * 60 * 1000;
+/** Nickname/description changes are spaced out so they never add up to a flood ban. */
+const PRESENCE_MIN_GAP_MS = 5_000;
 /** TeamSpeak's nickname limit. */
 const MAX_NICKNAME = 30;
 
-export class RadioBot {
+export class MusicBot {
   readonly cfg: BotConfig;
   readonly index: number;
-  readonly radio: RadioPlayer;
+  readonly player: Player;
   client: Client | undefined;
-  /** Latest ICY song title of the playing station. */
-  songTitle: string | undefined;
-  /** The stream `songTitle` was read from. */
-  #titleUrl: string | undefined;
+  /** Song title read from the radio stream, when one is playing. */
+  radioTitle: string | undefined;
 
   #app: App;
   #connected = false;
@@ -61,16 +60,19 @@ export class RadioBot {
   #framesSent = 0;
   #emptySince: number | undefined;
   #presenceTimer: NodeJS.Timeout | undefined;
+  #lastPresenceAt = 0;
   #appliedNickname: string;
   #appliedDescription: string | undefined;
   #descriptionDenied = false;
+  #titleUrl: string | undefined;
+  #defaultLoaded = false;
 
   constructor(app: App, cfg: BotConfig, index: number) {
     this.#app = app;
     this.cfg = cfg;
     this.index = index;
     this.#appliedNickname = cfg.nickname;
-    this.radio = new RadioPlayer({
+    this.player = new Player({
       ffmpegPath: app.config.ffmpegPath,
       ytdlpPath: app.config.ytdlpPath,
       bitrateKbps: app.config.bitrateKbps,
@@ -115,38 +117,65 @@ export class RadioBot {
     return c.view.clientsIn(cid).filter((e) => e.type === 0 && !own.has(e.id) && !e.isOutputMuted);
   }
 
-  // ---- Playback actions (used by chat commands, the web panel and the scheduler) ----
+  // ---- Actions (used by chat commands and the web panel) ----
 
-  playStation(station: Station): string {
-    this.radio.play(station);
-    const paused = this.radio.paused ? " (paused until someone joins the channel)" : "";
-    return `Now playing: [b]${station.name}[/b]${paused}`;
+  /**
+   * Queues a song or a playlist from a link or search words. `wholePlaylist`
+   * takes the whole playlist when the link is a song inside one.
+   */
+  async play(input: string, options: { requestedBy?: string; next?: boolean; wholePlaylist?: boolean } = {}): Promise<string> {
+    const found = await resolve(this.#app.config.ytdlpPath, input, {
+      maxItems: this.#app.config.maxPlaylistItems,
+      ...(options.wholePlaylist ? { wholePlaylist: true } : {}),
+    });
+    return this.enqueue(found.tracks, { ...options, ...(found.playlist ? { playlistName: found.playlist } : {}) }, input);
   }
 
-  /** `step` 1 for next, -1 for previous. */
-  switchStation(step: number): string {
-    const list = this.#app.stations.items;
-    if (list.length === 0) return "No stations configured.";
-    const i = this.#app.stations.indexOf(this.radio.station?.id);
-    return this.playStation(list[i < 0 ? 0 : (i + step + list.length) % list.length]!);
+  enqueue(
+    tracks: Track[],
+    options: { requestedBy?: string; next?: boolean; playlistName?: string },
+    input = "",
+  ): string {
+    const tagged = tracks.map((t) => ({ ...t, ...(options.requestedBy ? { requestedBy: options.requestedBy } : {}) }));
+    const position = this.player.enqueue(tagged, options.next);
+    const p = this.#app.config.commandPrefix;
+    const hint =
+      tracks.length === 1 && /[?&]list=/.test(input) && !options.playlistName
+        ? `\n(That link is part of a playlist — ${p}playall <link> queues all of it.)`
+        : "";
+    if (tracks.length > 1) {
+      const what = options.playlistName ? `[b]${options.playlistName}[/b]: ${tracks.length} songs` : `${tracks.length} songs`;
+      return `Added ${what}${position === 0 ? ", playing now" : ` from #${position}`}.`;
+    }
+    const t = tracks[0]!;
+    const what = `[b]${t.title}[/b] (${formatDuration(t.duration)})`;
+    return (position === 0 ? `Playing: ${what}` : `Queued #${position}: ${what}`) + hint;
+  }
+
+  playRadio(url: string | undefined): string {
+    if (!url) {
+      this.player.playRadio(undefined);
+      return "Radio off.";
+    }
+    let name = url;
+    try {
+      name = new URL(url).hostname;
+    } catch {
+      return "That doesn't look like a link.";
+    }
+    this.player.playRadio({ name, url });
+    return this.player.track ? `Radio set; it plays when the queue is empty.` : `Playing radio: ${name}`;
   }
 
   stop(): string {
-    if (!this.radio.isActive) return "Not playing.";
-    this.radio.stop();
+    if (!this.player.isActive) return "Not playing.";
+    this.player.stop();
     return "Stopped.";
   }
 
   setVolume(volume: number): string {
-    this.radio.setVolume(volume);
-    return `Volume set to ${this.radio.volume}`;
-  }
-
-  async enqueue(input: string, requestedBy?: string): Promise<string> {
-    const found = await resolveTrack(this.#app.config.ytdlpPath, input);
-    const track: Track = { url: found.url, title: found.title, ...(requestedBy ? { requestedBy } : {}) };
-    const position = this.radio.enqueue(track);
-    return this.radio.track === track ? `Playing: [b]${track.title}[/b]` : `Queued #${position}: [b]${track.title}[/b]`;
+    this.player.setVolume(volume);
+    return `Volume set to ${this.player.volume}`;
   }
 
   async moveTo(channelID: ChannelID): Promise<void> {
@@ -156,12 +185,35 @@ export class RadioBot {
   }
 
   status(): string {
-    const r = this.radio;
-    if (r.track) return `Playing track: [b]${r.track.title}[/b] — volume ${r.volume}${r.queue.length ? `, ${r.queue.length} queued` : ""}`;
-    if (!r.station) return "Not playing. Use !play";
-    const song = this.songTitle ? ` — ♪ ${this.songTitle}` : "";
-    const paused = r.paused ? " (paused: nobody listening)" : "";
-    return `Playing: [b]${r.station.name}[/b]${song} — volume ${r.volume}${paused}`;
+    const pl = this.player;
+    const paused = pl.userPaused ? " (paused)" : pl.autoPaused ? " (paused: nobody listening)" : "";
+    if (pl.track) {
+      const t = pl.track;
+      const from = t.auto ? " — default playlist" : t.requestedBy ? ` — requested by ${t.requestedBy}` : "";
+      const time = `${formatDuration(pl.elapsed)} / ${formatDuration(t.duration)}`;
+      const extra = [pl.queue.length ? `${pl.queue.length} queued` : "", pl.loop !== "off" ? `loop ${pl.loop}` : ""]
+        .filter(Boolean)
+        .join(", ");
+      return `▶ [b]${t.title}[/b] [${time}]${from}${paused}${extra ? `\n${extra}` : ""}`;
+    }
+    if (pl.radio) return `📻 Radio: [b]${pl.radio.name}[/b]${this.radioTitle ? ` — ♪ ${this.radioTitle}` : ""}${paused}`;
+    return `Nothing playing. Try ${this.#app.config.commandPrefix}play <song or link>`;
+  }
+
+  /** Loads (or reloads) the configured default playlist. */
+  async loadDefaultPlaylist(): Promise<void> {
+    const link = this.cfg.defaultPlaylist;
+    if (!link) return;
+    try {
+      const found = await resolve(this.#app.config.ytdlpPath, link, {
+        maxItems: this.#app.config.maxPlaylistItems,
+        wholePlaylist: true,
+      });
+      this.player.setDefaultPlaylist(found.tracks, found.playlist);
+      this.log("info", `Default playlist: ${found.playlist ?? link} (${found.tracks.length} songs)`);
+    } catch (err) {
+      this.log("error", `Could not load default playlist: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   // ---- Connection ----
@@ -170,19 +222,26 @@ export class RadioBot {
     const identity = await this.#loadIdentity();
     setInterval(() => this.#checkListeners(), LISTENER_CHECK_MS).unref();
     setInterval(() => void this.#pollTitle(), TITLE_POLL_MS).unref();
+    setInterval(() => void this.loadDefaultPlaylist(), DEFAULT_PLAYLIST_REFRESH_MS).unref();
     setInterval(() => {
-      if (this.radio.isActive && !this.radio.paused) {
-        this.log("info", `Streaming: ${this.#framesSent} frames sent in the last 60s`);
+      if (this.player.isActive && !this.player.paused) {
+        const under = this.player.underruns;
+        this.log(
+          under > 2 ? "warn" : "info",
+          `Streaming: ${this.#framesSent}/3000 frames in the last 60s` +
+            (under ? `, ${under} buffer underruns${under > 2 ? " — this machine or its network may be too slow" : ""}` : ""),
+        );
       }
       this.#framesSent = 0;
+      this.player.underruns = 0;
     }, 60_000).unref();
     await this.#connectLoop(identity);
   }
 
   async shutdown(): Promise<void> {
     this.#shuttingDown = true;
-    this.radio.stop();
-    await this.client?.disconnect({ reasonMessage: "Radio off" }).catch(() => {});
+    this.player.stop();
+    await this.client?.disconnect({ reasonMessage: "Bye" }).catch(() => {});
   }
 
   async #loadIdentity(): Promise<Identity> {
@@ -211,12 +270,9 @@ export class RadioBot {
       this.#appliedNickname = this.cfg.nickname;
       this.#appliedDescription = undefined;
       this.log("info", reconnected ? "Reconnected to server" : `Connected to ${config.server} as "${this.cfg.nickname}"`);
-      if (!reconnected && this.cfg.autoplay && !this.radio.isActive) {
-        const station = this.#app.stations.find(this.cfg.defaultStation) ?? this.#app.stations.items[0];
-        if (station) {
-          this.log("info", `Autoplay: ${station.name}`);
-          this.radio.play(station);
-        }
+      if (!this.#defaultLoaded) {
+        this.#defaultLoaded = true;
+        void this.loadDefaultPlaylist();
       }
       this.#schedulePresence();
     });
@@ -281,7 +337,7 @@ export class RadioBot {
       if (this.#voiceFailing) this.log("info", "Voice sending resumed");
       this.#voiceFailing = false;
     } catch (err) {
-      // Not connected (yet / while reconnecting): drop the frame, the radio keeps running.
+      // Not connected (yet / while reconnecting): drop the frame, playback keeps going.
       if (!this.#voiceFailing) {
         this.log("warn", `Voice send failed, dropping audio: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -289,93 +345,89 @@ export class RadioBot {
     }
   }
 
-  // ---- Auto-pause, song titles, nickname/description ----
+  // ---- Auto-pause, radio titles, nickname/description ----
 
   #checkListeners(): void {
     const c = this.client;
     if (!this.#app.config.pauseWhenEmpty || !c || !this.#connected || c.view.status !== "live") return;
     if (this.listeners().length > 0) {
       this.#emptySince = undefined;
-      if (this.radio.paused) {
+      if (this.player.autoPaused) {
         this.log("info", "Listener joined, resuming");
-        this.radio.resume();
+        this.player.setAutoPaused(false);
       }
       return;
     }
     this.#emptySince ??= Date.now();
     const graceOver = Date.now() - this.#emptySince >= this.#app.config.emptyGraceSeconds * 1000;
-    if (graceOver && this.radio.isActive && !this.radio.paused) {
-      this.log("info", "Nobody listening, pausing stream");
-      this.radio.pause();
+    if (graceOver && this.player.isActive && !this.player.autoPaused) {
+      this.log("info", "Nobody listening, pausing");
+      this.player.setAutoPaused(true);
     }
   }
 
   async #pollTitle(): Promise<void> {
-    const url = this.radio.streamUrl;
-    if (!url || this.radio.paused || !this.#connected) return;
+    const url = this.player.radioUrl;
+    if (!url || this.player.paused || !this.#connected) return;
     const title = await fetchIcyTitle(url);
-    if (url !== this.radio.streamUrl || (url === this.#titleUrl && title === this.songTitle)) return;
+    if (url !== this.player.radioUrl || (url === this.#titleUrl && title === this.radioTitle)) return;
     this.#titleUrl = url;
-    this.songTitle = title;
-    if (title) this.log("info", `Song: ${title}`);
-    if (title && this.#app.config.announceSongs && this.client && this.#connected) {
-      await sendChannelMessage(this.client, `♪ ${title}`).catch(() => {});
-    }
+    this.radioTitle = title;
     this.#schedulePresence();
   }
 
   #onPlayerEvent(event: PlayerEvent): void {
     const c = this.client;
-    if (event.type === "trackStart" && c && this.#connected) {
-      void sendChannelMessage(c, `▶ Now playing: [b]${event.track.title}[/b]`).catch(() => {});
+    const online = c && this.#connected;
+    if (event.type === "trackStart" && online && !event.track.auto) {
+      const by = event.track.requestedBy ? ` (requested by ${event.track.requestedBy})` : "";
+      void sendChannelMessage(c, `▶ Now playing: [b]${event.track.title}[/b]${by}`).catch(() => {});
     }
-    if (event.type === "trackEnd" && event.error && c && this.#connected) {
-      void sendChannelMessage(c, `Could not play ${event.track.title}: ${event.error.slice(0, 200)}`).catch(() => {});
+    if (event.type === "trackEnd" && event.error) {
+      this.log("warn", `Could not play ${event.track.title}: ${event.error}`);
+      if (online && !event.track.auto) {
+        void sendChannelMessage(c, `Could not play ${event.track.title}: ${event.error.slice(0, 200)}`).catch(() => {});
+      }
     }
-    if (event.type === "change" && this.radio.streamUrl !== this.#titleUrl) {
-      this.songTitle = undefined;
+    if (event.type === "change" && this.player.radioUrl !== this.#titleUrl) {
+      this.radioTitle = undefined;
       this.#titleUrl = undefined;
       void this.#pollTitle();
     }
     this.#schedulePresence();
   }
 
-  /** Coalesces bursts of changes into one nickname/description update. */
+  /** Coalesces bursts of changes into one nickname/description update, at most every few seconds. */
   #schedulePresence(): void {
     clearTimeout(this.#presenceTimer);
-    this.#presenceTimer = setTimeout(() => void this.#applyPresence(), 1500);
+    const wait = Math.max(1500, this.#lastPresenceAt + PRESENCE_MIN_GAP_MS - Date.now());
+    this.#presenceTimer = setTimeout(() => void this.#applyPresence(), wait);
   }
 
   async #applyPresence(): Promise<void> {
     const c = this.client;
     if (!c || !this.#connected) return;
     const { config } = this.#app;
-    const r = this.radio;
+    const pl = this.player;
+    const now = pl.track?.title ?? (pl.radio ? (this.radioTitle ?? pl.radio.name) : undefined);
 
     let nickname = this.cfg.nickname;
-    if (config.showStationInNickname) {
-      const what = r.track ? `▶ ${r.track.title}` : r.station?.name;
-      if (what) nickname = `${this.cfg.nickname} | ${what}`;
-    }
+    if (config.showSongInNickname && now) nickname = `${this.cfg.nickname} | ${now}`;
     nickname = nickname.slice(0, MAX_NICKNAME).trim();
     if (nickname !== this.#appliedNickname) {
+      this.#lastPresenceAt = Date.now();
       try {
         await updateClient(c, { nickname });
-        this.#appliedNickname = nickname;
       } catch (err) {
         this.log("warn", `Could not set nickname "${nickname}": ${err instanceof Error ? err.message : String(err)}`);
-        this.#appliedNickname = nickname; // don't retry the same name every change
       }
+      this.#appliedNickname = nickname; // don't retry the same name every change
     }
 
     if (!config.songInDescription || this.#descriptionDenied) return;
-    let description: string;
-    if (r.track) description = `▶ ${r.track.title}`;
-    else if (r.station) {
-      description = `📻 ${r.station.name}${this.songTitle ? ` — ♪ ${this.songTitle}` : ""}${r.paused ? " (paused)" : ""}`;
-    } else description = `Stopped — type ${config.commandPrefix}help`;
-    description = description.slice(0, 200);
+    const description = (now ? `${pl.track ? "▶" : "📻"} ${now}` : `Type ${config.commandPrefix}help`).slice(0, 200);
     if (description === this.#appliedDescription) return;
+    this.#lastPresenceAt = Date.now();
     try {
       await editClient(c, c.clientID, { description });
       this.#appliedDescription = description;

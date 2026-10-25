@@ -6,23 +6,23 @@ import {
   type TextMessageEvent,
 } from "@honeybbq/teamspeak";
 import type { Client } from "@honeybbq/teamspeak/client";
-import type { App, RadioBot } from "./bot.ts";
-import { clampVolume, type Station } from "./config.ts";
-import { searchStations } from "./radiobrowser.ts";
-import { ScheduleStore } from "./store.ts";
+import type { App, MusicBot } from "./bot.ts";
+import { clampVolume } from "./config.ts";
+import type { LoopMode, Track } from "./player.ts";
+import { formatDuration, resolve } from "./ytdlp.ts";
+
+const PAGE_SIZE = 10;
 
 function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
 /** TeamSpeak chat wraps links as [URL]...[/URL]; strip that. */
-function cleanUrl(s: string | undefined): string | undefined {
-  return s?.replace(/^\[url(=[^\]]*)?\]/i, "").replace(/\[\/url\]$/i, "");
+function cleanInput(s: string): string {
+  return s.replace(/\[url(=[^\]]*)?\]/gi, "").replace(/\[\/url\]/gi, "").trim();
 }
 
-const isUrl = (s: string | undefined): s is string => !!s && /^https?:\/\//i.test(s);
-
-export function isAdmin(app: App, bot: RadioBot, msg: TextMessageEvent): boolean {
+export function isAdmin(app: App, bot: MusicBot, msg: TextMessageEvent): boolean {
   const { admins, adminGroups } = app.config;
   if (admins.length === 0 && adminGroups.length === 0) return true;
   if (admins.includes(msg.invokerUID)) return true;
@@ -32,163 +32,247 @@ export function isAdmin(app: App, bot: RadioBot, msg: TextMessageEvent): boolean
 
 function helpText(p: string): string {
   return [
-    "[b]Radio[/b]",
-    `${p}list — stations   ${p}play [n|id|name] — play / resume   ${p}stop`,
-    `${p}next / ${p}prev — switch station   ${p}vol [0-100]   ${p}np — now playing`,
-    `${p}search <name|country|genre> — find stations online, then ${p}add <n>`,
-    "[b]YouTube / SoundCloud[/b]",
-    `${p}yt <link or search> — play a track, radio resumes after   ${p}skip   ${p}queue   ${p}clear`,
-    "[b]Bot[/b]",
-    `${p}join — move the bot to your channel   ${p}bots — list bots`,
-    "[b]Admin[/b]",
-    `${p}add <n> | ${p}add <id> <url> [name] — add station   ${p}remove <id>   ${p}backup <id> <url>`,
-    `${p}schedule — list   ${p}schedule add 08:00 <station|stop> [mon,tue..] [vol=40]   ${p}schedule remove <n>`,
+    "[b]Music[/b]",
+    `${p}play <YouTube/SoundCloud link, playlist or search> — add to queue   ${p}play — start/resume`,
+    `${p}playall <link> — whole playlist from a song link   ${p}playnext <song> — play after this one`,
+    `${p}search <words> — show 5 results, then ${p}pick <n>`,
+    `${p}pause / ${p}resume   ${p}skip [n]   ${p}stop   ${p}np   ${p}vol [0-100]`,
+    `${p}queue [page]   ${p}remove <n>   ${p}clear   ${p}shuffle   ${p}loop [off|one|all]`,
+    "[b]Saved playlists[/b]",
+    `${p}pl — list   ${p}pl new <name>   ${p}pl add <name> [link|search] (no link = current song)`,
+    `${p}pl show <name>   ${p}pl play <name> [shuffle]   ${p}pl save <name> — save the queue   ${p}pl remove <name> <n>   ${p}pl delete <name>`,
+    "[b]Other[/b]",
+    `${p}radio <stream link|off> — live radio when the queue is empty   ${p}join — come to my channel   ${p}bots`,
   ].join("\n");
 }
 
-function listText(app: App, bot: RadioBot): string {
-  const list = app.stations.items;
-  if (list.length === 0) return `No stations yet. Use ${app.config.commandPrefix}search or ${app.config.commandPrefix}add`;
-  const current = bot.radio.station?.id;
-  return (
-    "Stations:\n" +
-    list.map((s, i) => `${i + 1}. [b]${s.name}[/b] (${s.id})${s.id === current ? "  ◀ playing" : ""}`).join("\n")
-  );
+function trackLine(t: Track, n: number): string {
+  return `${n}. ${t.title} (${formatDuration(t.duration)})${t.requestedBy ? ` — ${t.requestedBy}` : ""}`;
 }
 
-export async function runCommand(app: App, bot: RadioBot, msg: TextMessageEvent): Promise<string | undefined> {
+function page<T>(items: readonly T[], pageArg: string | undefined): { slice: T[]; pageNo: number; pages: number; offset: number } {
+  const pages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+  const pageNo = Math.min(pages, Math.max(1, Number(pageArg) || 1));
+  const offset = (pageNo - 1) * PAGE_SIZE;
+  return { slice: items.slice(offset, offset + PAGE_SIZE), pageNo, pages, offset };
+}
+
+async function playlistCommand(app: App, bot: MusicBot, msg: TextMessageEvent, args: string[]): Promise<string> {
+  const p = app.config.commandPrefix;
+  const [sub = "list", name = "", ...rest] = args;
+  const store = app.playlists;
+  const need = () => {
+    const list = store.find(name);
+    if (!list) throw new Error(name ? `No playlist "${name}". ${p}pl shows them.` : `Which playlist? ${p}pl shows them.`);
+    return list;
+  };
+
+  switch (sub.toLowerCase()) {
+    case "list":
+    case "ls":
+      if (store.all.length === 0) return `No saved playlists yet. ${p}pl new <name>`;
+      return `Saved playlists:\n${store.all.map((l, i) => `${i + 1}. [b]${l.name}[/b] — ${l.tracks.length} songs`).join("\n")}`;
+
+    case "new":
+    case "create": {
+      const created = store.create([name, ...rest].join(" "));
+      return `Created playlist [b]${created.name}[/b]. Add songs with ${p}pl add ${created.name} <link or search>`;
+    }
+
+    case "add": {
+      const list = need();
+      const input = cleanInput(rest.join(" "));
+      let tracks: Track[];
+      if (!input) {
+        if (!bot.player.track) return "Nothing playing to add. Give a link or search words.";
+        tracks = [bot.player.track];
+      } else {
+        tracks = (await resolve(app.config.ytdlpPath, input, { maxItems: app.config.maxPlaylistItems })).tracks;
+      }
+      const total = store.addTracks(list, tracks);
+      const what = tracks.length === 1 ? `[b]${tracks[0]!.title}[/b]` : `${tracks.length} songs`;
+      return `Added ${what} to [b]${list.name}[/b] (${total} songs).`;
+    }
+
+    case "save": {
+      const current = [...(bot.player.track && !bot.player.track.auto ? [bot.player.track] : []), ...bot.player.queue];
+      if (current.length === 0) return "The queue is empty.";
+      const list = store.find(name) ?? store.create(name);
+      const total = store.addTracks(list, current);
+      return `Saved ${current.length} songs to [b]${list.name}[/b] (${total} songs).`;
+    }
+
+    case "show": {
+      const list = need();
+      if (list.tracks.length === 0) return `[b]${list.name}[/b] is empty.`;
+      const pg = page(list.tracks, rest[0]);
+      const lines = pg.slice.map((t, i) => trackLine(t, pg.offset + i + 1));
+      return `[b]${list.name}[/b] — ${list.tracks.length} songs (page ${pg.pageNo}/${pg.pages})\n${lines.join("\n")}`;
+    }
+
+    case "play": {
+      const list = need();
+      if (list.tracks.length === 0) return `[b]${list.name}[/b] is empty.`;
+      const tracks = [...list.tracks];
+      if (rest[0]?.toLowerCase() === "shuffle") {
+        for (let i = tracks.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [tracks[i], tracks[j]] = [tracks[j]!, tracks[i]!];
+        }
+      }
+      return bot.enqueue(tracks, { requestedBy: msg.invokerName, playlistName: list.name });
+    }
+
+    case "remove":
+    case "rm": {
+      const list = need();
+      const removed = store.removeTrack(list, Number(rest[0]));
+      return removed ? `Removed [b]${removed.title}[/b] from ${list.name}.` : `Usage: ${p}pl remove <name> <song number>`;
+    }
+
+    case "delete":
+    case "del": {
+      if (!isAdmin(app, bot, msg)) return "Only bot admins can delete playlists.";
+      const list = need();
+      store.delete(list);
+      return `Deleted playlist [b]${list.name}[/b].`;
+    }
+  }
+  return `Unknown playlist command. Type ${p}help`;
+}
+
+export async function runCommand(app: App, bot: MusicBot, msg: TextMessageEvent): Promise<string | undefined> {
   const p = app.config.commandPrefix;
   const text = msg.message.trim();
   if (!text.startsWith(p)) return undefined;
   const [rawCmd = "", ...args] = text.slice(p.length).split(/\s+/);
   const cmd = rawCmd.toLowerCase();
-  const arg = args.join(" ");
-  const admin = () => isAdmin(app, bot, msg);
-  const denied = "Only radio admins can do that.";
+  const arg = cleanInput(args.join(" "));
+  const player = bot.player;
 
   switch (cmd) {
     case "help":
     case "h":
       return helpText(p);
 
-    case "list":
-    case "stations":
-    case "ls":
-      return listText(app, bot);
-
     case "play":
-    case "p": {
+    case "p":
+    case "yt":
+    case "sc": {
       if (!arg) {
-        if (bot.radio.station) return bot.playStation(bot.radio.station);
-        const station = app.stations.find(bot.cfg.defaultStation) ?? app.stations.items[0];
-        return station ? bot.playStation(station) : "No stations configured.";
+        if (player.paused && player.userPaused) {
+          player.resume();
+          return "Resumed.";
+        }
+        return player.playIfIdle() ? bot.status() : `Nothing to play. ${p}play <song name or link>`;
       }
-      const station = app.stations.find(arg);
-      return station ? bot.playStation(station) : `Unknown station "${arg}". Use ${p}list or ${p}search.`;
+      return bot.play(arg, { requestedBy: msg.invokerName });
+    }
+
+    case "playall":
+    case "pa":
+      if (!arg) return `Usage: ${p}playall <playlist link or a song link from a playlist>`;
+      return bot.play(arg, { requestedBy: msg.invokerName, wholePlaylist: true });
+
+    case "playnext":
+    case "pn":
+      if (!arg) return `Usage: ${p}playnext <song name or link>`;
+      return bot.play(arg, { requestedBy: msg.invokerName, next: true });
+
+    case "search":
+    case "find": {
+      if (!arg) return `Usage: ${p}search <words>`;
+      const { tracks } = await resolve(app.config.ytdlpPath, arg, { maxItems: 5, results: 5 });
+      app.searchResults.set(msg.invokerUID, tracks);
+      return `Results (choose with ${p}pick <n>):\n${tracks.map((t, i) => trackLine(t, i + 1)).join("\n")}`;
+    }
+
+    case "pick": {
+      const results = app.searchResults.get(msg.invokerUID);
+      if (!results) return `Run ${p}search first.`;
+      const chosen = args.map(Number).map((n) => results[n - 1]).filter((t): t is Track => !!t);
+      if (chosen.length === 0) return `Usage: ${p}pick <n> [n...] (1-${results.length})`;
+      return bot.enqueue(chosen, { requestedBy: msg.invokerName });
+    }
+
+    case "pause":
+      if (!player.isActive) return "Nothing playing.";
+      player.pause();
+      return `Paused. ${p}resume to continue.`;
+
+    case "resume":
+    case "unpause":
+      if (!player.userPaused) return player.playIfIdle() ? bot.status() : "Not paused.";
+      player.resume();
+      return "Resumed.";
+
+    case "skip":
+    case "next":
+    case "n": {
+      const count = Math.max(1, Number(args[0]) || 1);
+      return player.skip(count) ? (count > 1 ? `Skipped ${count}.` : "Skipped.") : "Nothing playing.";
     }
 
     case "stop":
       return bot.stop();
 
-    case "next":
-    case "n":
-      return bot.switchStation(1);
+    case "clear":
+      player.clearQueue();
+      return "Queue cleared.";
 
-    case "prev":
-    case "previous":
-      return bot.switchStation(-1);
+    case "shuffle":
+      if (player.queue.length < 2) return "Not enough songs in the queue to shuffle.";
+      player.shuffle();
+      return `Shuffled ${player.queue.length} songs.`;
 
-    case "vol":
-    case "volume":
-    case "v": {
-      if (!arg) return `Volume: ${bot.radio.volume}`;
-      const v = Number(arg.replace(/%$/, ""));
-      return Number.isFinite(v) ? bot.setVolume(clampVolume(v)) : `Usage: ${p}vol 0-100`;
+    case "loop":
+    case "repeat": {
+      const order: LoopMode[] = ["off", "one", "all"];
+      const wanted = args[0]?.toLowerCase() as LoopMode | undefined;
+      const mode = wanted && order.includes(wanted) ? wanted : order[(order.indexOf(player.loop) + 1) % order.length]!;
+      player.setLoop(mode);
+      return `Loop: ${mode}`;
+    }
+
+    case "remove":
+    case "rm": {
+      const removed = player.removeAt(Number(args[0]));
+      return removed ? `Removed [b]${removed.title}[/b]` : `Usage: ${p}remove <queue number>`;
+    }
+
+    case "queue":
+    case "q":
+    case "list": {
+      const lines = [bot.status()];
+      if (player.queue.length) {
+        const pg = page(player.queue, args[0]);
+        lines.push(`Up next (page ${pg.pageNo}/${pg.pages}):`, ...pg.slice.map((t, i) => trackLine(t, pg.offset + i + 1)));
+      } else if (player.defaultPlaylist.size) {
+        lines.push(`Queue empty — playing the default playlist${player.defaultPlaylist.name ? ` (${player.defaultPlaylist.name})` : ""}.`);
+      }
+      return lines.join("\n");
     }
 
     case "np":
     case "status":
       return bot.status();
 
-    case "search":
-    case "find": {
-      if (!arg) return `Usage: ${p}search <station name, country or genre>`;
-      const results = await searchStations(arg, 10);
-      if (results.length === 0) return `Nothing found for "${arg}".`;
-      app.searchResults.set(msg.invokerUID, results);
-      const lines = results.map(
-        (s, i) => `${i + 1}. [b]${s.name}[/b] — ${s.country || "?"}, ${s.codec || "?"} ${s.bitrate ? `${s.bitrate}k` : ""}`,
-      );
-      return `Results for "${arg}" (add with ${p}add <n>):\n${lines.join("\n")}`;
+    case "vol":
+    case "volume":
+    case "v": {
+      if (!arg) return `Volume: ${player.volume}`;
+      const v = Number(arg.replace(/%$/, ""));
+      return Number.isFinite(v) ? bot.setVolume(clampVolume(v)) : `Usage: ${p}vol 0-100`;
     }
 
-    case "add": {
-      if (!admin()) return denied;
-      let station: Station;
-      const n = Number(args[0]);
-      if (args.length === 1 && Number.isInteger(n)) {
-        const found = app.searchResults.get(msg.invokerUID)?.[n - 1];
-        if (!found) return `No search result #${n}. Run ${p}search first.`;
-        station = { id: app.stations.uniqueId(found.name), name: found.name, url: found.url };
-      } else if (isUrl(cleanUrl(args[0]))) {
-        const name = args.slice(1).join(" ") || new URL(cleanUrl(args[0])!).hostname;
-        station = { id: app.stations.uniqueId(name), name, url: cleanUrl(args[0])! };
-      } else {
-        const [id, rawUrl, ...nameParts] = args;
-        const url = cleanUrl(rawUrl);
-        if (!id || !isUrl(url)) return `Usage: ${p}add <search #> | ${p}add <id> <url> [name] | ${p}add <url> [name]`;
-        station = { id, name: nameParts.join(" ") || id, url };
-      }
-      app.stations.add(station);
-      return `Added ${app.stations.items.length}. [b]${station.name}[/b] (${station.id}) — ${p}play ${station.id}`;
-    }
+    case "radio":
+      if (!arg) return player.radio ? `Radio: ${player.radio.name}. ${p}radio off to stop it.` : `Usage: ${p}radio <stream link|off>`;
+      return bot.playRadio(arg.toLowerCase() === "off" ? undefined : arg);
 
-    case "remove":
-    case "rm":
-    case "delete": {
-      if (!admin()) return denied;
-      const station = app.stations.find(arg);
-      if (!station) return `Unknown station "${arg}".`;
-      app.stations.remove(station.id);
-      for (const b of app.bots) if (b.radio.station?.id === station.id) b.radio.stop();
-      return `Removed [b]${station.name}[/b]`;
-    }
-
-    case "backup": {
-      if (!admin()) return denied;
-      const station = app.stations.find(args[0] ?? "");
-      const url = cleanUrl(args[1]);
-      if (!station || !isUrl(url)) return `Usage: ${p}backup <station> <url>`;
-      app.stations.remove(station.id);
-      const updated = { ...station, backupUrls: [...(station.backupUrls ?? []), url] };
-      app.stations.add(updated);
-      return `[b]${station.name}[/b] now has ${updated.backupUrls.length} backup URL(s).`;
-    }
-
-    case "yt":
-    case "youtube":
-    case "sc":
-    case "soundcloud":
-    case "song":
-    case "track": {
-      if (!arg) return `Usage: ${p}yt <YouTube/SoundCloud link or search words>`;
-      return bot.enqueue(cleanUrl(arg) ?? arg, msg.invokerName);
-    }
-
-    case "skip":
-      return bot.radio.skip() ? "Skipped." : "No track playing.";
-
-    case "queue":
-    case "q": {
-      const r = bot.radio;
-      if (!r.track && r.queue.length === 0) return "Queue is empty.";
-      const lines = r.queue.map((t, i) => `${i + 1}. ${t.title}${t.requestedBy ? ` (${t.requestedBy})` : ""}`);
-      return [`Now: ${r.track ? `[b]${r.track.title}[/b]` : "radio"}`, ...lines].join("\n");
-    }
-
-    case "clear":
-      bot.radio.clearQueue();
-      return "Queue cleared.";
+    case "pl":
+    case "playlist":
+    case "playlists":
+      return playlistCommand(app, bot, msg, args);
 
     case "join":
     case "come": {
@@ -203,36 +287,6 @@ export async function runCommand(app: App, bot: RadioBot, msg: TextMessageEvent)
       return app.bots
         .map((b) => `[b]${b.name}[/b] — ${b.connected ? `#${b.channelName ?? "?"}` : "offline"} — ${b.status()}`)
         .join("\n");
-
-    case "schedule":
-    case "sched": {
-      const sub = args[0]?.toLowerCase();
-      if (!sub || sub === "list") {
-        const items = app.schedule.items;
-        if (items.length === 0) return `No schedule. ${p}schedule add 08:00 <station|stop> [mon,tue] [vol=40]`;
-        return `Schedule (${app.config.timezone}):\n${items.map((e, i) => `${i + 1}. ${ScheduleStore.describe(e)}`).join("\n")}`;
-      }
-      if (!admin()) return denied;
-      if (sub === "remove" || sub === "rm") {
-        const removed = app.schedule.removeAt(Number(args[1]));
-        return removed ? `Removed: ${ScheduleStore.describe(removed)}` : "No such schedule entry.";
-      }
-      if (sub === "add") {
-        const [, time, target, ...rest] = args;
-        if (!time || !target) return `Usage: ${p}schedule add 08:00 <station|stop> [mon,tue] [vol=40] [bot=name]`;
-        const stationId = target.toLowerCase() === "stop" ? "stop" : app.stations.find(target)?.id;
-        if (!stationId) return `Unknown station "${target}".`;
-        const entry: Parameters<ScheduleStore["add"]>[0] = { time, station: stationId };
-        for (const r of rest) {
-          const [k, v = ""] = r.includes("=") ? r.split("=", 2) : ["days", r];
-          if (k === "vol" || k === "volume") entry.volume = clampVolume(Number(v));
-          else if (k === "bot") entry.bot = v;
-          else entry.days = v.split(",");
-        }
-        return `Added: ${ScheduleStore.describe(app.schedule.add(entry))}`;
-      }
-      return `Usage: ${p}schedule [list|add|remove]`;
-    }
 
     default:
       return `Unknown command. Type ${p}help`;
@@ -264,7 +318,7 @@ async function reply(c: Client, msg: TextMessageEvent, text: string): Promise<vo
   }
 }
 
-export async function handleChatMessage(app: App, bot: RadioBot, c: Client, msg: TextMessageEvent): Promise<void> {
+export async function handleChatMessage(app: App, bot: MusicBot, c: Client, msg: TextMessageEvent): Promise<void> {
   let answer: string | undefined;
   try {
     answer = await runCommand(app, bot, msg);

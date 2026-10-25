@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 
 /** One TeamSpeak connection. Several can run in one process, e.g. one per channel. */
 export interface BotConfig {
-  /** Short name used in logs, the web panel and schedule entries. */
+  /** Short name used in logs and the web panel. */
   name: string;
   nickname: string;
   /** Channel name or path ("Parent/Child") to join; empty for the server default. */
@@ -12,8 +12,8 @@ export interface BotConfig {
   identityFile: string;
   /** 0-100. */
   volume: number;
-  autoplay: boolean;
-  defaultStation: string;
+  /** YouTube playlist link (or a song inside one) played whenever nobody has requested anything. */
+  defaultPlaylist: string;
 }
 
 export interface WebConfig {
@@ -32,56 +32,32 @@ export interface AppConfig {
   ytdlpPath: string;
   bitrateKbps: number;
   commandPrefix: string;
+  /** Most songs taken from one playlist link. */
+  maxPlaylistItems: number;
   /** Client unique IDs allowed to run admin commands. */
   admins: string[];
   /** Server group IDs allowed to run admin commands. With both lists empty, everyone is an admin. */
   adminGroups: number[];
-  /** Stop streaming while nobody is listening in the bot's channel. */
+  /** Pause while nobody is listening in the bot's channel. */
   pauseWhenEmpty: boolean;
   emptyGraceSeconds: number;
-  /** Show the station in the bot's nickname, e.g. "FM Radio | Shaa FM". */
-  showStationInNickname: boolean;
-  /** Put the current song title in the bot's description. */
+  /** Show the song in the bot's nickname, e.g. "Music Bot | Song title". */
+  showSongInNickname: boolean;
+  /** Put the song in the bot's description. */
   songInDescription: boolean;
-  /** Post song changes to the channel chat. */
-  announceSongs: boolean;
-  /** IANA time zone for the schedule, e.g. "Asia/Colombo". */
-  timezone: string;
   web: WebConfig;
   bots: BotConfig[];
 }
 
-export interface Station {
-  id: string;
-  name: string;
-  url: string;
-  /** Tried in order when the main URL keeps failing. */
-  backupUrls?: string[];
-}
-
-export interface ScheduleEntry {
-  /** "HH:MM", 24-hour, in AppConfig.timezone. */
-  time: string;
-  /** Lowercase three-letter days ("mon", "tue", ...); empty or missing means every day. */
-  days?: string[];
-  /** Station id to play, or "stop". */
-  station: string;
-  /** Bot name; missing means every bot. */
-  bot?: string;
-  volume?: number;
-}
-
 export const CONFIG_PATH = resolve(process.env.FMBOT_CONFIG ?? "config.json");
-export const STATIONS_PATH = resolve(process.env.FMBOT_STATIONS ?? "stations.json");
-export const SCHEDULE_PATH = resolve(process.env.FMBOT_SCHEDULE ?? "schedule.json");
+export const PLAYLISTS_PATH = resolve(process.env.FMBOT_PLAYLISTS ?? "playlists.json");
 
 const botDefaults: Omit<BotConfig, "name" | "identityFile"> = {
-  nickname: "FM Radio",
+  nickname: "Music Bot",
   channel: "",
   channelPassword: "",
   volume: 50,
-  autoplay: true,
-  defaultStation: "",
+  defaultPlaylist: "",
 };
 
 export function clampVolume(v: number): number {
@@ -113,14 +89,14 @@ function envOverrides(): RawConfig {
   set("channel", e.FMBOT_CHANNEL);
   set("channelPassword", e.FMBOT_CHANNEL_PASSWORD);
   set("volume", e.FMBOT_VOLUME ? Number(e.FMBOT_VOLUME) : undefined);
-  set("defaultStation", e.FMBOT_DEFAULT_STATION || undefined);
+  set("defaultPlaylist", e.FMBOT_DEFAULT_PLAYLIST);
+  set("maxPlaylistItems", e.FMBOT_MAX_PLAYLIST_ITEMS ? Number(e.FMBOT_MAX_PLAYLIST_ITEMS) : undefined);
+  set("bitrateKbps", e.FMBOT_BITRATE ? Number(e.FMBOT_BITRATE) : undefined);
   set("admins", list(e.FMBOT_ADMINS));
   set("adminGroups", list(e.FMBOT_ADMIN_GROUPS)?.map(Number).filter(Number.isFinite));
   set("pauseWhenEmpty", bool(e.FMBOT_PAUSE_WHEN_EMPTY));
-  set("showStationInNickname", bool(e.FMBOT_STATION_IN_NICKNAME));
+  set("showSongInNickname", bool(e.FMBOT_SONG_IN_NICKNAME));
   set("songInDescription", bool(e.FMBOT_SONG_IN_DESCRIPTION));
-  set("announceSongs", bool(e.FMBOT_ANNOUNCE_SONGS));
-  set("timezone", e.FMBOT_TIMEZONE || undefined);
   if (e.FMBOT_BOTS) out.bots = JSON.parse(e.FMBOT_BOTS) as Partial<BotConfig>[];
   const web: Partial<WebConfig> = {};
   if (bool(e.FMBOT_WEB_ENABLED) !== undefined) web.enabled = bool(e.FMBOT_WEB_ENABLED);
@@ -147,8 +123,7 @@ export function loadConfig(): AppConfig {
     channel: raw.channel ?? botDefaults.channel,
     channelPassword: raw.channelPassword ?? botDefaults.channelPassword,
     volume: raw.volume ?? botDefaults.volume,
-    autoplay: raw.autoplay ?? botDefaults.autoplay,
-    defaultStation: raw.defaultStation ?? botDefaults.defaultStation,
+    defaultPlaylist: raw.defaultPlaylist ?? botDefaults.defaultPlaylist,
   };
   const botList = raw.bots?.length ? raw.bots : [{}];
   const bots = botList.map((b, i): BotConfig => {
@@ -171,14 +146,13 @@ export function loadConfig(): AppConfig {
     ytdlpPath: raw.ytdlpPath ?? "yt-dlp",
     bitrateKbps: raw.bitrateKbps ?? 96,
     commandPrefix: raw.commandPrefix ?? "!",
+    maxPlaylistItems: raw.maxPlaylistItems ?? 300,
     admins: raw.admins ?? [],
     adminGroups: raw.adminGroups ?? [],
     pauseWhenEmpty: raw.pauseWhenEmpty ?? true,
     emptyGraceSeconds: raw.emptyGraceSeconds ?? 15,
-    showStationInNickname: raw.showStationInNickname ?? true,
+    showSongInNickname: raw.showSongInNickname ?? true,
     songInDescription: raw.songInDescription ?? true,
-    announceSongs: raw.announceSongs ?? false,
-    timezone: raw.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
     web: {
       enabled: raw.web?.enabled ?? false,
       host: raw.web?.host ?? "127.0.0.1",

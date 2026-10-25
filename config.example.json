@@ -1,6 +1,12 @@
 {
   "server": "127.0.0.1:9987",
   "serverPassword": "",
+  "nickname": "Music Bot",
+  "channel": "",
+  "channelPassword": "",
+  "volume": 50,
+  "defaultPlaylist": "https://www.youtube.com/watch?v=R96p0qPSUTY&list=PL_D0g1ys7yh_R8ZS5EKQLX4ml0lzNaJ32",
+  "maxPlaylistItems": 300,
   "identityLevel": 8,
   "ffmpegPath": "ffmpeg",
   "ytdlpPath": "yt-dlp",
@@ -10,23 +16,15 @@
   "adminGroups": [],
   "pauseWhenEmpty": true,
   "emptyGraceSeconds": 15,
-  "showStationInNickname": true,
+  "showSongInNickname": true,
   "songInDescription": true,
-  "announceSongs": false,
-  "timezone": "Asia/Colombo",
   "web": {
     "enabled": true,
     "host": "127.0.0.1",
     "port": 8080,
     "password": ""
   },
-  "nickname": "FM Radio",
-  "channel": "",
-  "channelPassword": "",
-  "volume": 50,
-  "autoplay": true,
-  "defaultStation": "shaafm",
   "bots": [
-    { "name": "radio" }
+    { "name": "music" }
   ]
 }

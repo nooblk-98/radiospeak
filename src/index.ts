@@ -1,18 +1,16 @@
-import { RadioBot, log, type App } from "./bot.ts";
+import { MusicBot, log, type App } from "./bot.ts";
 import { loadConfig } from "./config.ts";
-import { startScheduler } from "./scheduler.ts";
-import { ScheduleStore, StationStore } from "./store.ts";
+import { PlaylistStore } from "./store.ts";
 import { startWebServer } from "./web.ts";
 
 const config = loadConfig();
 const app: App = {
   config,
-  stations: new StationStore(),
-  schedule: new ScheduleStore(),
+  playlists: new PlaylistStore(),
   bots: [],
   searchResults: new Map(),
 };
-app.bots = config.bots.map((cfg, i) => new RadioBot(app, cfg, i));
+app.bots = config.bots.map((cfg, i) => new MusicBot(app, cfg, i));
 
 let shuttingDown = false;
 async function shutdown(): Promise<void> {
@@ -25,8 +23,7 @@ async function shutdown(): Promise<void> {
 process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());
 
-log("info", `Loaded ${app.stations.items.length} station(s), ${app.bots.length} bot(s)`);
-startScheduler(app);
+log("info", `${app.bots.length} bot(s), ${app.playlists.all.length} saved playlist(s)`);
 if (config.web.enabled) startWebServer(app);
 
 // Stagger connections a little so several bots don't trip the server's flood protection.

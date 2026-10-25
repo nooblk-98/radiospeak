@@ -1,7 +1,7 @@
 {
   "name": "radiospeak",
   "version": "0.1.0",
-  "description": "TeamSpeak 3/6 FM radio bot that streams internet radio stations into a channel",
+  "description": "TeamSpeak 3/6 music bot: YouTube and SoundCloud songs, playlists, saved playlists and radio streams",
   "private": true,
   "type": "module",
   "engines": {
@@ -13,8 +13,7 @@
     "test:audio": "node src/test-audio.ts"
   },
   "dependencies": {
-    "@honeybbq/teamspeak": "1.0.0-beta.21",
-    "opusscript": "^0.1.1"
+    "@honeybbq/teamspeak": "1.0.0-beta.21"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
