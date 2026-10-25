@@ -26,7 +26,7 @@ services:
       # More bots (e.g. one per channel): a JSON list, each inheriting the settings above.
       # FMBOT_BOTS: '[{"name":"lobby","channel":"Lobby"},{"name":"music","channel":"Music","defaultStation":"hirufm"}]'
     ports:
-      - "8080:8080"
+      - "48080:8080"
     volumes:
       # Holds identity files, stations.json and schedule.json (and optionally config.json).
       # Keep it so the bots keep their identities, stations and schedule.
