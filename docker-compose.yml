@@ -7,7 +7,8 @@ services:
       FMBOT_SERVER: "150.230.134.243:9987"
       FMBOT_SERVER_PASSWORD: ""
       FMBOT_NICKNAME: "FM Radio"
-      FMBOT_CHANNEL: ""
+      # The bot needs talk power >= the channel's requirement (75 here) or nobody hears it.
+      FMBOT_CHANNEL: "٠•●۞ Music Portal 03 ۞●•٠"
       FMBOT_CHANNEL_PASSWORD: ""
       FMBOT_VOLUME: "50"
       # Played whenever nobody has requested anything (a playlist link, or a song link from inside one).
