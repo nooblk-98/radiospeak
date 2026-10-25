@@ -1,7 +1,6 @@
 services:
   radiospeak:
     build: .
-    image: radiospeak:latest
     container_name: radiospeak
     restart: unless-stopped
     environment:
