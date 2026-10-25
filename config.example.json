@@ -1,16 +1,32 @@
 {
   "server": "127.0.0.1:9987",
   "serverPassword": "",
+  "identityLevel": 8,
+  "ffmpegPath": "ffmpeg",
+  "ytdlpPath": "yt-dlp",
+  "bitrateKbps": 96,
+  "commandPrefix": "!",
+  "admins": [],
+  "adminGroups": [],
+  "pauseWhenEmpty": true,
+  "emptyGraceSeconds": 15,
+  "showStationInNickname": true,
+  "songInDescription": true,
+  "announceSongs": false,
+  "timezone": "Asia/Colombo",
+  "web": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8080,
+    "password": ""
+  },
   "nickname": "FM Radio",
   "channel": "",
   "channelPassword": "",
-  "identityFile": "identity.txt",
-  "identityLevel": 8,
-  "ffmpegPath": "ffmpeg",
-  "bitrateKbps": 96,
   "volume": 50,
   "autoplay": true,
   "defaultStation": "shaafm",
-  "commandPrefix": "!",
-  "admins": []
+  "bots": [
+    { "name": "radio" }
+  ]
 }

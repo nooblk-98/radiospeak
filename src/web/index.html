@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>radiospeak</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📻</text></svg>">
+<style>
+  :root {
+    --bg: #f5f6f8; --panel: #ffffff; --text: #1b1f24; --muted: #667085; --line: #e3e6ea;
+    --accent: #2f6fed; --accent-text: #fff; --ok: #1a9b5b; --warn: #c27c0e; --bad: #d14343;
+    --chip: #eef2f8; --radius: 12px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1216; --panel: #171b21; --text: #e6e9ee; --muted: #8b95a5; --line: #262c35;
+      --accent: #5b8cff; --chip: #1f2530; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 10px; padding: 16px; max-width: 1100px; margin: 0 auto; }
+  header h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+  header .tz { margin-left: auto; color: var(--muted); font-size: 13px; }
+  main { max-width: 1100px; margin: 0 auto; padding: 0 16px 40px; display: grid; gap: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; min-width: 0; }
+  section.wide { grid-column: 1 / -1; }
+  h2 { font-size: 15px; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
+  .muted { color: var(--muted); }
+  .small { font-size: 13px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--bad); display: inline-block; flex: none; }
+  .dot.on { background: var(--ok); } .dot.paused { background: var(--warn); }
+  .now { font-size: 18px; font-weight: 600; margin: 4px 0 2px; overflow-wrap: anywhere; }
+  .song { color: var(--muted); overflow-wrap: anywhere; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .controls { margin: 14px 0 10px; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--chip); color: var(--text);
+    border-radius: 8px; padding: 7px 12px; cursor: pointer; min-height: 36px; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  button.danger:hover { border-color: var(--bad); color: var(--bad); }
+  button:disabled { opacity: .5; cursor: default; }
+  input, select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
+    border-radius: 8px; padding: 7px 10px; min-height: 36px; min-width: 0; }
+  input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  input[type=range] { flex: 1; padding: 0; accent-color: var(--accent); }
+  .grow { flex: 1; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--line); }
+  li:first-child { border-top: none; }
+  li .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  li.playing .name { font-weight: 600; color: var(--accent); }
+  .tag { font-size: 12px; color: var(--muted); background: var(--chip); border-radius: 6px; padding: 2px 6px; white-space: nowrap; }
+  form { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  form input.grow { flex: 1 1 160px; }
+  .days { display: flex; gap: 4px; flex-wrap: wrap; }
+  .days label { font-size: 13px; background: var(--chip); border-radius: 6px; padding: 4px 6px; cursor: pointer; }
+  .days input { min-height: 0; margin: 0 3px 0 0; vertical-align: middle; }
+  #toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--text); color: var(--bg);
+    padding: 10px 16px; border-radius: 10px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: calc(100% - 32px); }
+  #toast.show { opacity: 1; }
+  .empty { color: var(--muted); padding: 6px 0; }
+</style>
+</head>
+<body>
+<header>
+  <span style="font-size:22px">📻</span><h1>radiospeak</h1>
+  <select id="botSelect" aria-label="Bot" hidden></select>
+  <span class="tz" id="tz"></span>
+</header>
+<main>
+  <section id="player"></section>
+
+  <section>
+    <h2>Stations</h2>
+    <ul id="stations"></ul>
+    <form id="addForm">
+      <input class="grow" name="name" placeholder="Name" required>
+      <input class="grow" name="url" placeholder="Stream URL" type="url" required>
+      <input class="grow" name="backup" placeholder="Backup URL (optional)" type="url">
+      <button class="primary">Add</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>Find stations</h2>
+    <form id="searchForm" style="margin-top:0">
+      <input class="grow" name="q" placeholder="Name, country or genre — e.g. Sri Lanka" required>
+      <button class="primary">Search</button>
+    </form>
+    <ul id="results" style="margin-top:8px"></ul>
+  </section>
+
+  <section>
+    <h2>Schedule <span class="muted small" id="tz2"></span></h2>
+    <ul id="schedule"></ul>
+    <form id="schedForm">
+      <input name="time" type="time" required>
+      <select name="station" id="schedStation" class="grow"></select>
+      <input name="volume" type="number" min="0" max="100" placeholder="Vol" style="width:80px">
+      <div class="days" id="days"></div>
+      <button class="primary">Add</button>
+    </form>
+  </section>
+</main>
+<div id="toast" role="status"></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+let state = null;
+let selected = localStorage.getItem("bot") || "";
+let volumeDragging = false;
+
+function toast(msg) {
+  const t = $("#toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove("show"), 2600);
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    method: opts.method || "GET",
+    headers: opts.body !== undefined ? { "Content-Type": "application/json" } : {},
+    body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+async function act(path, body = {}, method = "POST") {
+  try { const r = await api(path, { method, body }); if (r.message) toast(r.message); await refresh(); }
+  catch (e) { toast("⚠ " + e.message); }
+}
+
+const bot = () => state.bots.find((b) => b.name === selected) || state.bots[0];
+const botPath = (a) => `/api/bots/${encodeURIComponent(bot().name)}/${a}`;
+
+function renderPlayer() {
+  const b = bot();
+  const statusDot = !b.connected ? "" : b.paused ? "paused" : "on";
+  const statusText = !b.connected ? "Offline" : `#${esc(b.channel || "?")}` +
+    (b.paused ? " · paused, nobody listening" : ` · ${b.listeners.length} listening`);
+  const now = b.track ? "▶ " + esc(b.track.title) : b.station ? esc(b.station.name) : "Stopped";
+  const sub = b.track ? "YouTube / SoundCloud" : b.song ? "♪ " + esc(b.song) : b.station ? "Live radio" : "Pick a station";
+  const queue = b.queue.length
+    ? `<h2 style="margin-top:14px">Up next</h2><ul>${b.queue.map((t, i) => `<li><span class="name">${i + 1}. ${esc(t.title)}</span></li>`).join("")}</ul>`
+    : "";
+  $("#player").innerHTML = `
+    <h2><span class="dot ${statusDot}"></span>${esc(b.name)} <span class="muted small">${statusText}</span></h2>
+    <div class="now">${now}</div><div class="song">${sub}</div>
+    <div class="row controls">
+      <button data-a="prev" title="Previous station">⏮</button>
+      <button data-a="stop" title="Stop">⏹</button>
+      <button data-a="next" title="Next station">⏭</button>
+      ${b.track ? '<button data-a="skip">Skip track</button>' : ""}
+      ${b.queue.length ? '<button data-a="clear">Clear queue</button>' : ""}
+    </div>
+    <div class="row"><span title="Volume">🔊</span>
+      <input type="range" id="vol" min="0" max="100" value="${b.volume}" aria-label="Volume">
+      <span id="volVal" style="width:2.5em;text-align:right">${b.volume}</span></div>
+    <form id="ytForm"><input class="grow" name="input" placeholder="YouTube / SoundCloud link or search" required>
+      <button class="primary">Play</button></form>
+    ${queue}`;
+  $("#player").querySelectorAll("[data-a]").forEach((el) => (el.onclick = () => act(botPath(el.dataset.a))));
+  const vol = $("#vol");
+  let t;
+  vol.oninput = () => { volumeDragging = true; $("#volVal").textContent = vol.value;
+    clearTimeout(t); t = setTimeout(() => api(botPath("volume"), { method: "POST", body: { volume: +vol.value } })
+      .catch((e) => toast("⚠ " + e.message)), 120); };
+  vol.onchange = () => setTimeout(() => (volumeDragging = false), 500);
+  $("#ytForm").onsubmit = async (e) => {
+    e.preventDefault(); const input = e.target.input.value; toast("Looking up…");
+    await act(botPath("queue"), { input }); };
+}
+
+function renderStations() {
+  const b = bot();
+  $("#stations").innerHTML = state.stations.length ? state.stations.map((s, i) => `
+    <li class="${b.station?.id === s.id && !b.track ? "playing" : ""}">
+      <button data-play="${esc(s.id)}" title="Play">▶</button>
+      <span class="name" title="${esc(s.url)}">${i + 1}. ${esc(s.name)}</span>
+      ${s.backupUrls?.length ? `<span class="tag">+${s.backupUrls.length} backup</span>` : ""}
+      <button class="danger" data-del="${esc(s.id)}" title="Remove">✕</button>
+    </li>`).join("") : '<li class="empty">No stations yet — search below.</li>';
+  $("#stations").querySelectorAll("[data-play]").forEach((el) => (el.onclick = () => act(botPath("play"), { station: el.dataset.play })));
+  $("#stations").querySelectorAll("[data-del]").forEach((el) => (el.onclick = () => {
+    if (confirm("Remove this station?")) act(`/api/stations/${encodeURIComponent(el.dataset.del)}`, undefined, "DELETE"); }));
+}
+
+function renderSchedule() {
+  $("#schedule").innerHTML = state.schedule.length ? state.schedule.map((e, i) => `
+    <li><span class="name">${esc(e.text)}</span>
+      <button class="danger" data-del="${i + 1}" title="Remove">✕</button></li>`).join("")
+    : '<li class="empty">Nothing scheduled.</li>';
+  $("#schedule").querySelectorAll("[data-del]").forEach((el) => (el.onclick = () => act(`/api/schedule/${el.dataset.del}`, undefined, "DELETE")));
+  const sel = $("#schedStation"); const keep = sel.value;
+  sel.innerHTML = state.stations.map((s) => `<option value="${esc(s.id)}">Play ${esc(s.name)}</option>`).join("") + '<option value="stop">Stop</option>';
+  if (keep) sel.value = keep;
+}
+
+function renderBots() {
+  const sel = $("#botSelect");
+  sel.hidden = state.bots.length < 2;
+  if (!state.bots.some((b) => b.name === selected)) selected = state.bots[0]?.name || "";
+  sel.innerHTML = state.bots.map((b) => `<option ${b.name === selected ? "selected" : ""}>${esc(b.name)}</option>`).join("");
+}
+
+async function refresh() {
+  try { state = await api("/api/state"); } catch (e) { toast("⚠ " + e.message); return; }
+  $("#tz").textContent = state.timezone; $("#tz2").textContent = `(${state.timezone})`;
+  renderBots();
+  if (!volumeDragging && !document.activeElement?.closest("#player form")) renderPlayer();
+  renderStations(); renderSchedule();
+}
+
+$("#botSelect").onchange = (e) => { selected = e.target.value; localStorage.setItem("bot", selected); refresh(); };
+
+$("#addForm").onsubmit = async (e) => {
+  e.preventDefault(); const f = e.target;
+  await act("/api/stations", { name: f.name.value, url: f.url.value, backupUrls: f.backup.value ? [f.backup.value] : [] });
+  f.reset();
+};
+
+$("#searchForm").onsubmit = async (e) => {
+  e.preventDefault(); const q = e.target.q.value;
+  $("#results").innerHTML = '<li class="empty">Searching…</li>';
+  try {
+    const list = await api("/api/search?q=" + encodeURIComponent(q));
+    $("#results").innerHTML = list.length ? list.map((s, i) => `
+      <li><button data-i="${i}" title="Add to stations">＋</button>
+        <span class="name" title="${esc(s.url)}">${esc(s.name)}</span>
+        <span class="tag">${esc(s.country || "?")}</span><span class="tag">${esc(s.codec)} ${s.bitrate ? s.bitrate + "k" : ""}</span></li>`).join("")
+      : '<li class="empty">Nothing found.</li>';
+    $("#results").querySelectorAll("[data-i]").forEach((el) => (el.onclick = () => {
+      const s = list[+el.dataset.i]; el.disabled = true; act("/api/stations", { name: s.name, url: s.url }); }));
+  } catch (err) { $("#results").innerHTML = `<li class="empty">⚠ ${esc(err.message)}</li>`; }
+};
+
+$("#days").innerHTML = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+  .map((d) => `<label><input type="checkbox" value="${d}">${d}</label>`).join("");
+$("#schedForm").onsubmit = async (e) => {
+  e.preventDefault(); const f = e.target;
+  const days = [...f.querySelectorAll("#days input:checked")].map((c) => c.value);
+  await act("/api/schedule", { time: f.time.value, station: f.station.value, volume: f.volume.value, days,
+    ...(state.bots.length > 1 ? { bot: bot().name } : {}) });
+};
+
+refresh();
+setInterval(refresh, 4000);
+</script>
+</body>
+</html>

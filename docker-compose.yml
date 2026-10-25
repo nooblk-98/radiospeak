@@ -12,10 +12,24 @@ services:
       FMBOT_CHANNEL_PASSWORD: ""
       FMBOT_DEFAULT_STATION: "shaafm"
       FMBOT_VOLUME: "50"
-      # Comma-separated client unique IDs allowed to !add / !remove (empty = everyone)
+      FMBOT_TIMEZONE: "Asia/Colombo"
+      # Admin commands (!add, !remove, !schedule add...): client unique IDs and/or server group IDs,
+      # comma-separated. Leave both empty to let everyone use them.
       FMBOT_ADMINS: ""
+      FMBOT_ADMIN_GROUPS: ""
+      FMBOT_PAUSE_WHEN_EMPTY: "true"
+      FMBOT_STATION_IN_NICKNAME: "true"
+      # Web control panel at http://<server>:8080 (user name: anything, password below)
+      FMBOT_WEB_ENABLED: "true"
+      FMBOT_WEB_HOST: "0.0.0.0"
+      FMBOT_WEB_PORT: "8080"
+      FMBOT_WEB_PASSWORD: "change-me"
+      # More bots (e.g. one per channel): a JSON list, each inheriting the settings above.
+      # FMBOT_BOTS: '[{"name":"lobby","channel":"Lobby"},{"name":"music","channel":"Music","defaultStation":"hirufm"}]'
+    ports:
+      - "8080:8080"
     volumes:
-      # Holds identity.txt and stations.json (and optionally config.json).
-      # Keep it so the bot keeps the same identity and your added stations.
+      # Holds identity files, stations.json and schedule.json (and optionally config.json).
+      # Keep it so the bots keep their identities, stations and schedule.
       - ./data:/data
     stop_grace_period: 10s

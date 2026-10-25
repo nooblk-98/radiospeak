@@ -13,7 +13,8 @@
     "test:audio": "node src/test-audio.ts"
   },
   "dependencies": {
-    "@honeybbq/teamspeak": "1.0.0-beta.21"
+    "@honeybbq/teamspeak": "1.0.0-beta.21",
+    "opusscript": "^0.1.1"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

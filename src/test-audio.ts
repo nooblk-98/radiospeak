@@ -1,22 +1,24 @@
-// Runs the radio pipeline without TeamSpeak and reports frame pacing.
-// Usage: node src/test-audio.ts [station-id] [seconds]
-import { loadStations } from "./config.ts";
+// Runs the audio pipeline without TeamSpeak and reports frame pacing.
+// Usage: node src/test-audio.ts [station-id | yt:<link or search>] [seconds]
 import { RadioPlayer } from "./radio.ts";
+import { StationStore } from "./store.ts";
+import { resolveTrack } from "./ytdlp.ts";
 
-const [query, secondsArg] = process.argv.slice(2);
-const stations = loadStations();
-const station = (query && stations.find((s) => s.id === query)) || stations[0];
-if (!station) throw new Error("No stations in stations.json");
+const [query = "", secondsArg] = process.argv.slice(2);
 const seconds = Number(secondsArg ?? 10);
+const ffmpegPath = process.env.FFMPEG_PATH ?? "ffmpeg";
+const ytdlpPath = process.env.YTDLP_PATH ?? "yt-dlp";
 
 let frames = 0;
 let bytes = 0;
 let first = 0;
 const radio = new RadioPlayer({
-  ffmpegPath: process.env.FFMPEG_PATH ?? "ffmpeg",
+  ffmpegPath,
+  ytdlpPath,
   bitrateKbps: 96,
   volume: 50,
   log: (level, msg) => console.log(`[${level}] ${msg}`),
+  onEvent: (e) => e.type !== "change" && console.log(`[event] ${e.type}`, "track" in e ? e.track.title : ""),
   sendFrame(frame) {
     if (frame.length === 0) return console.log("(end of speech)");
     if (!first) first = performance.now();
@@ -25,7 +27,19 @@ const radio = new RadioPlayer({
   },
 });
 
-radio.play(station);
+if (query.startsWith("yt:")) {
+  const track = await resolveTrack(ytdlpPath, query.slice(3));
+  console.log(`Resolved: ${track.title} (${track.url})`);
+  radio.enqueue(track);
+} else {
+  const stations = new StationStore();
+  const station = stations.find(query) ?? stations.items[0];
+  if (!station) throw new Error("No stations in stations.json");
+  radio.play(station);
+}
+
+// Exercise the instant volume path halfway through.
+setTimeout(() => radio.setVolume(80), (seconds * 1000) / 2);
 setTimeout(() => {
   radio.stop();
   const elapsed = (performance.now() - first) / 1000;
