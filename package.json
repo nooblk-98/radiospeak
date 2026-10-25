@@ -1,0 +1,22 @@
+{
+  "name": "radiospeak",
+  "version": "0.1.0",
+  "description": "TeamSpeak 3/6 FM radio bot that streams internet radio stations into a channel",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node src/index.ts",
+    "check": "tsc -p tsconfig.json",
+    "test:audio": "node src/test-audio.ts"
+  },
+  "dependencies": {
+    "@honeybbq/teamspeak": "1.0.0-beta.21"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

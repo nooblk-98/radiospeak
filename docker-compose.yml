@@ -1,0 +1,21 @@
+services:
+  radiospeak:
+    build: .
+    image: radiospeak:latest
+    container_name: radiospeak
+    restart: unless-stopped
+    environment:
+      FMBOT_SERVER: "150.230.134.243:9987"
+      FMBOT_SERVER_PASSWORD: ""
+      FMBOT_NICKNAME: "FM Radio"
+      FMBOT_CHANNEL: ""
+      FMBOT_CHANNEL_PASSWORD: ""
+      FMBOT_DEFAULT_STATION: "shaafm"
+      FMBOT_VOLUME: "50"
+      # Comma-separated client unique IDs allowed to !add / !remove (empty = everyone)
+      FMBOT_ADMINS: ""
+    volumes:
+      # Holds identity.txt and stations.json (and optionally config.json).
+      # Keep it so the bot keeps the same identity and your added stations.
+      - ./data:/data
+    stop_grace_period: 10s
