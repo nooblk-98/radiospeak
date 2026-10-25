@@ -6,7 +6,7 @@ services:
     environment:
       FMBOT_SERVER: "150.230.134.243:9987"
       FMBOT_SERVER_PASSWORD: ""
-      FMBOT_NICKNAME: "FM Radio"
+      FMBOT_NICKNAME: "MUSIC BOT"
       # The bot needs talk power >= the channel's requirement (75 here) or nobody hears it.
       FMBOT_CHANNEL: "٠•●۞ Music Portal 03 ۞●•٠"
       FMBOT_CHANNEL_PASSWORD: ""
