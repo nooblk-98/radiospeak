@@ -18,7 +18,7 @@ services:
       FMBOT_ADMIN_GROUPS: ""
       FMBOT_PAUSE_WHEN_EMPTY: "true"
       FMBOT_SONG_IN_NICKNAME: "true"
-      # Web control panel at http://<server>:8080 (user name: anything, password below)
+      # Web control panel at http://<server>:48080 (user name: anything, password below)
       FMBOT_WEB_ENABLED: "true"
       FMBOT_WEB_HOST: "0.0.0.0"
       FMBOT_WEB_PORT: "8080"
