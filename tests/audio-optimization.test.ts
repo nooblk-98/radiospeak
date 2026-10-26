@@ -99,3 +99,21 @@ test("a stalled audio stream triggers bounded recovery instead of buffering fore
     assert.equal(f.player.queue.length,1);
   } finally {f.player.stop();t.mock.restoreAll();syncBuiltinESMExports();}
 });
+test("mute stops outgoing music immediately while the current track keeps advancing",async t=>{
+  const f=setup(t);
+  try {
+    f.player.enqueue([tracks[0]!,tracks[1]!]);
+    f.encoder().stdout.write(page(0x44));
+    await wait(()=>f.frames.length>0);
+    const sent=f.frames.length,processes=f.procs.length;
+    f.player.setVolume(0);
+    await new Promise(r=>setTimeout(r,80));
+    assert.equal(f.frames.length,sent);
+    assert.equal(f.player.track?.url,tracks[0]!.url);
+    assert.equal(f.player.queue.length,1);
+    assert.equal(f.player.paused,false);
+    assert.equal(f.procs.length,processes,"volume must not restart the decoder");
+    f.player.setVolume(75);
+    await wait(()=>f.frames.length>sent);
+  } finally {f.player.stop();t.mock.restoreAll();syncBuiltinESMExports();}
+});

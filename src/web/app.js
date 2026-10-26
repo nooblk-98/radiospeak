@@ -1,12 +1,35 @@
 import { request, StateConnection } from './api.js';
+import { VolumeControl } from './volume.js';
 import { escape as e, icon, iconButton as ib, button, art, heading, empty, channelSelect, botCard, commands, playlistCard, trackTable, resultCard, time, duration, source } from './components.js';
 
 const $ = selector => document.querySelector(selector);
 const connection = new StateConnection();
 let state, botName = localStorage.getItem('radiospeak.bot') || '', activeView = '', libraryFilter = 'all', playlistId = null;
+let panelNeedsReload = false;
 let query = '', searchSource = 'youtube', searchResults = [], searchStatus = 'idle', searchError = '', searchController, searchTimer;
 let dragging = null, sliderActive = false, toastTimer, modalSubmit, renderedView = '', renderedDock = '', renderedChrome = '';
-let lastVolume = 50, receivedAt = 0, lastRenderBot = '';
+let receivedAt = 0, lastRenderBot = '';
+const lastVolumes = new Map();
+const requestedVolumes = new Map();
+const volumeControl = new VolumeControl({
+  send: (name, volume) => request('/api/bots/' + encodeURIComponent(name) + '/volume', { volume }),
+  onValue: (name, value) => { requestedVolumes.set(name,value); if (value > 0) lastVolumes.set(name, value); paintVolume(name, value); },
+  onSettled: () => { void connection.refresh(true).then(() => render()); },
+  onError: (name, error) => {
+    requestedVolumes.delete(name);
+    toast('Could not change volume: ' + error.message, true);
+    if (bot()?.name === name) paintVolume(name, bot().volume);
+    void connection.refresh(true).then(() => render());
+  },
+});
+function paintVolume(name, value) {
+  if (bot()?.name !== name) return;
+  const slider = $('#volume');
+  if (slider) { slider.value = value; slider.style.setProperty('--fill', value + '%'); slider.setAttribute('aria-valuetext', value + '%'); slider.title = 'Bot volume: ' + value + '%'; }
+  if ($('#volume-number')) $('#volume-number').textContent = value;
+  const mute = $('#player-dock [data-action="mute"]');
+  if (mute) { mute.innerHTML = icon(value ? 'volume' : 'mute'); mute.setAttribute('aria-pressed', String(value === 0)); mute.setAttribute('aria-label', value ? 'Mute bot' : 'Unmute bot'); mute.title = value ? 'Mute bot' : 'Unmute bot'; }
+}
 let viewTracks = new Map();
 const playlistCache = new Map(), playlistRequests = new Map(), pages = new Map(), viewVersions = new Map();
 const PAGE_SIZE = 50;
@@ -32,6 +55,7 @@ function toast(message, error = false, undoToken, undoBot) {
   toastTimer = setTimeout(() => { $('#toast').className = ''; }, undoToken ? 10000 : error ? 6500 : 3500);
 }
 async function mutate(path, body = {}, method = 'POST') {
+  if (panelNeedsReload) throw new Error('Reload the panel to use the updated controls.');
   try {
     const result = await request(path, body, method);
     await connection.refresh(true);
@@ -262,7 +286,7 @@ function dock(b) {
     ib('next','Next track','skip',!b.track?'disabled':'') +
     '<button class="icon-button repeat-button ' + (b.loop!=='off'?'active':'') + '" data-action="repeat" aria-label="Repeat: ' + b.loop + '" title="Repeat: ' + b.loop + '" aria-pressed="' + (b.loop!=='off') + '">' + icon('repeat') + (b.loop==='one'?'<span class="repeat-one">1</span>':'') + '</button></div>' +
     '<div class="timeline"><span id="elapsed">' + time(b.elapsed) + '</span><input id="seek" type="range" min="0" max="' + (b.track?.duration||1) + '" value="' + b.elapsed + '" aria-label="Playback position" ' + (!b.track?.duration?'disabled':'') + '><span>' + (t ? duration(b.track?.duration) : '0:00') + '</span></div></div>' +
-    '<div class="dock-right"><div class="volume-controls">' + ib(b.volume?'volume':'mute',b.volume?'Mute bot':'Unmute bot','mute','aria-pressed="' + (b.volume===0) + '"') + '<input type="range" id="volume" min="0" max="100" value="' + b.volume + '" aria-label="Bot volume gain" style="--fill:' + b.volume + '%"><span class="volume-number" id="volume-number">' + b.volume + '</span></div><div class="output-info"><div class="output-label">' + icon('headphones') + 'TeamSpeak</div><div class="small">' + e(b.radio ? 'Radio fallback · ' + (!b.track ? 'Active' : 'Ready') : b.defaultPlaylist.size ? 'Idle playlist · ' + (b.track?.auto ? 'Active' : 'Ready') : b.channel || 'Not connected') + '</div></div></div>';
+    '<div class="dock-right"><div class="volume-controls">' + ib(b.volume?'volume':'mute',b.volume?'Mute bot':'Unmute bot','mute','aria-pressed="' + (b.volume===0) + '"') + '<input type="range" id="volume" min="0" max="100" value="' + b.volume + '" aria-label="Bot volume gain" aria-valuetext="' + b.volume + '%" title="Bot volume: ' + b.volume + '%" style="--fill:' + b.volume + '%"><span class="volume-number" id="volume-number">' + b.volume + '</span></div><div class="output-info"><div class="output-label">' + icon('headphones') + 'TeamSpeak</div><div class="small">' + e(b.radio ? 'Radio fallback · ' + (!b.track ? 'Active' : 'Ready') : b.defaultPlaylist.size ? 'Idle playlist · ' + (b.track?.auto ? 'Active' : 'Ready') : b.channel || 'Not connected') + '</div></div></div>';
 }
 
 function renderChrome(b) {
@@ -283,7 +307,8 @@ function renderChrome(b) {
   $('#statusbar').innerHTML = '<span><span class="status-dot ' + (b.connected?'on':'') + '"></span>' + (b.connected?'Connected to TeamSpeak':'Bot offline') + '</span><span>' + icon('headphones') + channelSelect(b,'Move bot to channel') + '</span><span>' + icon('users') + b.listeners.length + ' listeners</span><button data-action="normalization" aria-pressed="' + b.normalization + '">' + icon('check') + 'Normalization ' + (b.normalization?'on':'off') + '</button><span class="status-end">Made for listening, together.</span>';
 }
 function render(force = false) {
-  const b = bot();
+  const actual = bot();
+  const b = actual ? { ...actual, volume: volumeControl.get(actual.name) ?? requestedVolumes.get(actual.name) ?? actual.volume } : actual;
   if (!b) return;
   botName = b.name;
   renderChrome(b);
@@ -305,7 +330,7 @@ function render(force = false) {
       detail.tracks.forEach((t,i)=>{sparse[detail.offset+i]=t;});
       viewTracks.set(id,sparse);viewVersions.set(id,detail.version);
     }
-    $('#view').innerHTML = (b.talkBlocked ? '<div class="notice" role="alert">The bot cannot be heard in this channel. Required talk power: ' + b.talkBlocked.needed + '; bot talk power: ' + b.talkBlocked.have + '. Grant talk power or choose another channel.</div>' : '') +
+    $('#view').innerHTML = (b.talkBlocked ? '<div class="notice" role="alert">The bot cannot be heard in this channel. Required talk power: ' + b.talkBlocked.needed + '; bot talk power: ' + b.talkBlocked.have + '. Ask a TeamSpeak admin to assign this bot a permanent server or channel group with enough talk power. A temporary talk grant can be lost on reconnect. You can also choose another channel.</div>' : '') +
       ({dashboard,queue:b=>heading('Good things are up next.', 'Your channel’s requests, in the order you want to hear them.', '<a href="#search" class="button primary">' + icon('plus') + 'Add tracks</a>') + hero(b) + '<div style="margin-top:28px">' + queueSection(b,true) + '</div>',library,search:searchView,settings}[activeView] || dashboard)(b);
     if (focusId && document.getElementById(focusId)) {
       document.getElementById(focusId).focus({preventScroll:true});
@@ -390,6 +415,8 @@ document.addEventListener('click', async event => {
   const el = event.target.closest('[data-action]');
   if (!el || el.disabled) return;
   const {action:kind,id,scope} = el.dataset, index=Number(el.dataset.index), b=bot();
+  if (kind === 'reload-panel') { location.reload(); return; }
+  if (panelNeedsReload && kind !== 'close-modal') { toast('Reload the panel to use the updated controls.',true); return; }
   try {
     switch(kind) {
       case 'page': pages.set(scope,Math.max(0,Number(el.dataset.page)));renderedView='';render();return;
@@ -424,7 +451,12 @@ document.addEventListener('click', async event => {
       case 'shuffle': await action('shuffle',{enabled:!b.shuffle});return;
       case 'repeat': await action('loop',{mode:({off:'all',all:'one',one:'off'})[b.loop]});return;
       case 'normalization': await action('normalization',{enabled:!b.normalization});return;
-      case 'mute': if(b.volume) lastVolume=b.volume;await action('volume',{volume:b.volume?0:lastVolume||50});return;
+      case 'mute': {
+        const current = volumeControl.get(b.name) ?? requestedVolumes.get(b.name) ?? b.volume;
+        if (current > 0) lastVolumes.set(b.name, current);
+        volumeControl.set(b.name, current ? 0 : lastVolumes.get(b.name) || 50, true);
+        return;
+      }
       case 'clear-queue': {
         const expected=tracksFor('queue').map(t=>t.url);
         return confirmAction('Clear the queue?', 'Remove all upcoming user requests? The current track will keep playing.',()=>action('clear',{expected}),'Clear queue');
@@ -458,6 +490,7 @@ document.addEventListener('click', async event => {
 });
 $('#modal-form').addEventListener('submit',async event=>{
   event.preventDefault();
+  if (panelNeedsReload) { $('#modal-error').textContent='A new panel version is available. Close this dialog and reload the panel.'; return; }
   const submit=$('#modal-submit'), handler=modalSubmit;
   submit.disabled=true;$('#modal-error').textContent='';
   try { await handler(new FormData(event.target));$('#modal').close(); }
@@ -467,6 +500,7 @@ $('#modal-form').addEventListener('submit',async event=>{
 document.addEventListener('submit',async event=>{
   if(event.target.id==='modal-form') return;
   event.preventDefault();
+  if (panelNeedsReload) { toast('Reload the panel to use the updated controls.',true); return; }
   const form=event.target, data=new FormData(form), submit=form.querySelector('[type=submit]');
   if(form.id==='search-form') {query=String(data.get('query'));void search();return;}
   if(!submit) return;
@@ -491,6 +525,7 @@ document.addEventListener('submit',async event=>{
   finally {submit.disabled=false;}
 });
 document.addEventListener('input',event=>{
+  if (panelNeedsReload) return;
   const el=event.target;
   if(el.id==='search-input') {
     query=el.value;
@@ -501,15 +536,16 @@ document.addEventListener('input',event=>{
   }
   if(el.type==='range') {
     el.style.setProperty('--fill',(Number(el.value)/Number(el.max)*100)+'%');
-    if(el.id==='volume') $('#volume-number').textContent=el.value;
+    if(el.id==='volume') volumeControl.set(bot().name, Number(el.value));
     if(el.id==='seek') $('#elapsed').textContent=time(Number(el.value));
   }
 });
 document.addEventListener('change',async event=>{
+  if (panelNeedsReload) return;
   const el=event.target;
   try {
     if(el.id==='bot-select') {botName=el.value;localStorage.setItem('radiospeak.bot',botName);receivedAt=Date.now();render(true);return;}
-    if(el.id==='volume') {const value=Number(el.value);await action('volume',{volume:value});}
+    if(el.id==='volume') volumeControl.set(bot().name, Number(el.value), true);
     if(el.id==='seek') {await action('seek',{seconds:Number(el.value),url:bot().track?.url});}
     if(el.dataset.control==='channel') await action('channel',{channelId:el.value});
     if(el.dataset.control==='repeat') await action('loop',{mode:el.value});
@@ -546,7 +582,13 @@ document.addEventListener('dragend',()=>{
 document.addEventListener('keydown',event=>{
   if(event.key==='Escape') {$('#sidebar').classList.remove('open');$('[data-action="menu"]').setAttribute('aria-expanded','false');}
 });
+connection.addEventListener('updateavailable',()=>{
+  panelNeedsReload = true;
+  $('#update-banner').hidden = false;
+  if ($('#modal').open) $('#modal-error').textContent='A new panel version is available. Close this dialog and reload the panel.';
+});
 connection.addEventListener('state',event=>{
+  for(const b of event.detail.bots) if(volumeControl.get(b.name)===undefined&&requestedVolumes.get(b.name)===b.volume) requestedVolumes.delete(b.name);
   state={...event.detail,playlists:event.detail.playlists.map(p=>({...p,tracks:p.tracks||[]}))};receivedAt=Date.now();
   for(const [id,detail] of playlistCache) if(state.playlists.find(p=>p.id===id)?.version!==detail.version) playlistCache.delete(id);
   renderBackground();
@@ -554,6 +596,7 @@ connection.addEventListener('state',event=>{
   render();
 });
 connection.addEventListener('playback_progress',event=>{
+  for(const b of event.detail.bots) if(volumeControl.get(b.name)===undefined&&requestedVolumes.get(b.name)===b.volume) requestedVolumes.delete(b.name);
   if(!state) return;
   state={...state,bots:event.detail.bots,system:event.detail.system};
   receivedAt=Date.now(); updateProgress(); renderBackground();

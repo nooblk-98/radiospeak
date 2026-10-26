@@ -1,6 +1,6 @@
 ﻿import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
@@ -29,6 +29,7 @@ function imports(app: App) {
 const undo = new WeakMap<MusicBot, { token: string; track: Track; position: number; expires: number; order: string; current: string | undefined }>();
 function stateFor(app: App) {
   return {
+    uiVersion,
     bots: app.bots.map(botState), collections: app.playlists.collections, defaults: app.playlists.defaults,
     favorites: app.playlists.favorites.map(trackJson), commandPrefix: app.config.commandPrefix,
     playlists: app.playlists.all.map(summary), imports: imports(app).all.map(job=>({ ...job, errors: job.errors.slice(0,20) })),
@@ -43,8 +44,19 @@ const assets = new Map([
   ["/styles.css", ["styles.css", "text/css"]],
   ["/app.js", ["app.js", "text/javascript"]],
   ["/api.js", ["api.js", "text/javascript"]],
+  ["/volume.js", ["volume.js", "text/javascript"]],
   ["/components.js", ["components.js", "text/javascript"]],
 ].map(([path, [file, type]]) => [path, { body: readFileSync(join(import.meta.dirname, "web", file!)), type }]));
+// Give HTML and every imported module the same revision, including through caches.
+const uiVersion = createHash("sha256").update([...assets].map(([path, asset]) => path + "\n" + asset.body.toString("utf8")).join("\n")).digest("hex").slice(0, 16);
+for (const asset of assets.values()) {
+  const body = asset.body.toString("utf8");
+  asset.body = Buffer.from(asset.type === "text/html"
+    ? body.replace(/(href|src)="\/(styles\.css|app\.js)"/g, `$1="/$2?v=${uiVersion}"`)
+    : asset.type === "text/javascript"
+      ? body.replace(/(\bfrom\s+['"])(\.\/[^'"]+\.js)(['"])/g, `$1$2?v=${uiVersion}$3`)
+      : body);
+}
 
 class HttpError extends Error {
   status: number;
@@ -363,7 +375,7 @@ export function startWebServer(app: App) {
       previous = key;
       for (const peer of peers) send(peer, "state", state);
     } else {
-      const progress = { bots: state.bots.map(b=>({ name: b.name, elapsed: b.elapsed, health: b.health })), system: state.system };
+      const progress = { uiVersion, bots: state.bots.map(b=>({ name: b.name, elapsed: b.elapsed, health: b.health })), system: state.system };
       for (const peer of peers) send(peer, "playback_progress", progress);
     }
   }, 1000).unref();

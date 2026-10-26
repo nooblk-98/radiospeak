@@ -18,6 +18,21 @@ export class StateConnection extends EventTarget {
   #streamVersion = 0;
   #stopped = false;
   #streamHealthy = false;
+  #uiVersion;
+  #updateRequired = false;
+  constructor({ uiVersion = new URL(import.meta.url).searchParams.get('v') } = {}) {
+    super();
+    this.#uiVersion = uiVersion;
+  }
+  #compatible(state) {
+    if (this.#updateRequired) return false;
+    if (this.#uiVersion && state.uiVersion && this.#uiVersion !== state.uiVersion) {
+      this.#updateRequired = true;
+      this.dispatchEvent(new Event('updateavailable'));
+      return false;
+    }
+    return true;
+  }
   async refresh(fresh = false) {
     if (fresh && this.#pending) await this.#pending;
     if (this.#pending) return this.#pending;
@@ -25,6 +40,7 @@ export class StateConnection extends EventTarget {
     return this.#pending;
   }
   #accept(state) {
+    if (!this.#compatible(state)) return;
     const fingerprints = {
       track_changed: JSON.stringify(state.bots.map(b => [b.name, b.track, b.radio, b.userPaused, b.autoPaused])),
       queue_updated: JSON.stringify(state.bots.map(b => b.queue)),
@@ -68,6 +84,7 @@ export class StateConnection extends EventTarget {
       if (!this.state) return;
       try {
         const progress = JSON.parse(event.data);
+        if (!this.#compatible(progress)) return;
         this.#streamHealthy = true;
         clearTimeout(this.#timer); this.#timer = null;
         this.#streamVersion++;

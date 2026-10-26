@@ -40,3 +40,26 @@ test("SSE progress merges health without replacing library state or redrawing th
     for(const [key,descriptor] of saved){if(descriptor)Object.defineProperty(globalThis,key,descriptor);else delete (globalThis as any)[key];}
   }
 });
+
+test("a changed UI revision requests reload before accepting incompatible playlist state",()=>{
+  const saved=new Map(["EventSource","document"].map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));
+  const connection=new StateConnection({uiVersion:"loaded"});
+  let updates=0,renders=0;
+  try {
+    Object.defineProperty(globalThis,"document",{configurable:true,value:Object.assign(new EventTarget(),{hidden:false})});
+    Object.defineProperty(globalThis,"EventSource",{configurable:true,value:Source});
+    connection.addEventListener("updateavailable",()=>updates++);
+    connection.addEventListener("state",()=>renders++);
+    connection.start();
+    const original={uiVersion:"loaded",bots:[{name:"one",track:null,queue:[],elapsed:0}],playlists:[{id:"list",tracks:[]}]};
+    Source.current.emit("state",original);
+    Source.current.emit("playback_progress",{uiVersion:"updated",bots:[{name:"one",elapsed:10}]});
+    Source.current.emit("state",{uiVersion:"updated",bots:[],playlists:[{id:"list",trackCount:500}]});
+    assert.equal(updates,1);
+    assert.equal(renders,1,"new state must not reach outdated UI code");
+    assert.deepEqual(connection.state,original);
+  } finally {
+    connection.stop();
+    for(const [key,descriptor] of saved){if(descriptor)Object.defineProperty(globalThis,key,descriptor);else delete (globalThis as any)[key];}
+  }
+});

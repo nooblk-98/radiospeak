@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { Transform, type TransformCallback, type Readable } from "node:stream";
+import type { Readable } from "node:stream";
+import { AudioGain } from "./audio-gain.ts";
 import { OggPacketReader, isOpusHeader } from "./ogg.ts";
 
 const SAMPLE_RATE = 48000;
@@ -10,7 +11,8 @@ const PREBUFFER_FRAMES = 15;
 /**
  * Above this many queued frames the encoder's output is paused, which backs up
  * through the whole pipeline (encoder, volume, decoder, yt-dlp). Kept small so a
- * volume change is heard within about a second.
+ * encoded output stays small. AudioGain separately bounds PCM submitted to the
+ * encoder so quiet/compressible audio cannot hide volume changes in pipe buffers.
  */
 const QUEUE_HIGH = 50;
 const QUEUE_LOW = 25;
@@ -74,44 +76,6 @@ export interface PlayerOptions {
   onEvent?: (event: PlayerEvent) => void;
 }
 
-/** Applies volume to s16le PCM, ramping from the previous level to avoid clicks. */
-class VolumeTransform extends Transform {
-  #carry: Buffer = Buffer.alloc(0);
-  #gain: number;
-  #target: () => number;
-
-  constructor(target: () => number) {
-    super();
-    this.#target = target;
-    this.#gain = target();
-  }
-
-  override _transform(chunk: Buffer, _enc: BufferEncoding, done: TransformCallback): void {
-    const data = this.#carry.length ? Buffer.concat([this.#carry, chunk]) : chunk;
-    const usable = data.length - (data.length % 4); // whole stereo samples only
-    this.#carry = Buffer.from(data.subarray(usable));
-    if (usable === 0) return done();
-
-    // A fresh allocation is aligned, so it can be viewed as 16-bit samples.
-    const out = Buffer.alloc(usable);
-    data.copy(out, 0, 0, usable);
-    const from = this.#gain;
-    const to = this.#target();
-    if (from !== 1 || to !== 1) {
-      const s = new Int16Array(out.buffer, out.byteOffset, usable / 2);
-      const n = s.length;
-      const step = (to - from) / n;
-      let g = from;
-      for (let i = 0; i < n; i++, g += step) {
-        const v = s[i]! * g;
-        s[i] = v > 32767 ? 32767 : v < -32768 ? -32768 : v;
-      }
-    }
-    this.#gain = to;
-    done(null, out);
-  }
-}
-
 interface Pipeline {
   kind: "track" | "radio";
   procs: ChildProcess[];
@@ -125,6 +89,9 @@ interface Pipeline {
   frames: Buffer[];
   reader: OggPacketReader;
   readPaused: boolean;
+  gain: AudioGain;
+  submittedFrames: number;
+  playedFrames: number;
 }
 
 /**
@@ -452,9 +419,10 @@ export class Player {
     this.#emit({ type: "change" });
   }
 
-  /** Heard within about a second (the buffered audio already has the old volume). */
+  /** The encoder is at most half a second ahead; mute ends speech immediately. */
   setVolume(volume: number): void {
-    this.#volume = volume;
+    this.#volume = Math.max(0, Math.min(100, Number.isFinite(volume) ? Math.round(volume) : this.#volume));
+    if (this.#volume === 0) this.#endTalking();
     this.#emit({ type: "change" });
   }
 
@@ -630,6 +598,7 @@ export class Player {
       ffmpegPath,
       [
         ...quiet,
+        "-probesize", "32", "-analyzeduration", "0",
         "-f", "s16le", "-ar", String(SAMPLE_RATE), "-ac", String(CHANNELS), "-i", "pipe:0",
         "-c:a", "libopus", "-b:a", `${bitrateKbps}k`, "-vbr", "on", "-application", "audio",
         "-frame_duration", String(FRAME_MS),
@@ -638,11 +607,14 @@ export class Player {
       { stdio: ["pipe", "pipe", "pipe"], windowsHide: true },
     );
     procs.push(decoder, encoder);
-    decoder.stdout!.pipe(new VolumeTransform(() => this.#volume / 100)).pipe(encoder.stdin!);
+    const gain = new AudioGain(() => this.#volume / 100,
+      () => pipe.submittedFrames - pipe.playedFrames < 25,
+      () => { pipe.submittedFrames++; });
+    decoder.stdout!.pipe(gain).pipe(encoder.stdin!);
     for (const p of procs) p.stdin?.on("error", () => {}); // EPIPE when a process is killed first
 
     const pipe: Pipeline = { kind, procs, encoderOut: encoder.stdout!, startedAt: Date.now(), initialTrackFrames: offset * 1000 / FRAME_MS, ended: false, failure: undefined,
-      frames: [], reader: new OggPacketReader(), readPaused: false };
+      frames: [], reader: new OggPacketReader(), readPaused: false, gain, submittedFrames: 0, playedFrames: 0 };
     const valid = () => this.#pipe === pipe || this.#prepared?.pipe === pipe;
     const failed = (reason: string) => {
       if (this.#prepared?.pipe === pipe) {
@@ -661,6 +633,7 @@ export class Player {
         failed(`${exe} could not start: ${err.message}`);
       });
     }
+    gain.on("error", (err) => { if (valid()) failed("Audio gain failed: " + err.message); });
     const tail = () => stderrTail.trim().split(/\r?\n/).slice(-2).join(" | ");
 
     // yt-dlp or the decoder failing ends the decoder's output; the encoder then
@@ -722,8 +695,22 @@ export class Player {
     if (pipe) this.#killPipe(pipe);
   }
   #killPipe(pipe: Pipeline): void {
+    pipe.gain.destroy();
     pipe.encoderOut.removeAllListeners("data");
-    for (const p of pipe.procs) p.kill();
+    // Release blocked pipe writes before terminating FFmpeg. On Linux its SIGTERM
+    // handler alone can leave it waiting forever for a full output pipe to drain.
+    for (const p of pipe.procs) {
+      p.stdin?.destroy();
+      p.stdout?.destroy();
+      p.stderr?.destroy();
+      p.kill();
+      if (p.exitCode === null && p.signalCode === null) {
+        const force = setTimeout(() => {
+          if (p.exitCode === null && p.signalCode === null) p.kill("SIGKILL");
+        }, 1000).unref();
+        p.once("close", () => clearTimeout(force));
+      }
+    }
   }
 
   #tick(): void {
@@ -765,8 +752,11 @@ export class Player {
         else { this.underruns++; this.#totalUnderruns++; }
         break;
       }
-      this.#talking = true;
-      this.#opts.sendFrame(frame);
+      pipe.playedFrames++;
+      if (this.#volume > 0) {
+        this.#talking = true;
+        this.#opts.sendFrame(frame);
+      } else this.#endTalking();
       this.#framesSent++;
       if (pipe.kind === "track") this.#trackFrames++;
     }

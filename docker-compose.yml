@@ -28,7 +28,11 @@ services:
     ports:
       - "48080:8080"
     volumes:
-      # Holds identity files, playlists.json, playback.json and optional config.json.
-      # Keep it so the bots keep their identities and your saved playlists.
-      - ./data:/data
+      # Stable across Portainer Git checkout paths and Compose project names.
+      # Existing installs: migrate the current /data before switching (see README).
+      - radiospeak-data:/data
     stop_grace_period: 10s
+
+volumes:
+  radiospeak-data:
+    name: radiospeak-data

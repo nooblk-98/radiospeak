@@ -82,8 +82,34 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-The web panel is on port 8080 (any user name, the password you set). The `./data` folder keeps the identity
-files and `playlists.json`. A `data/config.json` is also read if present; `FMBOT_*` variables override it.
+The compose file publishes the web panel at `http://<server>:48080` (any user name, the password you set).
+The fixed Docker volume `radiospeak-data` keeps identity files, playlists, playback checkpoints and optional
+`config.json`. `FMBOT_*` variables override that configuration. Keep this volume when upgrading.
+
+**Existing installs using `./data`: migrate before the first deployment with the new compose file.**
+On the Docker host, disable scheduled Portainer redeployments for radiospeak while migrating, then run:
+
+```bash
+sh scripts/migrate-data.sh radiospeak
+docker compose up -d --build
+```
+
+The script stops the old container, backs up its actual `/data` directory (including the identity), copies
+it to the fixed volume and verifies every file before leaving the bot stopped for deployment. It refuses
+to overwrite an existing populated volume and restarts the original container if migration fails. The old
+data and the printed backup path remain available. Do not deploy into an empty volume before migrating.
+In Portainer, deploy the updated Git stack after running the script on its Docker host.
+
+Portainer Git checkouts can change directories with every commit, so relative `./data` binds can generate
+a new TeamSpeak identity after updates. The fixed volume avoids that. If a container is repeatedly replaced
+with exit code 0 and `RestartCount=0`, inspect Portainer's GitOps polling/deployment history and Docker events.
+Disable polling for that source while investigating; manual Git redeploy remains available.
+
+For moderated TeamSpeak channels, assign the preserved bot identity a permanent server/channel group with
+`i_client_talk_power` at least the channel's `i_channel_needed_talk_power` (75 for the example channel).
+A temporary “Grant talk power” can expire when the bot reconnects. Showing the song in its description
+also requires `b_client_modify_own_description`.
+
 YouTube changes often: rebuild now and then to get a fresh yt-dlp:
 
 ```bash
@@ -125,7 +151,11 @@ mobile, and the player dock remains available while switching screens.
 
 The heart stores favorites in the shared library. Bot volume is the actual
 TeamSpeak output gain (0–100%), not browser playback volume. Audio always plays
-through the bot. Seeking restarts the decoder and may take time on remote media;
+through the bot. The volume slider sends live updates while dragging, with ordered,
+coalesced requests so older values cannot override the final setting. Gain is
+applied just before encoding with at most 25 audio frames (0.5 seconds) of lead;
+mute stops outgoing music immediately while the track continues. Volume changes
+do not restart the decoder or reconnect TeamSpeak. Seeking restarts the decoder and may take time on remote media;
 live streams cannot be scrubbed. Normalization changes restart the audio pipeline
 at its current position. Listener auto-pause resumes when a listener joins.
 
@@ -200,6 +230,12 @@ Additional tests cover asynchronous checkpoint bursts, SSE authentication and
 client merging, lookup caching/cancellation/concurrency, import progress and
 duplicates, paged edits, Undo, stalled streams, bounded retries, and prebuffer
 promotion/cancellation using controlled child-process streams.
+
+To additionally verify live gain against real FFmpeg/Opus output, set `FFMPEG_PATH`
+to your FFmpeg executable and run `npm test`. These optional local tests synthesize
+a tone, change gain during playback with normalization on and off, then decode the
+captured Opus packets and compare their measured amplitudes. They require no
+TeamSpeak connection or external media service.
 
 ## Chat commands
 

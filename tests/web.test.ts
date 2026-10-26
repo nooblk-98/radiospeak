@@ -77,6 +77,13 @@ test("static assets keep authentication; JSON-only writes and malformed requests
       if(path==="/") assert.match(await auth.text(),/player-dock/);
     }
     const headers={Authorization:"Basic "+Buffer.from("x:test-password").toString("base64")};
+    const html=await (await fetch(f.base+"/",{headers})).text();
+    const version=(await f.api("/api/state")).data.uiVersion;
+    assert.match(version,/^[a-f0-9]{16}$/);
+    assert.ok(html.includes('/app.js?v='+version));
+    assert.ok(html.includes('/styles.css?v='+version));
+    const script=await (await fetch(f.base+"/app.js?v="+version,{headers})).text();
+    for(const module of ["api","volume","components"]) assert.ok(script.includes('./'+module+'.js?v='+version));
     assert.equal((await fetch(f.base+"/api/playlists",{method:"POST",headers,body:"name=bad"})).status,415);
     assert.equal((await fetch(f.base+"/api/playlists",{method:"POST",headers:{...headers,"Content-Type":"application/json"},body:"null"})).status,400);
     assert.equal((await fetch(f.base+"/api/%ZZ",{headers})).status,400);
