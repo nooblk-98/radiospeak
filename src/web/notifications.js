@@ -8,10 +8,21 @@ export class NotificationCenter {
     this.container=document.querySelector('#notification-center');
     this.button.innerHTML=icon('bell')+'<span class="notification-badge" hidden></span>';
     this.badge=this.button.querySelector('.notification-badge');
+    // New notifications also pop up under the bell for a few seconds. #toast stays the screen-reader announcement.
+    this.toasts=document.createElement('div');this.toasts.className='notification-toasts';this.toasts.setAttribute('aria-label','New notifications');
+    document.body.append(this.toasts);this.jobStatus=null;
+    this.toasts.addEventListener('click',event=>{
+      const toast=event.target.closest('.notification-toast');if(!toast)return;
+      if(event.target.closest('[data-toast-close]')){this.dismiss(toast);return;}
+      if(event.target.closest('[data-action]')){this.dismiss(toast);return;}
+      // Anywhere else on the card opens the full list.
+      this.toasts.replaceChildren();if(this.panel.hidden)this.toggle();
+    });
     this.button.addEventListener('click',()=>this.toggle());
     document.addEventListener('click',event=>{
       // Keep the original event path: a mark-read action can replace its own DOM.
-      if(!event.composedPath().includes(this.container))this.close();
+      const path=event.composedPath();
+      if(!path.includes(this.container)&&!path.includes(this.toasts))this.close();
       if(event.target.closest('[data-action="notifications-read"]')){for(const item of this.entries())this.read[item.id]=item.signature;this.save();this.render();}
     });
     document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!this.panel.hidden){this.close();this.button.focus();}});
@@ -31,10 +42,42 @@ export class NotificationCenter {
     this.items.unshift({id,signature:id,message,error,key,at:new Date().toISOString(),undoToken,undoBot,expires:Date.now()+10000});this.items.length=Math.min(80,this.items.length);
     document.querySelector('#toast').textContent=message;
     this.save();this.render();
+    this.popup({message,error,undoToken,undoBot});
+  }
+  /** Shows a notification card under the bell; hovering or focusing it holds it open. */
+  popup({message,error=false,undoToken,undoBot}) {
+    if(!this.panel.hidden)return; // already visible in the open list
+    const toast=document.createElement('article');
+    toast.className='notification-toast'+(error?' error':'');
+    toast.innerHTML='<span class="notification-toast-icon">'+icon(error?'alert':'bell')+'</span><p>'+e(message)+'</p>'+
+      (undoToken?'<button type="button" class="button secondary" data-action="undo" data-token="'+e(undoToken)+'" data-bot="'+e(undoBot)+'">Undo</button>':'')+
+      '<button type="button" class="icon-button" data-toast-close aria-label="Dismiss notification" title="Dismiss">'+icon('close')+'</button>';
+    this.toasts.prepend(toast);
+    while(this.toasts.children.length>3)this.toasts.lastElementChild.remove();
+    let remaining=undoToken?10000:error?8000:5000,timer=null,started=0;
+    const run=()=>{if(timer||!toast.isConnected)return;started=Date.now();timer=setTimeout(()=>this.dismiss(toast),remaining);timer.unref?.();};
+    const hold=()=>{if(!timer)return;clearTimeout(timer);timer=null;remaining=Math.max(1500,remaining-(Date.now()-started));};
+    toast.addEventListener('mouseenter',hold);toast.addEventListener('focusin',hold);
+    toast.addEventListener('mouseleave',run);toast.addEventListener('focusout',run);
+    run();
+    this.button.classList.remove('ringing');void this.button.offsetWidth;this.button.classList.add('ringing');
+  }
+  dismiss(toast) {
+    if(toast.classList.contains('leaving'))return;
+    toast.classList.add('leaving');
+    const timer=setTimeout(()=>toast.remove(),200);timer.unref?.();
   }
   update(state) {
     this.account(state.viewer?.username);
     this.jobs=state.imports||[];
+    // Pop up imports that finish while the panel is open (not ones already finished at load).
+    const statuses=new Map(this.jobs.map(job=>[job.id,job.status]));
+    if(this.jobStatus)for(const job of this.jobs) {
+      const before=this.jobStatus.get(job.id);
+      if(['queued','resolving'].includes(before)&&!['queued','resolving'].includes(job.status))
+        this.popup({message:job.status==='completed'?'Import finished: '+job.playlistName+' · '+job.added+' added':'Import '+job.status+': '+job.playlistName,error:job.status==='failed'});
+    }
+    this.jobStatus=statuses;
     for(const bot of state.bots||[]) {
       const h=bot.health||{};
       if(h.silenceAlert)this.add(bot.nickname+': '+h.silenceAlert.message,true,undefined,undefined,'silence:'+bot.name+':'+h.silenceAlert.id);
@@ -47,7 +90,7 @@ export class NotificationCenter {
     this.render();
   }
   entries(){return [...this.jobs.map(job=>({id:'import:'+job.id,signature:job.status+':'+(job.hasMore?'more':'')+':'+job.added,job,at:job.createdAt})),...this.items].sort((a,b)=>new Date(b.at).getTime()-new Date(a.at).getTime());}
-  toggle(){this.panel.hidden=!this.panel.hidden;this.button.setAttribute('aria-expanded',String(!this.panel.hidden));if(!this.panel.hidden)this.render();}
+  toggle(){this.panel.hidden=!this.panel.hidden;this.button.setAttribute('aria-expanded',String(!this.panel.hidden));if(!this.panel.hidden){this.toasts.replaceChildren();this.render();}}
   close(){this.panel.hidden=true;this.button.setAttribute('aria-expanded','false');}
   render() {
     const entries=this.entries(),unread=entries.filter(i=>this.read[i.id]!==i.signature).length;

@@ -7,6 +7,7 @@ export const duration = seconds => {
 export const time = n => n ? duration(n) : '0:00';
 const paths = {
   bell:'<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/>',
+  alert:'<path d="M12 3 2 20h20L12 3Zm0 6v5m0 3v.5"/>',
   dashboard:'<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
   queue:'<path d="M4 6h16M4 12h12M4 18h8m5-3 4 3-4 3z"/>',
   library:'<rect x="3" y="4" width="5" height="16" rx="1"/><rect x="11" y="4" width="4" height="16" rx="1"/><path d="m18 4 4 15-3 1-4-15z"/>',

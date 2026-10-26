@@ -29,3 +29,39 @@ test("bell icon and badge clicks toggle reliably while live notifications update
     dom.window.close();for(const [key,descriptor] of descriptors){if(descriptor)Object.defineProperty(globalThis,key,descriptor);else delete (globalThis as any)[key];}
   }
 });
+
+test("new notifications pop up under the bell until opened, dismissed or timed out",()=>{
+  const dom=new JSDOM('<div id="notification-center"><button id="notification-button"></button><section id="notification-panel" hidden></section></div><div id="toast"></div>',{url:'https://radiospeak.test'});
+  const keys=['document','localStorage'],descriptors=new Map(keys.map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));
+  try {
+    for(const key of keys)Object.defineProperty(globalThis,key,{configurable:true,value:(dom.window as any)[key]});
+    const center=new NotificationCenter();center.account();
+    const doc=dom.window.document,panel=doc.querySelector('#notification-panel') as HTMLElement;
+    const toasts=()=>[...doc.querySelectorAll('.notification-toast:not(.leaving)')].map(t=>t.querySelector('p')!.textContent);
+    const click=(target:Element)=>target.dispatchEvent(new dom.window.MouseEvent('click',{bubbles:true,composed:true}));
+    center.add('Bot name saved.');
+    assert.deepEqual(toasts(),['Bot name saved.'],'a new notification pops up without opening the panel');
+    assert.equal(panel.hidden,true);
+    assert.ok(doc.querySelector('#notification-button')!.classList.contains('ringing'));
+    center.add('Removed Blue hour',false,'token-1','Test bot');
+    assert.ok(doc.querySelector('.notification-toast [data-action="undo"][data-token="token-1"]'),'undo is offered on the popup');
+    center.add('Talk power blocked',true);center.add('Queue cleared.');
+    assert.deepEqual(toasts(),['Queue cleared.','Talk power blocked','Removed Blue hour'],'newest first, at most three');
+    assert.ok(doc.querySelector('.notification-toast.error'));
+    click(doc.querySelector('.notification-toast [data-toast-close]')!);
+    assert.deepEqual(toasts(),['Talk power blocked','Removed Blue hour'],'the close button dismisses one popup');
+    click(doc.querySelector('.notification-toast p')!);
+    assert.equal(panel.hidden,false,'clicking a popup opens the notification list');
+    assert.equal(doc.querySelectorAll('.notification-toast').length,0,'opening the list clears popups');
+    center.add('While open');
+    assert.equal(doc.querySelectorAll('.notification-toast').length,0,'no popups while the list is open');
+    center.close();
+    const job={id:'j1',playlistName:'Weekend',status:'resolving',processed:1,total:2,added:0,duplicates:0,failed:0,errors:[],createdAt:new Date().toISOString()};
+    center.update({viewer:{username:'owner'},bots:[],imports:[{...job,id:'old',status:'completed'},job]});
+    assert.equal(doc.querySelectorAll('.notification-toast').length,0,'imports finished before the page loaded stay quiet');
+    center.update({viewer:{username:'owner'},bots:[],imports:[{...job,id:'old',status:'completed'},{...job,status:'completed',added:2}]});
+    assert.deepEqual(toasts(),['Import finished: Weekend · 2 added']);
+  }finally{
+    dom.window.close();for(const [key,descriptor] of descriptors){if(descriptor)Object.defineProperty(globalThis,key,descriptor);else delete (globalThis as any)[key];}
+  }
+});
