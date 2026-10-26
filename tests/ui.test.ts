@@ -95,6 +95,11 @@ test("UI navigation, creation, import, idle selection, search, save, queue edits
     const queueBefore=f.app.bots[0]!.player.queue.length;
     click('#view [data-action="remove-track"][data-index="0"]');
     await until(()=>f.app.bots[0]!.player.queue.length===queueBefore-1 && get("#queue-badge").textContent===String(queueBefore-1) && get("#toast").textContent?.startsWith("Removed")===true,"queue removal");
+    dom.window.location.hash="settings";
+    await until(()=>!!document.querySelector("#bot-nickname"),"bot settings navigation");
+    fill("#bot-nickname","Community Radio");submit("#nickname-form");
+    await until(()=>f.app.bots[0]!.nickname==="Community Radio" && get("#sidebar-bot").textContent==="Community Radio" && get("#toast").textContent==="Bot name saved.","save fixed bot name");
+    assert.match(get(".bot-info").textContent!,/Community Radio/);
     assert.deepEqual(errors,[]);
   } finally {
     for(const timer of timers) {clearTimeout(timer);clearInterval(timer);}

@@ -1,7 +1,7 @@
 {
   "server": "127.0.0.1:9987",
   "serverPassword": "",
-  "nickname": "Music Bot",
+  "nickname": "radiospeak",
   "channel": "",
   "channelPassword": "",
   "volume": 50,
@@ -16,7 +16,6 @@
   "adminGroups": [],
   "pauseWhenEmpty": true,
   "emptyGraceSeconds": 15,
-  "showSongInNickname": true,
   "songInDescription": true,
   "web": {
     "enabled": true,

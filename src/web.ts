@@ -34,7 +34,7 @@ const trackJson = (t: Track) => ({ ...t, duration: t.duration ?? null, requested
 function botState(bot: MusicBot) {
   const pl = bot.player;
   return {
-    name: bot.name, connected: bot.connected,
+    name: bot.name, nickname: bot.nickname, connected: bot.connected,
     channel: bot.channelName ?? null, channelId: bot.channelID?.toString() ?? null,
     channels: bot.connected ? [...(bot.client?.view.channels.values() ?? [])].map((c) => ({ id: c.id.toString(), name: c.name })) : [],
     talkBlocked: bot.talkBlocked ?? null,
@@ -42,6 +42,7 @@ function botState(bot: MusicBot) {
     queue: pl.queue.map(trackJson), radio: pl.radio ?? null, radioTitle: bot.radioTitle ?? null,
     defaultPlaylist: pl.defaultPlaylist, volume: pl.volume,
     userPaused: pl.userPaused, autoPaused: pl.autoPaused, loop: pl.loop,
+    connectionPaused: pl.connectionPaused, lastDisconnect: bot.lastDisconnect ?? null,
     normalization: pl.normalization, shuffle: pl.shuffleEnabled, canGoBack: pl.canGoBack,
     listeners: bot.listeners().map((c) => c.nickname),
   };
@@ -148,6 +149,9 @@ async function botAction(app: App, bot: MusicBot, action: string, body: Record<s
       if (!pl.seek(Number(body.seconds))) throw new HttpError(400, "This track cannot be seeked");
       return "Playback position updated.";
     case "normalization": pl.setNormalization(body.enabled === true); return "Audio normalization updated.";
+    case "nickname":
+      await bot.setNickname(str(body.nickname));
+      return "Bot name saved.";
     case "remove": {
       checkOrder(pl.queue, body);
       const removed = pl.removeAt(Number(body.position));

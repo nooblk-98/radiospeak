@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { fixture, tracks } from "./helpers.ts";
 import { PlaylistStore } from "../src/store.ts";
 import { join } from "node:path";
+import { MusicBot } from "../src/bot.ts";
+import { Client } from "@honeybbq/teamspeak/client";
 
 test("HTTP queue edits reject stale snapshots; playlist/default/favorite lifecycle persists", async () => {
   const f = await fixture();
@@ -79,5 +81,50 @@ test("static assets keep authentication; JSON-only writes and malformed requests
     assert.equal((await fetch(f.base+"/api/playlists",{method:"POST",headers:{...headers,"Content-Type":"application/json"},body:"null"})).status,400);
     assert.equal((await fetch(f.base+"/api/%ZZ",{headers})).status,400);
     assert.equal((await fetch(f.base+"/api/playlists",{method:"POST",headers:{...headers,"Content-Type":"application/json"},body:JSON.stringify({name:"x",padding:"x".repeat(270000)})})).status,413);
+  } finally {await f.close();}
+});
+
+test("custom bot names validate, persist per bot, and stay fixed through track changes",async t=>{
+  const f=await fixture(), bot=f.app.bots[0]!, path="/api/bots/Test%20bot/nickname";
+  try {
+    for(const nickname of ["", " ".repeat(4), "x".repeat(31), "Bad\u0000Name"]) {
+      assert.equal((await f.api(path,{nickname})).status,400);
+    }
+    assert.equal((await f.api(path,{nickname:"  radiospeak  "})).status,200);
+    assert.equal(bot.nickname,"radiospeak");
+    assert.equal(bot.name,"Test bot","the stable bot identifier must not change");
+    assert.equal((await f.api("/api/state")).data.bots[0].nickname,"radiospeak");
+    const restored=new PlaylistStore(join(f.dir,"library.json"));
+    assert.equal(restored.nicknameFor("Test bot"),"radiospeak");
+    assert.equal(restored.nicknameFor("other bot"),undefined);
+    const restarted=new MusicBot({...f.app,playlists:restored},bot.cfg,0);
+    assert.equal(restarted.nickname,"radiospeak");
+    const listeners=new Map<string,Function>(), commands:any[]=[];
+    t.mock.method(Client.prototype,"on",function(event:string,handler:Function) {
+      listeners.set(event,handler);return ()=>{};
+    });
+    t.mock.method(Client.prototype,"connect",async function() {
+      listeners.get("connected")?.({reconnected:false});
+    });
+    t.mock.method(Client.prototype,"send",async function(command:any) {
+      commands.push(command);return [];
+    });
+    t.mock.method(Client.prototype,"disconnect",async()=>{});
+    f.app.config.identityLevel=0;
+    f.app.config.songInDescription=false;
+    await bot.start();
+    assert.equal(bot.connected,true);
+    assert.equal((await f.api(path,{nickname:"Community Radio"})).status,200);
+    const renameCommands=()=>commands.filter(c=>JSON.stringify(c).includes("client_nickname"));
+    assert.equal(renameCommands().length,1,"explicit settings change sends one rename");
+    bot.player.skip();
+    bot.player.skip();
+    await new Promise(resolve=>setTimeout(resolve,1700));
+    assert.equal(renameCommands().length,1,"song changes must never send nickname updates");
+    assert.equal(bot.nickname,"Community Radio");
+    t.mock.method(Client.prototype,"send",async()=>{throw new Error("Nickname is already in use");});
+    assert.equal((await f.api(path,{nickname:"Rejected name"})).status,400);
+    assert.equal(bot.nickname,"Community Radio","a refused live rename must not overwrite the saved name");
+    await bot.shutdown();
   } finally {await f.close();}
 });

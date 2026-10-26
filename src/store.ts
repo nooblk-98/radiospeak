@@ -1,6 +1,6 @@
 ﻿import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { PLAYLISTS_PATH } from "./config.ts";
+import { PLAYLISTS_PATH, validateNickname } from "./config.ts";
 import type { Track } from "./player.ts";
 
 export interface SavedPlaylist {
@@ -16,6 +16,7 @@ interface Library {
   collections: Collection[];
   defaults: Record<string, string | null>;
   favorites: Track[];
+  botNicknames: Record<string, string>;
 }
 
 /** Accepts legacy playlist arrays; writes the versioned library atomically. */
@@ -35,6 +36,7 @@ export class PlaylistStore {
       collections: Array.isArray(raw.collections) ? raw.collections : [],
       defaults: raw.defaults ?? {},
       favorites: Array.isArray(raw.favorites) ? raw.favorites : [],
+      botNicknames: raw.botNicknames ?? {},
     };
   }
 
@@ -42,6 +44,11 @@ export class PlaylistStore {
   get collections(): readonly Collection[] { return this.#data.collections; }
   get favorites(): readonly Track[] { return this.#data.favorites; }
   get defaults(): Readonly<Record<string, string | null>> { return this.#data.defaults; }
+  nicknameFor(bot: string): string | undefined { return this.#data.botNicknames[bot]; }
+  setNickname(bot: string, nickname: string): void {
+    this.#data.botNicknames[bot] = validateNickname(nickname);
+    this.#save();
+  }
   hasDefault(bot: string): boolean { return Object.hasOwn(this.#data.defaults, bot); }
   defaultFor(bot: string): SavedPlaylist | undefined {
     const id = this.#data.defaults[bot];

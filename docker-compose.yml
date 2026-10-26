@@ -6,7 +6,7 @@ services:
     environment:
       FMBOT_SERVER: "150.230.134.243:9987"
       FMBOT_SERVER_PASSWORD: ""
-      FMBOT_NICKNAME: "MUSIC BOT"
+      FMBOT_NICKNAME: "radiospeak"
       # The bot needs talk power >= the channel's requirement (75 here) or nobody hears it.
       FMBOT_CHANNEL: "٠•●۞ Music Portal 03 ۞●•٠"
       FMBOT_CHANNEL_PASSWORD: ""
@@ -18,7 +18,6 @@ services:
       FMBOT_ADMINS: ""
       FMBOT_ADMIN_GROUPS: ""
       FMBOT_PAUSE_WHEN_EMPTY: "true"
-      FMBOT_SONG_IN_NICKNAME: "true"
       # Web control panel at http://<server>:48080 (user name: anything, password below)
       FMBOT_WEB_ENABLED: "true"
       FMBOT_WEB_HOST: "0.0.0.0"
@@ -29,7 +28,7 @@ services:
     ports:
       - "48080:8080"
     volumes:
-      # Holds identity files and playlists.json (and optionally config.json).
+      # Holds identity files, playlists.json, playback.json and optional config.json.
       # Keep it so the bots keep their identities and your saved playlists.
       - ./data:/data
     stop_grace_period: 10s

@@ -13,7 +13,7 @@ const bot = () => state?.bots.find(b => b.name === botName) || state?.bots[0];
 const playlist = () => state?.playlists.find(p => p.id === playlistId);
 const listPath = id => '/api/playlists/' + encodeURIComponent(id);
 const currentTrack = () => bot()?.track || (bot()?.radio ? { url:bot().radio.url, title:bot().radioTitle || bot().radio.name, artist:'Live radio' } : null);
-const paused = b => b.userPaused || b.autoPaused;
+const paused = b => b.userPaused || b.autoPaused || b.connectionPaused;
 function toast(message, error = false) {
   clearTimeout(toastTimer);
   $('#toast').textContent = message;
@@ -157,6 +157,7 @@ function searchResultsMarkup() {
 }
 function settings(b) {
   return heading('Keep your channel in tune.', 'Manage your bot, choose its channel, and dial in the sound.') +
+    '<section class="card import-card"><h3>Bot name</h3><p>This fixed name is shown in TeamSpeak. It stays the same when songs change.</p><form id="nickname-form" class="inline-form"><label class="field-label" for="bot-nickname" style="align-self:center;margin:0">TeamSpeak name</label><input class="field" id="bot-nickname" name="nickname" required maxlength="30" value="' + e(b.nickname || 'radiospeak') + '" placeholder="radiospeak"><button class="button primary" type="submit">' + icon('check') + 'Save name</button></form></section>' +
     '<div class="settings-grid">' + botCard(b) + '<section class="card card-padding"><div class="card-title"><h2>Playback & output</h2>' + icon('headphones') + '</div><div class="setting-line"><div>Shuffle queue<p>Randomize queued and newly added tracks</p></div><button class="switch" role="switch" aria-label="Shuffle queue" aria-checked="' + b.shuffle + '" data-action="shuffle"></button></div><div class="setting-line"><div>Repeat mode<p>Applies to tracks requested by users</p></div><select data-control="repeat" aria-label="Repeat mode">' + ['off','all','one'].map(m => '<option value="' + m + '" ' + (b.loop===m?'selected':'') + '>' + ({off:'Off',all:'Repeat all',one:'Repeat one'}[m]) + '</option>').join('') + '</select></div><div class="setting-line"><div>Default idle playlist<p>Used when the queue is empty and radio is off</p></div><select data-control="default" aria-label="Default idle playlist"><option value="">None</option>' + state.playlists.map(p => '<option value="' + e(p.id) + '" ' + (state.defaults[b.name]===p.id?'selected':'') + (!p.tracks.length?' disabled':'') + '>' + e(p.name) + '</option>').join('') + '</select></div><dl class="detail-list"><dt>Output</dt><dd>TeamSpeak · Opus Music</dd><dt>Bot gain</dt><dd>' + b.volume + '%</dd><dt>Listener auto-pause</dt><dd>' + (b.autoPaused?'Paused · empty channel':'Ready') + '</dd><dt>Radio fallback</dt><dd>' + e(b.radio?.name || 'Off') + '</dd></dl>' + (b.radio ? button('Turn radio off','stop','radio-off','','secondary') : '') + '</section>' + commands(state.commandPrefix) + '<section class="card card-padding"><h3>Your listeners</h3><p class="small subtle">People in the current channel who can hear the bot.</p>' + (b.listeners.length ? b.listeners.map(n => '<div class="listeners-row"><span>' + e(n) + '</span><span class="tag green">Listening</span></div>').join('') : '<p class="small subtle">No listeners in this channel yet.</p>') + '</section></div>';
 }
 
@@ -175,14 +176,14 @@ function dock(b) {
 }
 
 function renderChrome(b) {
-  const signature = JSON.stringify([b.name,b.connected,b.channel,b.track?.url,b.userPaused,b.autoPaused,b.queue.length,state.collections,state.playlists.map(p=>p.collectionId),state.favorites.length,b.listeners,b.channels,b.normalization,b.defaultPlaylist,b.radio]);
+  const signature = JSON.stringify([b.name,b.nickname,b.connected,b.channel,b.track?.url,b.userPaused,b.autoPaused,b.queue.length,state.collections,state.playlists.map(p=>p.collectionId),state.favorites.length,b.listeners,b.channels,b.normalization,b.defaultPlaylist,b.radio]);
   if (signature === renderedChrome) return;
   renderedChrome = signature;
   const status = !b.connected?'Offline':paused(b)?'Paused':currentTrack()?'Playing':'Connected · Idle';
   $('#connection').innerHTML = '<span class="status-dot ' + (b.connected?'on':'') + '"></span>' + status;
   $('#queue-badge').textContent = b.queue.length;
   $('#favorite-count').textContent = state.favorites.length;
-  $('#sidebar-bot').textContent = b.name;
+  $('#sidebar-bot').textContent = b.nickname || b.name;
   $('#sidebar-channel').textContent = b.channel || 'Not connected';
   $('#sidebar-dot').className = 'status-dot ' + (b.connected?'on':'');
   $('#sidebar-collections').innerHTML = state.collections.length ? state.collections.map(c => '<button class="collection-link" data-action="collection" data-id="' + e(c.id) + '">' + icon('folder') + '<span class="name">' + e(c.name) + '</span><span class="small subtle" style="margin-left:auto">' + state.playlists.filter(p=>p.collectionId===c.id).length + '</span></button>').join('') : '<p class="subtle small">A home for every mood.</p>';
@@ -304,6 +305,7 @@ document.addEventListener('click', async event => {
       case 'queue-playlist': await mutate(listPath(id)+'/play',{bot:b.name});return;
       case 'default-playlist': await action('default',{playlistId:state.defaults[b.name]===id?null:id});return;
       case 'toggle-play':
+        if(b.connectionPaused) {toast('Playback is held until the bot reconnects to TeamSpeak.');return;}
         if(b.autoPaused) {toast('Playback will resume when a listener joins the channel.');return;}
         await action(currentTrack()?(b.userPaused?'resume':'pause'):'start');return;
       case 'skip': await action('skip');return;
@@ -360,7 +362,9 @@ document.addEventListener('submit',async event=>{
   if(!submit) return;
   submit.disabled=true;
   try {
-    if(form.id==='playlist-import') {
+    if(form.id==='nickname-form') {
+      await action('nickname',{nickname:data.get('nickname')});
+    } else if(form.id==='playlist-import') {
       await mutate(listPath(playlistId)+'/add',{input:data.get('input'),bot:bot().name});form.reset();
     } else if(form.id==='quick-import') {
       const url=String(data.get('url'));

@@ -41,6 +41,21 @@ export interface RadioStream {
 
 export type LoopMode = "off" | "one" | "all";
 
+export interface PlaybackSnapshot {
+  track: Track | null;
+  queue: Track[];
+  elapsed: number;
+  radio: RadioStream | null;
+  defaultName: string | null;
+  defaultIndex: number;
+  volume: number;
+  loop: LoopMode;
+  shuffle: boolean;
+  normalization: boolean;
+  userPaused: boolean;
+  stopped: boolean;
+}
+
 export type PlayerEvent =
   | { type: "trackStart"; track: Track }
   | { type: "trackEnd"; track: Track; error?: string }
@@ -51,6 +66,7 @@ export interface PlayerOptions {
   ytdlpPath: string;
   bitrateKbps: number;
   volume: number;
+  connectionPaused?: boolean;
   /** Called with one 20 ms Opus frame; an empty frame means "stopped talking". */
   sendFrame: (frame: Uint8Array) => void;
   log: (level: "info" | "warn" | "error", msg: string) => void;
@@ -127,6 +143,7 @@ export class Player {
   #history: Track[] = [];
   #userPaused = false;
   #autoPaused = false;
+  #connectionPaused: boolean;
   #stopped = false;
 
   #pipe: Pipeline | undefined;
@@ -150,6 +167,7 @@ export class Player {
   constructor(opts: PlayerOptions) {
     this.#opts = opts;
     this.#volume = opts.volume;
+    this.#connectionPaused = opts.connectionPaused ?? false;
   }
 
   get track(): Track | undefined {
@@ -179,7 +197,54 @@ export class Player {
     return this.#autoPaused;
   }
   get paused(): boolean {
-    return this.#userPaused || this.#autoPaused;
+    return this.#userPaused || this.#autoPaused || this.#connectionPaused;
+  }
+  get connectionPaused(): boolean { return this.#connectionPaused; }
+
+  snapshot(): PlaybackSnapshot {
+    return {
+      track: this.#track ? { ...this.#track } : null, queue: this.#queue.map(t => ({ ...t })),
+      elapsed: this.elapsed, radio: this.#radio ? { ...this.#radio } : null,
+      defaultName: this.#defaultName ?? null, defaultIndex: this.#defaultIndex,
+      volume: this.#volume, loop: this.#loop, shuffle: this.#shuffleEnabled,
+      normalization: this.#normalization, userPaused: this.#userPaused, stopped: this.#stopped,
+    };
+  }
+
+  /** Restore before connecting; audio starts only once the transport resumes. */
+  restore(saved: PlaybackSnapshot): void {
+    const validTrack = (t: Track) => t && typeof t.url === "string" && /^https?:\/\//i.test(t.url) && typeof t.title === "string";
+    if (!saved || !Array.isArray(saved.queue) || !saved.queue.every(validTrack)
+      || (saved.track !== null && !validTrack(saved.track))
+      || !Number.isFinite(saved.elapsed) || saved.elapsed < 0
+      || !Number.isInteger(saved.defaultIndex) || saved.defaultIndex < 0
+      || !Number.isFinite(saved.volume) || !["off", "all", "one"].includes(saved.loop)
+      || (saved.radio !== null && (!saved.radio || typeof saved.radio.url !== "string" || !/^https?:\/\//i.test(saved.radio.url)))) {
+      throw new Error("Invalid playback checkpoint");
+    }
+    this.#teardown();
+    this.#track = saved.stopped ? undefined : saved.track ?? undefined;
+    this.#queue = saved.stopped ? [] : saved.queue.map(t => ({ ...t }));
+    const elapsed = this.#track?.duration ? Math.min(saved.elapsed, Math.max(0, this.#track.duration - 1)) : saved.elapsed;
+    this.#trackFrames = this.#track ? Math.floor(elapsed * 1000 / FRAME_MS) : 0;
+    this.#radio = saved.stopped ? undefined : saved.radio ?? undefined;
+    this.#defaultName = saved.defaultName ?? undefined;
+    this.#defaultIndex = saved.defaultIndex;
+    this.#volume = Math.max(0, Math.min(100, saved.volume));
+    this.#loop = saved.loop;
+    this.#shuffleEnabled = !!saved.shuffle;
+    this.#normalization = !!saved.normalization;
+    this.#userPaused = !!saved.userPaused;
+    this.#stopped = !!saved.stopped;
+    if (!this.paused && this.isActive) this.#restart();
+    this.#emit({ type: "change" });
+  }
+
+  /** Freeze the current decoder/position while TeamSpeak is unavailable. */
+  setConnectionPaused(paused: boolean): void {
+    if (paused === this.#connectionPaused) return;
+    this.#connectionPaused = paused;
+    this.#applyPause();
   }
   /** Something is playing or would be if not paused. */
   get isActive(): boolean {
@@ -446,7 +511,7 @@ export class Player {
 
   #restart(): void {
     this.#teardown();
-    if (this.#track) this.#start("track", this.#track.url);
+    if (this.#track && !this.#connectionPaused) this.#start("track", this.#track.url);
     else if (this.#radio && !this.paused) this.#start("radio", this.#radio.url);
     else return;
     this.#ensureTimer();

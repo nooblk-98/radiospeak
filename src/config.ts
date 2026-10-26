@@ -41,8 +41,6 @@ export interface AppConfig {
   /** Pause while nobody is listening in the bot's channel. */
   pauseWhenEmpty: boolean;
   emptyGraceSeconds: number;
-  /** Show the song in the bot's nickname, e.g. "Music Bot | Song title". */
-  showSongInNickname: boolean;
   /** Put the song in the bot's description. */
   songInDescription: boolean;
   web: WebConfig;
@@ -53,7 +51,7 @@ export const CONFIG_PATH = resolve(process.env.FMBOT_CONFIG ?? "config.json");
 export const PLAYLISTS_PATH = resolve(process.env.FMBOT_PLAYLISTS ?? "playlists.json");
 
 const botDefaults: Omit<BotConfig, "name" | "identityFile"> = {
-  nickname: "Music Bot",
+  nickname: "radiospeak",
   channel: "",
   channelPassword: "",
   volume: 50,
@@ -62,6 +60,14 @@ const botDefaults: Omit<BotConfig, "name" | "identityFile"> = {
 
 export function clampVolume(v: number): number {
   return Math.max(0, Math.min(100, Math.round(Number.isFinite(v) ? v : 50)));
+}
+
+export function validateNickname(value: string): string {
+  const nickname = value.trim();
+  if (!nickname || [...nickname].length > 30 || /[\u0000-\u001f\u007f-\u009f]/.test(nickname)) {
+    throw new Error("Bot name must contain 1–30 characters with no control characters");
+  }
+  return nickname;
 }
 
 function bool(v: string | undefined): boolean | undefined {
@@ -95,7 +101,6 @@ function envOverrides(): RawConfig {
   set("admins", list(e.FMBOT_ADMINS));
   set("adminGroups", list(e.FMBOT_ADMIN_GROUPS)?.map(Number).filter(Number.isFinite));
   set("pauseWhenEmpty", bool(e.FMBOT_PAUSE_WHEN_EMPTY));
-  set("showSongInNickname", bool(e.FMBOT_SONG_IN_NICKNAME));
   set("songInDescription", bool(e.FMBOT_SONG_IN_DESCRIPTION));
   if (e.FMBOT_BOTS) out.bots = JSON.parse(e.FMBOT_BOTS) as Partial<BotConfig>[];
   const web: Partial<WebConfig> = {};
@@ -119,7 +124,7 @@ export function loadConfig(): AppConfig {
 
   // Top-level bot fields are the single-bot shorthand and the defaults for every bot in `bots`.
   const shared: Omit<BotConfig, "name" | "identityFile"> = {
-    nickname: raw.nickname ?? botDefaults.nickname,
+    nickname: validateNickname(raw.nickname ?? botDefaults.nickname),
     channel: raw.channel ?? botDefaults.channel,
     channelPassword: raw.channelPassword ?? botDefaults.channelPassword,
     volume: raw.volume ?? botDefaults.volume,
@@ -132,6 +137,7 @@ export function loadConfig(): AppConfig {
       ...shared,
       ...b,
       name,
+      nickname: validateNickname(b.nickname ?? shared.nickname),
       // The first bot keeps the original identity.txt so upgrading does not change its unique ID.
       identityFile: b.identityFile || (i === 0 ? raw.identityFile || "identity.txt" : `identity-${name}.txt`),
       volume: clampVolume(b.volume ?? shared.volume),
@@ -151,7 +157,6 @@ export function loadConfig(): AppConfig {
     adminGroups: raw.adminGroups ?? [],
     pauseWhenEmpty: raw.pauseWhenEmpty ?? true,
     emptyGraceSeconds: raw.emptyGraceSeconds ?? 15,
-    showSongInNickname: raw.showSongInNickname ?? true,
     songInDescription: raw.songInDescription ?? true,
     web: {
       enabled: raw.web?.enabled ?? false,

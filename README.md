@@ -15,7 +15,7 @@ a default playlist for when nobody has requested anything, live radio links and 
 - **Default playlist** that plays whenever the queue is empty; a request interrupts it and it picks up again afterwards
 - **Saved playlists** built from chat or the web panel (`playlists.json`)
 - **Radio**: any live stream link plays while the queue is empty
-- **Song in the nickname** (e.g. `Music Bot | Song title`) and in the description
+- **Fixed bot nickname**, defaulting to `radiospeak`, customizable in Bot & TeamSpeak settings; current song in the description
 - **Auto-pause** while nobody is listening in the channel
 - **`!join`** moves the bot to your channel
 - **Several bots** in one process, e.g. one per channel
@@ -50,7 +50,7 @@ Edit `config.json`:
 | `bots` | List of bots; each can override `name`, `nickname`, `channel`, `channelPassword`, `volume`, `defaultPlaylist`, `identityFile` |
 | `admins`, `adminGroups` | Unique IDs / server group IDs allowed to delete saved playlists. Both empty = everyone |
 | `pauseWhenEmpty`, `emptyGraceSeconds` | Pause after the channel has been empty this long |
-| `showSongInNickname`, `songInDescription` | What to show in TeamSpeak |
+| `songInDescription` | Show the current song in the TeamSpeak description; the nickname always stays fixed |
 | `web` | `enabled`, `host`, `port`, `password` for the control panel |
 | `ffmpegPath`, `ytdlpPath`, `bitrateKbps` | Tools and Opus bitrate |
 
@@ -110,7 +110,7 @@ mobile, and the player dock remains available while switching screens.
 - **Search & import:** debounced YouTube/SoundCloud search, result artwork,
   durations and artists, play now, enqueue, and save to a playlist. Live stream
   URLs and radio presets are also available. Search and imports need `yt-dlp`.
-- **Bot & TeamSpeak:** move the connected bot between available channels, see
+- **Bot & TeamSpeak:** customize the fixed bot name, move between available channels, see
   listeners, toggle FFmpeg loudness normalization, shuffle, and repeat.
 
 The heart stores favorites in the shared library. Bot volume is the actual
@@ -118,6 +118,13 @@ TeamSpeak output gain (0–100%), not browser playback volume. Audio always play
 through the bot. Seeking restarts the decoder and may take time on remote media;
 live streams cannot be scrubbed. Normalization changes restart the audio pipeline
 at its current position. Listener auto-pause resumes when a listener joins.
+
+The default TeamSpeak nickname is `radiospeak`. Change it under **Bot & TeamSpeak →
+Bot name → Save name** (1–30 characters). The name applies to the connected bot and
+is saved per bot in the library for subsequent connections and restarts, overriding
+`nickname` / `FMBOT_NICKNAME`. If the bot is offline, it uses the saved name on its
+next connection. Song changes only update the description; legacy
+`showSongInNickname` / `FMBOT_SONG_IN_NICKNAME` settings are ignored.
 
 The panel polls `/api/state` every 1.5 seconds (5 seconds while hidden). The
 `StateConnection` module emits `track_changed`, `queue_updated`, and
@@ -130,6 +137,21 @@ versioned object containing playlists, stable IDs, collections, favorites, and
 per-bot idle selections. Back up that file before downgrading to an older release.
 Idle selections survive restarts and override configured remote defaults. Playback,
 shuffle, volume, and normalization controls apply to the running bot.
+
+Playback recovery is saved separately in `playback.json` (override with
+`FMBOT_PLAYBACK`). Checkpoints are written on player changes and every 10 seconds,
+including the current track, elapsed time, queue, idle playlist cursor, radio,
+volume, shuffle, repeat, normalization, and user pause/stop state. A clean shutdown
+saves before stopping the decoder. After an unexpected process restart, playback
+resumes from the last checkpoint once TeamSpeak finishes connecting; up to 10
+seconds can be replayed. The existing Docker `/data` mount preserves this file.
+
+Temporary TeamSpeak disconnects pause the audio pipeline and hold the current
+track/queue until the server's channel list is ready again. Reconnecting does not
+reload the default playlist. Startup logs include the process ID, and restored
+checkpoints and disconnect reasons are logged, so process restarts can be
+distinguished from transport reconnects. An external restart such as a Docker
+out-of-memory kill still needs server/container logs to diagnose.
 
 Playlist names can contain spaces. Use their 1-based number from `!pl` in chat
 commands when a name contains spaces, for example `!pl add 2 <link>`.

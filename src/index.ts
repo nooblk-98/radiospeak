@@ -1,12 +1,14 @@
 import { MusicBot, log, type App } from "./bot.ts";
 import { loadConfig } from "./config.ts";
 import { PlaylistStore } from "./store.ts";
+import { PlaybackStore } from "./playback-store.ts";
 import { startWebServer } from "./web.ts";
 
 const config = loadConfig();
 const app: App = {
   config,
   playlists: new PlaylistStore(),
+  playback: new PlaybackStore(undefined, message => log("warn", message)),
   bots: [],
   searchResults: new Map(),
 };
@@ -32,6 +34,7 @@ process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());
 
 log("info", `${app.bots.length} bot(s), ${app.playlists.all.length} saved playlist(s)`);
+log("info", "Process started (PID " + process.pid + "); playback checkpoints enabled");
 if (config.web.enabled) startWebServer(app);
 
 // Stagger connections a little so several bots don't trip the server's flood protection.

@@ -21,7 +21,7 @@ export async function fixture(password = "") {
       server: "127.0.0.1:9987", serverPassword: "", identityLevel: 8,
       ffmpegPath: process.execPath, ytdlpPath: process.execPath, bitrateKbps: 96,
       commandPrefix: "!", maxPlaylistItems: 300, admins: [], adminGroups: [],
-      pauseWhenEmpty: true, emptyGraceSeconds: 15, showSongInNickname: true, songInDescription: true,
+      pauseWhenEmpty: true, emptyGraceSeconds: 15, songInDescription: true,
       web: { enabled: true, host: "127.0.0.1", port: 0, password },
       bots: [{ name: "Test bot", nickname: "Music bot", channel: "", channelPassword: "", identityFile: join(dir,"identity.txt"), volume: 50, defaultPlaylist: "" }],
     },

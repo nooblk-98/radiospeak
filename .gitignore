@@ -3,5 +3,7 @@ config.json
 identity.txt
 identity-*.txt
 playlists.json
+playback.json
+playback.json.tmp
 data/
 *.log

@@ -14,15 +14,18 @@ import {
 import { Client, generateIdentity, parseIdentity, subscribeAllChannels, type Identity } from "@honeybbq/teamspeak/client";
 import { handleChatMessage } from "./commands.ts";
 import type { AppConfig, BotConfig } from "./config.ts";
+import { validateNickname } from "./config.ts";
 import { fetchIcyTitle } from "./icy.ts";
 import { Player, type PlayerEvent, type Track } from "./player.ts";
 import type { PlaylistStore } from "./store.ts";
+import type { PlaybackStore } from "./playback-store.ts";
 import { formatDuration, resolve } from "./ytdlp.ts";
 
 /** What every bot shares: config, saved playlists and each other. */
 export interface App {
   config: AppConfig;
   playlists: PlaylistStore;
+  playback?: PlaybackStore;
   bots: MusicBot[];
   /** Last !search results per user unique ID, so "!pick 3" can choose one. */
   searchResults: Map<string, Track[]>;
@@ -39,10 +42,8 @@ export function log(level: LogLevel, msg: string): void {
 const TITLE_POLL_MS = 20_000;
 const LISTENER_CHECK_MS = 5_000;
 const DEFAULT_PLAYLIST_REFRESH_MS = 6 * 60 * 60 * 1000;
-/** Nickname/description changes are spaced out so they never add up to a flood ban. */
+/** Description changes are spaced out so they never add up to a flood ban. */
 const PRESENCE_MIN_GAP_MS = 5_000;
-/** TeamSpeak's nickname limit. */
-const MAX_NICKNAME = 30;
 
 export class MusicBot {
   readonly cfg: BotConfig;
@@ -61,11 +62,13 @@ export class MusicBot {
   #emptySince: number | undefined;
   #presenceTimer: NodeJS.Timeout | undefined;
   #lastPresenceAt = 0;
-  #appliedNickname: string;
   #appliedDescription: string | undefined;
   #descriptionDenied = false;
   #titleUrl: string | undefined;
   #defaultLoaded = false;
+  #timers: NodeJS.Timeout[] = [];
+  #started = false;
+  lastDisconnect: { at: string; reason: string } | undefined;
   /** Set while the channel needs more talk power than the bot has: the server drops its audio. */
   talkBlocked: { needed: number; have: number } | undefined;
 
@@ -73,20 +76,41 @@ export class MusicBot {
     this.#app = app;
     this.cfg = cfg;
     this.index = index;
-    this.#appliedNickname = cfg.nickname;
     this.player = new Player({
       ffmpegPath: app.config.ffmpegPath,
       ytdlpPath: app.config.ytdlpPath,
       bitrateKbps: app.config.bitrateKbps,
       volume: cfg.volume,
+      connectionPaused: true,
       log: (level, msg) => this.log(level, msg),
       sendFrame: (frame) => this.#sendFrame(frame),
       onEvent: (event) => this.#onPlayerEvent(event),
     });
+    const saved = app.playback?.get(this.name);
+    if (saved) {
+      try {
+        this.player.restore(saved);
+        this.log("info", "Restored playback checkpoint: " + (this.player.track?.title ?? "idle") + " at " + this.player.elapsed + "s");
+      } catch (err) {
+        this.log("warn", "Ignoring invalid playback checkpoint: " + (err instanceof Error ? err.message : String(err)));
+      }
+    }
   }
 
   get name(): string {
     return this.cfg.name;
+  }
+
+  get nickname(): string {
+    return this.#app.playlists.nicknameFor(this.name) ?? this.cfg.nickname;
+  }
+
+  /** Only explicit settings changes rename the bot; song updates change its description. */
+  async setNickname(value: string): Promise<void> {
+    const nickname = validateNickname(value);
+    if (nickname === this.nickname) return;
+    if (this.#connected && this.client) await updateClient(this.client, { nickname });
+    this.#app.playlists.setNickname(this.name, nickname);
   }
 
   get connected(): boolean {
@@ -234,11 +258,14 @@ export class MusicBot {
   // ---- Connection ----
 
   async start(): Promise<void> {
+    if (this.#started) return;
+    this.#started = true;
     const identity = await this.#loadIdentity();
-    setInterval(() => this.#checkListeners(), LISTENER_CHECK_MS).unref();
-    setInterval(() => void this.#pollTitle(), TITLE_POLL_MS).unref();
-    setInterval(() => void this.loadDefaultPlaylist(), DEFAULT_PLAYLIST_REFRESH_MS).unref();
-    setInterval(() => {
+    this.#timers.push(setInterval(() => this.#checkListeners(), LISTENER_CHECK_MS).unref());
+    this.#timers.push(setInterval(() => void this.#pollTitle(), TITLE_POLL_MS).unref());
+    this.#timers.push(setInterval(() => void this.loadDefaultPlaylist(), DEFAULT_PLAYLIST_REFRESH_MS).unref());
+    this.#timers.push(setInterval(() => this.#checkpoint(), 10_000).unref());
+    this.#timers.push(setInterval(() => {
       if (this.player.isActive && !this.player.paused) {
         const under = this.player.underruns;
         this.log(
@@ -249,13 +276,17 @@ export class MusicBot {
       }
       this.#framesSent = 0;
       this.player.underruns = 0;
-    }, 60_000).unref();
+    }, 60_000).unref());
     await this.#connectLoop(identity);
   }
 
   async shutdown(): Promise<void> {
+    this.#checkpoint();
     this.#shuttingDown = true;
+    this.#timers.forEach(timer => clearInterval(timer));
+    this.#timers = [];
     this.player.stop();
+    clearTimeout(this.#presenceTimer);
     await this.client?.disconnect({ reasonMessage: "Bye" }).catch(() => {});
   }
 
@@ -271,7 +302,8 @@ export class MusicBot {
 
   #createClient(identity: Identity): Client {
     const { config } = this.#app;
-    const c = new Client(identity, config.server, this.cfg.nickname, {
+    const nickname = this.nickname;
+    const c = new Client(identity, config.server, nickname, {
       serverPassword: config.serverPassword || undefined,
       defaultChannel: this.cfg.channel || undefined,
       defaultChannelPassword: this.cfg.channelPassword || undefined,
@@ -280,11 +312,16 @@ export class MusicBot {
     let wasConnected = false;
 
     c.on("connected", ({ reconnected }) => {
+      if (c !== this.client || this.#shuttingDown) return;
       wasConnected = true;
       this.#connected = true;
-      this.#appliedNickname = this.cfg.nickname;
       this.#appliedDescription = undefined;
-      this.log("info", reconnected ? "Reconnected to server" : `Connected to ${config.server} as "${this.cfg.nickname}"`);
+      this.log("info", reconnected ? "Reconnected to server" : `Connected to ${config.server} as "${nickname}"`);
+      // A settings edit can arrive while the connection handshake is in progress.
+      if (nickname !== this.nickname) {
+        void updateClient(c, { nickname: this.nickname }).catch((err: unknown) =>
+          this.log("warn", `Could not apply bot name: ${err instanceof Error ? err.message : String(err)}`));
+      }
       if (!this.#defaultLoaded) {
         this.#defaultLoaded = true;
         void this.loadDefaultPlaylist();
@@ -294,12 +331,25 @@ export class MusicBot {
       void subscribeAllChannels(c).catch((err: unknown) =>
         this.log("warn", `Could not subscribe to channels: ${err instanceof Error ? err.message : String(err)}`),
       );
-      void c.view.whenReady().then(() => this.#checkTalkPower());
       this.#schedulePresence();
     });
 
+    // Listening avoids a rejected whenReady() promise taking down Node if the
+    // transport drops while the server is still sending its welcome roster.
+    c.on("viewReady", () => {
+      if (c !== this.client || !this.#connected || this.#shuttingDown) return;
+      this.#checkTalkPower();
+      this.#checkListeners();
+      this.player.setConnectionPaused(false);
+    });
+
     c.on("disconnected", ({ error, willReconnect }) => {
+      if (c !== this.client) return;
       this.#connected = false;
+      this.#emptySince = undefined;
+      this.lastDisconnect = { at: new Date().toISOString(), reason: error?.message ?? "Connection closed" };
+      this.player.setConnectionPaused(true);
+      clearTimeout(this.#presenceTimer);
       this.log("warn", `Disconnected: ${error?.message ?? "clean"}${willReconnect ? " (reconnecting)" : ""}`);
       // Only a session that was up and that the library gave up on is ours to restart;
       // a failed connect() is retried by #connectLoop itself.
@@ -319,7 +369,8 @@ export class MusicBot {
         const first = this.#app.bots.find((b) => b.channelID !== undefined && b.channelID === this.channelID);
         if (first !== this) return;
       }
-      void handleChatMessage(this.#app, this, c, msg);
+      void handleChatMessage(this.#app, this, c, msg).catch((err: unknown) =>
+        this.log("warn", "Chat handler failed: " + (err instanceof Error ? err.message : String(err))));
     });
 
     return c;
@@ -355,6 +406,7 @@ export class MusicBot {
   }
 
   #sendFrame(frame: Uint8Array): void {
+    if (!this.#connected) return;
     try {
       this.client?.sendVoice(frame, Codec.OpusMusic);
       if (frame.length > 0) this.#framesSent++;
@@ -429,6 +481,7 @@ export class MusicBot {
   }
 
   #onPlayerEvent(event: PlayerEvent): void {
+    this.#checkpoint();
     const c = this.client;
     const online = c && this.#connected;
     if (event.type === "trackStart" && online && !event.track.auto) {
@@ -449,11 +502,19 @@ export class MusicBot {
     this.#schedulePresence();
   }
 
-  /** Coalesces bursts of changes into one nickname/description update, at most every few seconds. */
+  /** Coalesces bursts of changes into one description update, at most every few seconds. */
   #schedulePresence(): void {
     clearTimeout(this.#presenceTimer);
+    if (this.#shuttingDown || !this.#connected || !this.#app.config.songInDescription || this.#descriptionDenied) return;
     const wait = Math.max(1500, this.#lastPresenceAt + PRESENCE_MIN_GAP_MS - Date.now());
-    this.#presenceTimer = setTimeout(() => void this.#applyPresence(), wait);
+    this.#presenceTimer = setTimeout(() => {
+      void this.#applyPresence().catch((err: unknown) =>
+        this.log("warn", "Presence update failed: " + (err instanceof Error ? err.message : String(err))));
+    }, wait);
+  }
+
+  #checkpoint(): void {
+    if (!this.#shuttingDown) this.#app.playback?.set(this.name, this.player.snapshot());
   }
 
   async #applyPresence(): Promise<void> {
@@ -462,19 +523,6 @@ export class MusicBot {
     const { config } = this.#app;
     const pl = this.player;
     const now = pl.track?.title ?? (pl.radio ? (this.radioTitle ?? pl.radio.name) : undefined);
-
-    let nickname = this.cfg.nickname;
-    if (config.showSongInNickname && now) nickname = `${this.cfg.nickname} | ${now}`;
-    nickname = nickname.slice(0, MAX_NICKNAME).trim();
-    if (nickname !== this.#appliedNickname) {
-      this.#lastPresenceAt = Date.now();
-      try {
-        await updateClient(c, { nickname });
-      } catch (err) {
-        this.log("warn", `Could not set nickname "${nickname}": ${err instanceof Error ? err.message : String(err)}`);
-      }
-      this.#appliedNickname = nickname; // don't retry the same name every change
-    }
 
     if (!config.songInDescription || this.#descriptionDenied) return;
     const description = (now ? `${pl.track ? "▶" : "📻"} ${now}` : `Type ${config.commandPrefix}help`).slice(0, 200);
