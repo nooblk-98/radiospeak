@@ -47,7 +47,15 @@ radiospeak joins your TeamSpeak server as a regular voice client and streams mus
   </tr>
   <tr>
     <td align="center"><sub>Search YouTube and SoundCloud</sub></td>
-    <td align="center"><sub>Playlist detail with idle playlist</sub></td>
+    <td align="center"><sub>Play now, add to queue or set as idle playlist</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/radio.jpg" alt="Radio stations"></td>
+    <td><img src="docs/screenshots/settings.jpg" alt="Bot and TeamSpeak settings"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Saved radio stations</sub></td>
+    <td align="center"><sub>Channel, playback and idle playlist per bot</sub></td>
   </tr>
 </table>
 
