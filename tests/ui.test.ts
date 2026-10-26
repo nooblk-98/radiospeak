@@ -17,6 +17,8 @@ test("UI navigation, creation, import, idle selection, search, save, queue edits
   const keys=["window","document","localStorage","location","requestAnimationFrame","Event","CustomEvent","EventTarget","FormData"];
   const descriptors=new Map(keys.map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));
   const searchRequests:string[]=[];
+  const searchTrack={...tracks[1]!,url:'https://soundcloud.com/example/new-night'};
+  let enqueueRequests=0,enqueueGate:Promise<void>|null=null,releaseEnqueue!:()=>void,enqueueFailure=false;
   const errors:string[]=[];
   dom.window.addEventListener("error",event=>errors.push(event.message));
   try {
@@ -33,7 +35,11 @@ test("UI navigation, creation, import, idle selection, search, save, queue edits
       const url=new URL(String(input),f.base);
       if(url.pathname==="/api/search") {
         searchRequests.push(url.search);
-        return new Response(JSON.stringify([tracks[1],tracks[3]]),{headers:{"Content-Type":"application/json"}});
+        return new Response(JSON.stringify([searchTrack,tracks[3]]),{headers:{"Content-Type":"application/json"}});
+      }
+      if(url.pathname.endsWith('/enqueue')&&init?.body&&JSON.parse(String(init.body)).tracks?.[0]?.url===searchTrack.url){
+        enqueueRequests++;assert.equal(JSON.parse(String(init.body)).unique,true);if(enqueueGate)await enqueueGate;
+        if(enqueueFailure){enqueueFailure=false;return new Response(JSON.stringify({error:'Temporary enqueue failure'}),{status:503,headers:{'Content-Type':'application/json'}});}
       }
       // Deterministic media provider: the HTTP API still handles all library mutations.
       if(url.pathname.endsWith("/add") && init?.body) {
@@ -109,8 +115,27 @@ test("UI navigation, creation, import, idle selection, search, save, queue edits
     assert.match(searchRequests[0]!,/source=soundcloud/);
     assert.match(get(".result-card").textContent!,/Test channel/);
     const before=f.app.bots[0]!.player.queue.length;
+    enqueueGate=new Promise<void>(resolve=>{releaseEnqueue=resolve;});
     click('.result-card [data-action="enqueue-track"]');
-    await until(()=>f.app.bots[0]!.player.queue.length===before+1,"enqueue search result");
+    assert.match(get('.result-card [data-action="enqueue-track"]').textContent!,/Adding/);
+    assert.equal((get('.result-card [data-action="enqueue-track"]') as HTMLButtonElement).disabled,true);
+    click('.result-card [data-action="enqueue-track"]');
+    await until(()=>enqueueRequests===1,"one enqueue request starts");
+    dom.window.location.hash='dashboard';await until(()=>!!document.querySelector('.hero'),"navigate while adding");
+    dom.window.location.hash='search';await until(()=>!!document.querySelector('.result-card [data-enqueue-state="adding"]'),"adding state survives card replacement");
+    click('.result-card [data-action="enqueue-track"]');assert.equal(enqueueRequests,1);
+    releaseEnqueue();enqueueGate=null;
+    await until(()=>f.app.bots[0]!.player.queue.length===before+1&&document.querySelector('.result-card [data-action="enqueue-track"]')?.textContent==='Queued',"enqueue confirmation with checkmark");
+    click('.result-card [data-action="enqueue-track"]');assert.equal(enqueueRequests,1);
+    assert.equal((get('.result-card [data-action="enqueue-track"]') as HTMLButtonElement).disabled,true);
+    const queuedIndex=f.app.bots[0]!.player.queue.findIndex(track=>track.url===searchTrack.url);
+    await f.api('/api/bots/Test%20bot/remove',{position:queuedIndex+1});
+    await until(()=>document.querySelector('.result-card [data-action="enqueue-track"]')?.getAttribute('data-enqueue-state')==='idle',"removed result becomes available again");
+    enqueueFailure=true;click('.result-card [data-action="enqueue-track"]');
+    await until(()=>get('#toast').textContent==='Temporary enqueue failure'&&document.querySelector('.result-card [data-action="enqueue-track"]')?.getAttribute('data-enqueue-state')==='idle',"failed enqueue unlocks retry");
+    assert.equal(f.app.bots[0]!.player.queue.length,before);click('.result-card [data-action="enqueue-track"]');
+    await until(()=>document.querySelector('.result-card [data-action="enqueue-track"]')?.textContent==='Queued',"retry confirms successful addition");
+    assert.equal(enqueueRequests,3);assert.equal(f.app.bots[0]!.player.queue.length,before+1);
     click('.result-card [data-action="save-track"]');
     (get("#save-playlist") as HTMLSelectElement).value=list.id;
     submit("#modal-form");
@@ -180,9 +205,13 @@ test("UI navigation, creation, import, idle selection, search, save, queue edits
     click('[data-action="delete-schedule"]');submit('#modal-form');
     await until(()=>f.app.playlists.schedules.length===0&&!get('#modal').hasAttribute('open'),"delete schedule while keeping playlist");
     assert.ok(f.app.playlists.find(list.id));
+    const historyEntry=f.app.playlists.historyFor('Test bot').find(entry=>entry.track.url!==f.app.bots[0]!.player.track?.url)!;assert.ok(historyEntry);
+    const historyQueuedIndex=f.app.bots[0]!.player.queue.findIndex(track=>track.url===historyEntry.track.url);
+    if(historyQueuedIndex>=0)await f.api('/api/bots/Test%20bot/remove',{position:historyQueuedIndex+1});
     dom.window.location.hash='history';
-    await until(()=>!!document.querySelector('[data-action="history-enqueue"]'),"persistent playback history view");
-    const historyQueue=f.app.bots[0]!.player.queue.length;click('[data-action="history-enqueue"]');
+    const historySelector='[data-action="history-enqueue"][data-id="'+historyEntry.id+'"]';
+    await until(()=>!!document.querySelector(historySelector)&&!(document.querySelector(historySelector) as HTMLButtonElement).disabled,"persistent playback history view");
+    const historyQueue=f.app.bots[0]!.player.queue.length;click(historySelector);
     await until(()=>f.app.bots[0]!.player.queue.length===historyQueue+1&&get('#toast').textContent?.startsWith('Queued')===true,"request a track from playback history");
     dom.window.location.hash='settings';await until(()=>!!document.querySelector('#transfer-form'),"manual export/import controls");
     await until(()=>!!document.querySelector('#deployment-policy-form'),"deployment policy loaded");

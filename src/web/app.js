@@ -1,6 +1,7 @@
 import { request, StateConnection } from './api.js';
 import { VolumeControl } from './volume.js';
 import { NotificationCenter } from './notifications.js';
+import { EnqueueControl } from './enqueue.js';
 import { playlistTools, managementMarkup } from './management.js';
 import { escape as e, icon, iconButton as ib, button, art, heading, empty, channelSelect, botCard, commands, playlistCard, trackTable, resultCard, time, duration, source } from './components.js';
 
@@ -93,6 +94,29 @@ const playlist = () => playlistCache.get(playlistId) || state?.playlists.find(p 
 const listPath = id => '/api/playlists/' + encodeURIComponent(id);
 const currentTrack = () => bot()?.track || (bot()?.radio ? { url:bot().radio.url, title:bot().radioTitle || bot().radio.name, artist:'Live radio' } : null);
 const paused = b => b.userPaused || b.autoPaused || b.connectionPaused;
+const enqueueControl=new EnqueueControl({
+  send:(name,track)=>mutate('/api/bots/'+encodeURIComponent(name)+'/enqueue',{tracks:[track],unique:true}),
+  onChange:paintEnqueueButtons,
+});
+function enqueueTrackFor(el,b) {
+  return el.dataset.action==='history-enqueue'?historyCache.get(b.name)?.entries.find(item=>item.id===el.dataset.id)?.track:tracksFor(el.dataset.scope)[Number(el.dataset.index)];
+}
+function paintEnqueueButtons() {
+  const b=bot();if(!b)return;
+  const controls=document.querySelectorAll('[data-action="enqueue-track"],[data-action="history-enqueue"]');if(!controls.length)return;
+  const phaseFor=enqueueControl.statesFor(b);
+  controls.forEach(el=>{
+    const track=enqueueTrackFor(el,b);if(!track)return;
+    const phase=phaseFor(track),label={idle:'Enqueue',adding:'Adding…',queued:'Queued',playing:'Playing'}[phase];
+    if(el.dataset.enqueueState!==phase) {
+      el.dataset.enqueueState=phase;
+      el.innerHTML=icon({idle:'plus',adding:'clock',queued:'check',playing:'headphones'}[phase])+(el.classList.contains('icon-button')?'':label);
+    }
+    el.disabled=phase!=='idle';el.classList.toggle('enqueue-confirmed',phase==='queued'||phase==='playing');
+    el.setAttribute('aria-busy',String(phase==='adding'));el.setAttribute('aria-label',label+': '+track.title);
+    el.title=phase==='idle'?'Add to queue':phase==='adding'?'Adding to queue…':phase==='playing'?'This track is already playing':'This track is already in Up next';
+  });
+}
 function toast(message, error = false, undoToken, undoBot) {
   notifications.add(message,error,undoToken,undoBot || bot()?.name);
 }
@@ -457,6 +481,7 @@ function render(force = false) {
   }
   updateProgress();
   renderBackground();
+  paintEnqueueButtons();
   enforcePermissions();
 }
 function updateProgress() {
@@ -505,7 +530,7 @@ async function search() {
     searchError=error.message;searchStatus='error';
   } finally {
     clearTimeout(timeout);
-    if(searchController===controller && $('#search-results')) $('#search-results').innerHTML=searchResultsMarkup();
+    if(searchController===controller && $('#search-results')) {$('#search-results').innerHTML=searchResultsMarkup();paintEnqueueButtons();enforcePermissions();}
   }
 }
 
@@ -555,7 +580,7 @@ document.addEventListener('click', async event => {
       case 'retry-import': await mutate('/api/imports/'+encodeURIComponent(id)+'/retry',{});return;
       case 'history-enqueue': {
         const track=historyCache.get(b.name)?.entries.find(h=>h.id===id)?.track;
-        if(track)await action('enqueue',{tracks:[track]});return;
+        if(track)await enqueueControl.add(b,track);return;
       }
       case 'edit-schedule': {
         const schedule=state.schedules.find(s=>s.id===id);if(!schedule)return;
@@ -616,7 +641,8 @@ document.addEventListener('click', async event => {
       }
       case 'play-track': case 'enqueue-track': {
         const track=tracksFor(scope)[index];if(!track) throw new Error('This track is no longer available');
-        await action(kind==='play-track'?'play-now':'enqueue',{tracks:[track]});return;
+        if(kind==='enqueue-track')await enqueueControl.add(b,track);
+        else await action('play-now',{tracks:[track]});return;
       }
       case 'favorite-current': await mutate('/api/favorites',{track:currentTrack()});return;
       case 'favorite-track': await mutate('/api/favorites',{track:tracksFor(scope)[index]});return;

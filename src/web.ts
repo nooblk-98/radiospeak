@@ -14,6 +14,7 @@ import { AuthError, WebAuth } from "./web-auth.ts";
 import { owner, settingsFrom, type Viewer, type Role, type PlaylistSchedule } from "./policies.ts";
 import { createAccount } from "./accounts.ts";
 import { sourceRevision } from "./build-info.ts";
+import { trackKey } from "./track-key.ts";
 import { Operations, validateDeploymentPolicy } from "./operations.ts";
 
 const summaries = new WeakMap<SavedPlaylist, { key: string; value: object }>();
@@ -57,6 +58,7 @@ const assets = new Map([
   ["/components.js", ["components.js", "text/javascript"]],
   ["/operations.js", ["operations.js", "text/javascript"]],
   ["/notifications.js", ["notifications.js", "text/javascript"]],
+  ["/enqueue.js", ["enqueue.js", "text/javascript"]],
   ["/management.js", ["management.js", "text/javascript"]],
 ].map(([path, [file, type]]) => [path, { body: readFileSync(join(import.meta.dirname, "web", file!)), type }]));
 const loginPage = readFileSync(join(import.meta.dirname, "web", "login.html"));
@@ -157,7 +159,7 @@ function selectedBot(app: App, value: unknown): MusicBot {
   return bot;
 }
 
-async function botAction(app: App, bot: MusicBot, action: string, body: Record<string, unknown>, viewer: Viewer): Promise<string | { message: string; undoToken: string }> {
+async function botAction(app: App, bot: MusicBot, action: string, body: Record<string, unknown>, viewer: Viewer): Promise<string | { message: string; undoToken?: string; added?: number }> {
   const pl = bot.player;
   switch (action) {
     case "play": {
@@ -168,14 +170,20 @@ async function botAction(app: App, bot: MusicBot, action: string, body: Record<s
     }
     case "enqueue":
     case "play-now": {
-      const tracks = tracksFrom(body.tracks);
+      let tracks = tracksFrom(body.tracks);
       if (!tracks.length) throw new HttpError(400, "No playable tracks");
       if (action === "play-now") {
         pl.playNow(tracks.map((t) => ({ ...t, requestedBy: "web" })));
         return "Playing now.";
       }
       if (viewer.role === "listener" && body.next) throw new HttpError(403,"A DJ can choose what plays next");
-      return bot.enqueue(tracks, { requestedBy: viewer.username, requesterId: viewer.id, privileged: viewer.role !== "listener", next: body.next === true });
+      if(body.unique===true) {
+        const seen=new Set([...(pl.track?[pl.track]:[]),...pl.queue].map(t=>trackKey(t.url)));
+        tracks=tracks.filter(track=>{const key=trackKey(track.url);if(seen.has(key))return false;seen.add(key);return true;});
+        if(!tracks.length)return {message:"Already playing or queued.",added:0};
+      }
+      const message=bot.enqueue(tracks, { requestedBy: viewer.username, requesterId: viewer.id, privileged: viewer.role !== "listener", next: body.next === true });
+      return body.unique===true?{message:plain(message),added:tracks.length}:message;
     }
     case "start": return pl.playIfIdle() ? "Playing." : "Nothing to play.";
     case "vote-skip": return bot.voteSkip(viewer.id);
