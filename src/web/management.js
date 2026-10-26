@@ -1,7 +1,14 @@
 import { escape as e, button } from './components.js';
 
 export function playlistTools(list,filter,selection) {
-  return '<form id="playlist-filter" class="playlist-tools"><input class="field" type="search" name="q" aria-label="Search this playlist" placeholder="Search title or artist" value="'+e(filter.q)+'"><label class="check-label"><input name="duplicates" type="checkbox" '+(filter.duplicates?'checked':'')+'> Duplicates only</label><button class="button secondary" type="submit">Filter tracks</button></form><div class="playlist-tools" data-min-role="dj">'+button('Select this page','','select-page')+button('Select all '+list.total+' matches','','select-matches','','secondary')+button('Clear selection','','clear-selection','','secondary')+'<span class="bulk-count">'+(selection.allMatching?list.total-selection.excluded.length:selection.indices.length)+' selected</span>'+button('Edit selected…','','bulk-tracks','','secondary')+'</div>';
+  return '<form id="playlist-filter" class="playlist-tools"><input class="field" type="search" name="q" aria-label="Search this playlist" placeholder="Search title or artist" value="'+e(filter.q)+'"><label class="check-label"><input name="duplicates" type="checkbox" '+(filter.duplicates?'checked':'')+'> Duplicates only</label><button class="button secondary" type="submit">Filter tracks</button></form><div class="playlist-tools" data-min-role="dj">'+button('Select this page','check','select-page','','secondary')+button('Select all '+list.total+' matches','check','select-matches','','secondary')+'</div>'+selectionBar(selection.allMatching?list.total-selection.excluded.length:selection.indices.length);
+}
+
+/** Appears once tracks are ticked: what is selected and what can be done with it. */
+function selectionBar(count) {
+  if(!count) return '<p class="selection-hint small subtle" data-min-role="dj">Tick tracks to delete, copy or move several at once.</p>';
+  return '<div class="selection-bar" data-min-role="dj" role="region" aria-label="Selected tracks"><span class="bulk-count"><strong>'+count+'</strong> track'+(count===1?'':'s')+' selected</span>'+
+    button('Delete selected','trash','delete-selected','','danger-button')+button('Copy / move…','library','bulk-tracks','','secondary')+button('Clear','close','clear-selection','','secondary')+'</div>';
 }
 
 export function managementMarkup(status,audit) {

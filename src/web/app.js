@@ -601,6 +601,13 @@ document.addEventListener('click', async event => {
       case 'select-page': {const list=playlist();if(list){const selected=selectionFor(list);selected.allMatching=false;selected.indices=[...new Set([...selected.indices,...list.positions])];render(true);}return;}
       case 'select-matches': {const list=playlist();if(list){selectionFor(list).allMatching=true;selectionFor(list).excluded=[];render(true);}return;}
       case 'clear-selection': playlistSelections.delete(playlistId);render(true);return;
+      case 'delete-selected': {
+        const list=playlist(),selection=selectionFor(list),count=selection.allMatching?list.total-selection.excluded.length:selection.indices.length;
+        if(!count)throw new Error('Select tracks first.');
+        return confirmAction('Delete '+count+' track'+(count===1?'':'s')+'?','They are removed from '+list.name+'. This cannot be undone.',async()=>{
+          await mutate(listPath(list.id)+'/bulk',{...selection,...filterFor(list.id),action:'remove',expectedVersion:list.version});playlistSelections.delete(list.id);render(true);
+        },'Delete tracks');
+      }
       case 'bulk-tracks': {
         const list=playlist(),selection=selectionFor(list);if(!selection.allMatching&&!selection.indices.length)throw new Error('Select tracks first.');
         const destinationOptions=state.playlists.filter(p=>p.id!==list.id).map(p=>'<option value="'+e(p.id)+'">'+e(p.name)+'</option>').join('');

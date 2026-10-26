@@ -132,3 +132,9 @@
 @keyframes nc-bob{50%{transform:translateY(2px)}}
 @keyframes toast-timer{to{transform:scaleX(0)}}
 @media(max-width:600px){.notification-panel{position:fixed;top:70px;right:14px}.notification-panel::before{display:none}}
+.selection-bar{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:4px 0 16px;padding:10px 12px;border:1px solid #c3f36b33;border-radius:12px;background:#c3f36b0b;animation:nc-in .16s ease-out}
+.selection-bar .bulk-count{margin-right:auto;font-size:12px;color:#d9e6cc}
+.selection-bar .bulk-count strong{color:var(--accent);font-size:14px;margin-right:2px}
+.selection-bar .button{min-height:34px;padding:7px 13px;font-size:11px}
+.selection-hint{margin:2px 0 14px}
+@media(max-width:520px){.selection-bar .bulk-count{flex-basis:100%}}

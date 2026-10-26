@@ -193,9 +193,16 @@ test("UI navigation, creation, import, idle selection, search, save, queue edits
     await until(()=>list.tracks[0]?.url===moved&&!get("#modal").hasAttribute("open") && document.querySelector('#view tr[data-index="50"] .track-title')?.textContent===list.tracks[50]?.title,"reorder a paged track to the first position");
     fill('#playlist-filter [name="q"]','Page track 11');submit('#playlist-filter');
     await until(()=>document.querySelectorAll('#view tbody tr').length===11,"playlist search covers all pages");
-    click('[data-action="select-matches"]');assert.match(get('.bulk-count').textContent!,/11 selected/);
+    assert.ok(document.querySelector('.selection-hint')&&!document.querySelector('[data-action="delete-selected"]'),"delete appears only once tracks are selected");
+    click('[data-action="select-matches"]');assert.match(get('.bulk-count').textContent!,/11 tracks selected/);
     const importedBeforeBulk=imported.tracks.length;click('[data-action="bulk-tracks"]');fill('#modal-body [name="destination"]',imported.id);submit('#modal-form');
     await until(()=>imported.tracks.length===importedBeforeBulk+11&&!get('#modal').hasAttribute('open'),"bulk copy filtered tracks through the API");
+    await until(()=>!!document.querySelector('[data-action="select-matches"]')&&!document.querySelector('.selection-bar'),"selection cleared after copying");
+    click('[data-action="select-matches"]');
+    const beforeDelete=list.tracks.length;click('[data-action="delete-selected"]');
+    await until(()=>get('#modal-title').textContent==='Delete 11 tracks?'&&get('#modal').hasAttribute('open'),"delete selected asks for confirmation");
+    submit('#modal-form');
+    await until(()=>list.tracks.length===beforeDelete-11&&!list.tracks.some(t=>t.title.startsWith('Page track 11'))&&!get('#modal').hasAttribute('open')&&!!document.querySelector('#playlist-filter')&&!document.querySelector('.selection-bar'),"delete the selected tracks");
     fill('#playlist-filter [name="q"]','');submit('#playlist-filter');await until(()=>document.querySelectorAll('#view tbody tr').length===50,"clear playlist filter");
     click('[data-action="play-playlist-now"]');
     await until(()=>f.app.bots[0]!.player.track?.url===list.tracks[0]!.url&&f.app.bots[0]!.player.queue.length===list.tracks.length-1,"playlist Play now replaces the queue");
