@@ -4,6 +4,7 @@ import { AudioGain } from "./audio-gain.ts";
 import { OggPacketReader, isOpusHeader } from "./ogg.ts";
 import { prebufferBudget, settingsFrom, type BotSettings, type PrebufferBudget } from "./policies.ts";
 import { trackKey } from "./track-key.ts";
+import { artistKey, spreadShuffle } from "./shuffle.ts";
 
 const SAMPLE_RATE = 48000;
 const CHANNELS = 2;
@@ -116,6 +117,7 @@ export class Player {
   #defaultList: Track[] = [];
   #defaultName: string | undefined;
   #defaultIndex = 0;
+  #idleOrder: number[] = [];
   #loop: LoopMode = "off";
   #volume: number;
   #normalization = false;
@@ -335,6 +337,7 @@ export class Player {
     const samePlace = tracks.length > 0 && ((name !== undefined && name === this.#defaultName)
       || (tracks.length === this.#defaultList.length && tracks.every((t,i) => t.url === this.#defaultList[i]?.url)));
     this.#defaultList = tracks.map((t) => ({ ...t, auto: true }));
+    this.#idleOrder = [];
     this.#defaultName = name;
     this.#defaultIndex = samePlace ? this.#defaultIndex % tracks.length : 0;
     if (!this.#track && !this.#radio && !this.#stopped) this.#advance();
@@ -424,17 +427,15 @@ export class Player {
     return removed;
   }
 
+  /** Random order that keeps songs by the same artist apart, starting away from the current song's artist. */
   shuffle(): void {
-    const q = this.#queue;
-    for (let i = q.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [q[i], q[j]] = [q[j]!, q[i]!];
-    }
+    this.#queue = spreadShuffle(this.#queue, artistKey, this.#track ? artistKey(this.#track) : undefined);
     this.#emit({ type: "change" });
   }
 
   setShuffle(enabled: boolean): void {
     this.#shuffleEnabled = enabled;
+    this.#idleOrder = [];
     if (enabled) this.shuffle();
     else this.#emit({ type: "change" });
   }
@@ -567,8 +568,10 @@ export class Player {
     this.#track = this.#queue.shift();
     if (!this.#track && !this.#radio && this.#defaultList.length) {
       const index = this.#idleIndex();
-      this.#track = this.#defaultList[index];
+      this.#track = this.#defaultList[this.#idleOrderFor()[index]!];
       this.#defaultIndex = (index + 1) % this.#defaultList.length;
+      // Each pass through a shuffled idle playlist gets a fresh order.
+      if (this.#defaultIndex === 0 && this.#shuffleEnabled) this.#idleOrder = [];
     }
     this.#trackFrames = 0;
     if (this.#track) this.#emit({ type: "trackStart", track: this.#track });
@@ -627,14 +630,29 @@ export class Player {
   #nextTrack(): Track | undefined {
     if (this.#track && !this.#track.auto && this.#loop === "one") return this.#track;
     return this.#queue[0] ?? (this.#track && !this.#track.auto && this.#loop === "all" ? this.#track
-      : !this.#radio ? this.#defaultList[this.#idleIndex()] : undefined);
+      : !this.#radio && this.#defaultList.length ? this.#defaultList[this.#idleOrderFor()[this.#idleIndex()]!] : undefined);
   }
+  /**
+   * Play order of the idle playlist as positions in it: the saved order, or with shuffle on an
+   * artist-spread random order, rebuilt whenever the list or the shuffle setting changes.
+   */
+  #idleOrderFor(): number[] {
+    if (this.#idleOrder.length !== this.#defaultList.length) {
+      const positions = this.#defaultList.map((_, i) => i);
+      this.#idleOrder = this.#shuffleEnabled
+        ? spreadShuffle(positions, (i) => artistKey(this.#defaultList[i]!), this.#track ? artistKey(this.#track) : undefined)
+        : positions;
+    }
+    return this.#idleOrder;
+  }
+  /** Next position in the idle play order, passing over songs played recently. */
   #idleIndex(): number {
+    const order = this.#idleOrderFor();
     const start = this.#defaultIndex % this.#defaultList.length;
     const recent = new Set(this.#recent.slice(0,this.#settings.avoidRecent));
     for (let n=0; n<this.#defaultList.length; n++) {
       const index=(start+n)%this.#defaultList.length;
-      if (!recent.has(trackKey(this.#defaultList[index]!.url))) return index;
+      if (!recent.has(trackKey(this.#defaultList[order[index]!]!.url))) return index;
     }
     return start;
   }
