@@ -73,7 +73,7 @@ The image includes Node.js, FFmpeg and yt-dlp.
    docker compose logs -f
    ```
 
-3. Open the panel at `http://<server>:48080`. Use any user name and the password you set.
+3. Open the panel at `http://<server>:48080` and sign in with the password you set.
 4. Under **Bot & TeamSpeak**, pick the bot's channel. It rejoins that channel after every reconnect and restart.
 5. Create or import a playlist and click **Set as idle playlist**, or tune in to a station under **Radio stations**.
 
@@ -119,7 +119,7 @@ Settings come from `config.json` (path set by `FMBOT_CONFIG`). Any `FMBOT_*` env
 | `admins`, `adminGroups` | `FMBOT_ADMINS`, `FMBOT_ADMIN_GROUPS` | Unique IDs / server group IDs allowed to delete saved playlists. Both empty means everyone |
 | `pauseWhenEmpty`, `emptyGraceSeconds` | `FMBOT_PAUSE_WHEN_EMPTY` | Pause after the channel has been empty this long (default 15 s) |
 | `songInDescription` | `FMBOT_SONG_IN_DESCRIPTION` | Show the current song in the bot's description. The nickname never changes |
-| `web.enabled`, `web.host`, `web.port`, `web.password` | `FMBOT_WEB_ENABLED`, `FMBOT_WEB_HOST`, `FMBOT_WEB_PORT`, `FMBOT_WEB_PASSWORD` | Web panel (Basic auth: any user name plus this password) |
+| `web.enabled`, `web.host`, `web.port`, `web.password` | `FMBOT_WEB_ENABLED`, `FMBOT_WEB_HOST`, `FMBOT_WEB_PORT`, `FMBOT_WEB_PASSWORD` | Web panel and its sign-in password |
 | `bots` | `FMBOT_BOTS` (JSON) | Several bots. Each can override `name`, `nickname`, `channel`, `channelPassword`, `volume`, `defaultPlaylist`, `identityFile` |
 | `ffmpegPath`, `ytdlpPath`, `identityLevel`, `commandPrefix` | | Tool paths, identity security level (default 8), chat prefix (default `!`) |
 
@@ -132,7 +132,7 @@ The bot keeps its state in its working directory (`/data` in Docker):
 | `playback.json` (`FMBOT_PLAYBACK`) | Playback checkpoints: track, position, queue, radio, volume and modes |
 
 > [!WARNING]
-> If the panel has no password, set `web.host` to `127.0.0.1`. With a password, the panel is still plain HTTP, so put it behind a reverse proxy with TLS before exposing it to the internet.
+> If the panel has no password, the sign-in page is skipped, so set `web.host` to `127.0.0.1`. With a password, the panel is still plain HTTP, so put it behind a reverse proxy with TLS before exposing it to the internet.
 
 ## Chat commands
 
@@ -194,6 +194,9 @@ Playlist names can contain spaces. In commands, use the playlist's number from `
 <details>
 <summary><strong>Web panel internals</strong></summary>
 
+- Signing in sets an HttpOnly, SameSite session cookie, valid for 12 hours or 30 days with **Keep me signed in**. Sessions are signed with a key derived from the panel password, so they survive restarts, and changing the password signs everyone out. **Sign out** revokes the session.
+- Five wrong passwords from one address lock sign-in for that address for 15 minutes.
+- Scripts can call `/api/*` with HTTP Basic auth (any user name plus the password). Panel pages always need a session.
 - The panel is modular vanilla HTML, CSS and JavaScript in [src/web](src/web), served by the bot itself.
 - Live updates use authenticated server-sent events from `/api/events`. Structural changes push compact state, and elapsed time and health use lightweight progress events. If SSE is unavailable, the panel falls back to polling.
 - `/api/state` contains playlist summaries. Tracks load on demand from `/api/playlists/:id?offset=0&limit=50`. Version tokens reject stale edits.

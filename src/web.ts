@@ -1,5 +1,4 @@
-﻿import { timingSafeEqual } from "node:crypto";
-import { readFileSync } from "node:fs";
+﻿import { readFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -11,6 +10,7 @@ import type { LoopMode, Track } from "./player.ts";
 import { resolve, mediaStats } from "./ytdlp.ts";
 import { ImportManager } from "./imports.ts";
 import type { SavedPlaylist } from "./store.ts";
+import { AuthError, WebAuth } from "./web-auth.ts";
 
 const summaries = new WeakMap<SavedPlaylist, { key: string; value: object }>();
 function summary(p: SavedPlaylist) {
@@ -29,7 +29,7 @@ function imports(app: App) {
 const undo = new WeakMap<MusicBot, { token: string; track: Track; position: number; expires: number; order: string; current: string | undefined }>();
 function stateFor(app: App) {
   return {
-    uiVersion,
+    uiVersion, authEnabled: app.config.web.password !== "",
     bots: app.bots.map(botState), collections: app.playlists.collections, defaults: app.playlists.defaults,
     radioStations: app.playlists.radioStations,
     favorites: app.playlists.favorites.map(trackJson), commandPrefix: app.config.commandPrefix,
@@ -48,6 +48,7 @@ const assets = new Map([
   ["/volume.js", ["volume.js", "text/javascript"]],
   ["/components.js", ["components.js", "text/javascript"]],
 ].map(([path, [file, type]]) => [path, { body: readFileSync(join(import.meta.dirname, "web", file!)), type }]));
+const loginPage = readFileSync(join(import.meta.dirname, "web", "login.html"));
 // Give HTML and every imported module the same revision, including through caches.
 const uiVersion = createHash("sha256").update([...assets].map(([path, asset]) => path + "\n" + asset.body.toString("utf8")).join("\n")).digest("hex").slice(0, 16);
 for (const asset of assets.values()) {
@@ -94,16 +95,6 @@ function botState(bot: MusicBot) {
     listeners: bot.listeners().map((c) => c.nickname),
     health: bot.health,
   };
-}
-
-function authorized(req: IncomingMessage, password: string): boolean {
-  if (!password) return true;
-  const header = req.headers.authorization ?? "";
-  if (!header.startsWith("Basic ")) return false;
-  const decoded = Buffer.from(header.slice(6), "base64").toString("utf8");
-  const given = Buffer.from(decoded.slice(decoded.indexOf(":") + 1));
-  const expected = Buffer.from(password);
-  return given.length === expected.length && timingSafeEqual(given, expected);
 }
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -410,19 +401,41 @@ export function startWebServer(app: App) {
       for (const peer of peers) send(peer, "playback_progress", progress);
     }
   }, 1000).unref();
+  const auth = new WebAuth(password);
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-    if (!authorized(req, password)) {
-      res.writeHead(401, { "WWW-Authenticate": 'Basic realm="radiospeak", charset="UTF-8"' }).end("Login required");
-      return;
-    }
     const respondError = (err: unknown) => {
       if (res.destroyed || res.headersSent) return;
-      const status = err instanceof HttpError ? err.status : 400;
+      const status = err instanceof HttpError || err instanceof AuthError ? err.status : 400;
       const message = err instanceof Error ? err.message : String(err);
       res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" }).end(JSON.stringify({ error: message }));
     };
+    const json = (data: unknown, headers: Record<string, string> = {}) =>
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...headers }).end(JSON.stringify(data));
     try {
       const url = new URL(req.url ?? "/", "http://localhost");
+      const api = url.pathname.startsWith("/api/");
+      if (url.pathname === "/login" && req.method === "GET") {
+        if (!auth.authorized(req, false)) {
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY" }).end(loginPage);
+        } else res.writeHead(302, { Location: "/" }).end();
+        return;
+      }
+      if (url.pathname === "/api/login" && req.method === "POST") {
+        readJson(req).then((body) => {
+          json({ message: "Signed in." }, { "Set-Cookie": auth.login(req, typeof body.password === "string" ? body.password : "", body.remember === true) });
+        }).catch(respondError);
+        return;
+      }
+      if (url.pathname === "/api/logout" && req.method === "POST") {
+        json({ message: "Signed out." }, { "Set-Cookie": auth.logout(req) });
+        return;
+      }
+      if (!auth.authorized(req, api)) {
+        // Pages go to the login form; API calls get JSON (no Basic challenge, so browsers show no popup).
+        if (!api && req.method === "GET") res.writeHead(302, { Location: "/login", "Cache-Control": "no-store" }).end();
+        else res.writeHead(401, { "Content-Type": "application/json; charset=utf-8" }).end(JSON.stringify({ error: "Sign in to continue." }));
+        return;
+      }
       if (req.method === "GET" && url.pathname === "/api/events") {
         res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no" });
         res.setTimeout(0);
@@ -440,8 +453,7 @@ export function startWebServer(app: App) {
       const onClose = () => { if (!res.writableEnded) controller.abort(new Error("Request cancelled")); };
       res.on("close", onClose);
       route(app, req, url, controller.signal).then((data) => {
-        if (res.destroyed) return;
-        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }).end(JSON.stringify(data));
+        if (!res.destroyed) json(data);
       }).catch(respondError).finally(() => res.off("close", onClose));
     } catch (err) { respondError(err); }
   });

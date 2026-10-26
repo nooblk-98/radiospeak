@@ -1,0 +1,98 @@
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import type { IncomingMessage } from "node:http";
+
+const COOKIE = "radiospeak_session";
+const SESSION_MS = 12 * 60 * 60 * 1000;
+const REMEMBER_MS = 30 * 24 * 60 * 60 * 1000;
+const MAX_FAILURES = 5;
+const LOCKOUT_MS = 15 * 60 * 1000;
+
+export class AuthError extends Error {
+  status: number;
+  constructor(status: number, message: string) { super(message); this.status = status; }
+}
+
+const sameBytes = (a: Buffer, b: Buffer) => a.length === b.length && timingSafeEqual(a, b);
+
+/**
+ * Signed session cookies for the web panel. The signing key derives from the
+ * password, so sessions survive restarts and changing the password signs everyone out.
+ * Basic auth stays available for scripts calling the API.
+ */
+export class WebAuth {
+  readonly enabled: boolean;
+  #password: Buffer;
+  #key: Buffer;
+  /** Signed-out session nonces, kept until the session would have expired. */
+  #revoked = new Map<string, number>();
+  #failures = new Map<string, { count: number; since: number }>();
+
+  constructor(password: string) {
+    this.enabled = password !== "";
+    this.#password = Buffer.from(password);
+    this.#key = createHmac("sha256", "radiospeak-session").update(password).digest();
+  }
+
+  /** Session cookie for any request; Basic auth only where `allowBasic` (the API). */
+  authorized(req: IncomingMessage, allowBasic: boolean): boolean {
+    return !this.enabled || this.#session(req) !== undefined || (allowBasic && this.#basic(req));
+  }
+
+  /** Checks the password and returns the Set-Cookie header for a new session. */
+  login(req: IncomingMessage, password: string, remember: boolean): string {
+    const ip = req.socket.remoteAddress ?? "";
+    const now = Date.now();
+    const failed = this.#failures.get(ip);
+    if (failed && now - failed.since > LOCKOUT_MS) this.#failures.delete(ip);
+    else if (failed && failed.count >= MAX_FAILURES) {
+      const minutes = Math.ceil((failed.since + LOCKOUT_MS - now) / 60_000);
+      throw new AuthError(429, `Too many attempts. Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.`);
+    }
+    if (!sameBytes(Buffer.from(password), this.#password)) {
+      const entry = this.#failures.get(ip) ?? { count: 0, since: now };
+      entry.count++;
+      this.#failures.set(ip, entry);
+      throw new AuthError(401, "That password isn't right.");
+    }
+    this.#failures.delete(ip);
+    const expires = now + (remember ? REMEMBER_MS : SESSION_MS);
+    const payload = expires + "." + randomBytes(16).toString("base64url");
+    const token = payload + "." + this.#sign(payload);
+    return this.#cookie(req, token, remember ? Math.floor(REMEMBER_MS / 1000) : undefined);
+  }
+
+  /** Revokes the request's session and returns a Set-Cookie header that clears it. */
+  logout(req: IncomingMessage): string {
+    const session = this.#session(req);
+    if (session) this.#revoked.set(session.nonce, session.expires);
+    for (const [nonce, expires] of this.#revoked) if (expires < Date.now()) this.#revoked.delete(nonce);
+    return this.#cookie(req, "", 0);
+  }
+
+  #sign(payload: string): string {
+    return createHmac("sha256", this.#key).update(payload).digest("base64url");
+  }
+
+  #session(req: IncomingMessage): { expires: number; nonce: string } | undefined {
+    const token = (req.headers.cookie ?? "").split(";").map((c) => c.trim())
+      .find((c) => c.startsWith(COOKIE + "="))?.slice(COOKIE.length + 1);
+    const [expiresText, nonce, signature] = token?.split(".") ?? [];
+    if (!expiresText || !nonce || !signature) return undefined;
+    if (!sameBytes(Buffer.from(signature), Buffer.from(this.#sign(expiresText + "." + nonce)))) return undefined;
+    const expires = Number(expiresText);
+    if (!(expires > Date.now()) || this.#revoked.has(nonce)) return undefined;
+    return { expires, nonce };
+  }
+
+  #basic(req: IncomingMessage): boolean {
+    const header = req.headers.authorization ?? "";
+    if (!header.startsWith("Basic ")) return false;
+    const decoded = Buffer.from(header.slice(6), "base64").toString("utf8");
+    return sameBytes(Buffer.from(decoded.slice(decoded.indexOf(":") + 1)), this.#password);
+  }
+
+  #cookie(req: IncomingMessage, value: string, maxAge: number | undefined): string {
+    const secure = (req.socket as { encrypted?: boolean }).encrypted || req.headers["x-forwarded-proto"] === "https";
+    return `${COOKIE}=${value}; Path=/; HttpOnly; SameSite=Lax` + (maxAge === undefined ? "" : `; Max-Age=${maxAge}`) + (secure ? "; Secure" : "");
+  }
+}

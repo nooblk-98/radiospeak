@@ -33,6 +33,7 @@ const paths = {
   check:'<path d="m5 12 4 4L19 6"/>',
   shield:'<path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6z"/><path d="m8 12 3 3 5-6"/>',
   terminal:'<path d="m4 6 6 6-6 6m9 0h7"/>',
+  'sign-out':'<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4m7 14 5-5-5-5m5 5H9"/>',
   headphones:'<path d="M3 15v-3a9 9 0 0 1 18 0v3"/><rect x="3" y="12" width="4" height="8" rx="2"/><rect x="17" y="12" width="4" height="8" rx="2"/>',
   youtube:'<rect x="2" y="5" width="20" height="14" rx="4"/><path d="m10 9 5 3-5 3z"/>',
   soundcloud:'<path d="M2 13v4m3-7v9m3-11v11m3-11a5 5 0 0 1 9 3 4 4 0 0 1 0 8h-9z"/>',

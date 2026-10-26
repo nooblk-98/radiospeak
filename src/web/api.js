@@ -3,6 +3,11 @@
     method, signal, headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
+  if (response.status === 401) {
+    // The session expired or was signed out elsewhere: return here after signing in.
+    location.replace('/login' + (location.hash.length > 1 ? '?next=' + encodeURIComponent(location.hash) : ''));
+    throw new Error('Sign in to continue.');
+  }
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || 'The request failed. Please try again.');
   return result;

@@ -313,6 +313,7 @@ function renderChrome(b) {
   const signature = JSON.stringify([b.name,b.nickname,b.connected,b.channel,b.track?.url,b.userPaused,b.autoPaused,b.queue.length,state.collections,state.playlists.map(p=>p.collectionId),state.favorites.length,b.listeners,b.channels,b.normalization,b.defaultPlaylist,b.radio]);
   if (signature === renderedChrome) return;
   renderedChrome = signature;
+  $('#sign-out').hidden = !state.authEnabled;
   const status = !b.connected?'Offline':paused(b)?'Paused':currentTrack()?'Playing':'Connected · Idle';
   $('#connection').innerHTML = '<span class="status-dot ' + (b.connected?'on':'') + '"></span>' + status;
   $('#queue-badge').textContent = b.queue.length;
@@ -436,6 +437,12 @@ document.addEventListener('click', async event => {
   if (!el || el.disabled) return;
   const {action:kind,id,scope} = el.dataset, index=Number(el.dataset.index), b=bot();
   if (kind === 'reload-panel') { location.reload(); return; }
+  if (kind === 'sign-out') {
+    connection.stop();
+    try { await request('/api/logout', {}); } catch {}
+    location.replace('/login');
+    return;
+  }
   if (panelNeedsReload && kind !== 'close-modal') { toast('Reload the panel to use the updated controls.',true); return; }
   try {
     switch(kind) {

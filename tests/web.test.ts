@@ -67,16 +67,40 @@ test("player controls seek, previous, shuffle, stop, and play-now preserve queue
   } finally {await f.close();}
 });
 
-test("static assets keep authentication; JSON-only writes and malformed requests are rejected",async()=>{
+test("login sessions protect the panel; Basic auth only reaches the API; JSON-only writes and malformed requests are rejected",async()=>{
   const f=await fixture("test-password");
   try {
-    for(const path of ["/","/app.js","/styles.css","/api/state"]) {
-      const unauth=await fetch(f.base+path);assert.equal(unauth.status,401);
-      const auth=await fetch(f.base+path,{headers:{Authorization:"Basic "+Buffer.from("x:test-password").toString("base64")}});
-      assert.equal(auth.status,200);
-      if(path==="/") assert.match(await auth.text(),/player-dock/);
+    const login=(password:string,remember=false)=>fetch(f.base+"/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password,remember})});
+    const basic={Authorization:"Basic "+Buffer.from("x:test-password").toString("base64")};
+    for(const path of ["/","/app.js","/styles.css"]) {
+      const page=await fetch(f.base+path,{redirect:"manual",headers:basic});
+      assert.equal(page.status,302,"pages need a session, even with cached Basic credentials");
+      assert.equal(page.headers.get("location"),"/login");
     }
-    const headers={Authorization:"Basic "+Buffer.from("x:test-password").toString("base64")};
+    const unauth=await fetch(f.base+"/api/state");
+    assert.equal(unauth.status,401);
+    assert.equal(unauth.headers.get("www-authenticate"),null,"no browser password popup");
+    assert.equal((await fetch(f.base+"/api/state",{headers:basic})).status,200,"scripts can still use Basic auth");
+    const form=await fetch(f.base+"/login");
+    assert.equal(form.status,200);
+    assert.match(await form.text(),/current-password/);
+    const wrong=await login("nope");
+    assert.equal(wrong.status,401);
+    assert.equal(wrong.headers.get("set-cookie"),null);
+    const ok=await login("test-password",true);
+    assert.equal(ok.status,200);
+    const setCookie=ok.headers.get("set-cookie")!;
+    for(const flag of [/HttpOnly/,/SameSite=Lax/,/Max-Age=2592000/]) assert.match(setCookie,flag);
+    const headers={Cookie:setCookie.split(";")[0]!};
+    assert.equal((await fetch(f.base+"/login",{headers,redirect:"manual"})).status,302,"signed-in visitors skip the form");
+    const forged={Cookie:headers.Cookie.replace(/=(\d)/,(_,d)=>"="+(d==="9"?"8":"9"))};
+    assert.equal((await fetch(f.base+"/api/state",{headers:forged})).status,401,"a tampered expiry fails the signature");
+    for(const path of ["/","/app.js","/styles.css","/api/state"]) {
+      const response=await fetch(f.base+path,{headers});
+      assert.equal(response.status,200);
+      if(path==="/") assert.match(await response.text(),/player-dock/);
+    }
+    assert.equal((await f.api("/api/state")).data.authEnabled,true);
     const html=await (await fetch(f.base+"/",{headers})).text();
     const version=(await f.api("/api/state")).data.uiVersion;
     assert.match(version,/^[a-f0-9]{16}$/);
@@ -88,6 +112,11 @@ test("static assets keep authentication; JSON-only writes and malformed requests
     assert.equal((await fetch(f.base+"/api/playlists",{method:"POST",headers:{...headers,"Content-Type":"application/json"},body:"null"})).status,400);
     assert.equal((await fetch(f.base+"/api/%ZZ",{headers})).status,400);
     assert.equal((await fetch(f.base+"/api/playlists",{method:"POST",headers:{...headers,"Content-Type":"application/json"},body:JSON.stringify({name:"x",padding:"x".repeat(270000)})})).status,413);
+    const out=await fetch(f.base+"/api/logout",{method:"POST",headers});
+    assert.match(out.headers.get("set-cookie")!,/Max-Age=0/);
+    assert.equal((await fetch(f.base+"/api/state",{headers})).status,401,"a signed-out session cannot be reused");
+    for(let i=0;i<5;i++) assert.equal((await login("nope")).status,401);
+    assert.equal((await login("test-password")).status,429,"repeated failures lock out the address");
   } finally {await f.close();}
 });
 
