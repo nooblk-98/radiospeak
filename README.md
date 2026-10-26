@@ -28,7 +28,7 @@ radiospeak joins your TeamSpeak server as a regular voice client and streams mus
 - **Never silent**: an idle playlist or live radio station takes over whenever the queue is empty. Requests always come first.
 - **Radio stations**: save Icecast, SHOUTcast or plain HTTP streams and tune in with one click. The current song title appears in the panel.
 - **Multi-instance**: add and remove bot instances from the panel and switch between them from the top bar. Each is its own TeamSpeak client with a separate channel, name, queue, volume and idle playlist.
-- **Listener-aware**: pauses when nobody is listening and resumes when someone joins.
+- **Listener-aware**: pauses when nobody is listening and resumes when someone joins, and greets people who join its channel with the main chat commands (once per person per half hour; can be turned off per bot).
 - **Resilient playback**: checkpoints survive restarts, reconnects keep the queue, and failed streams retry from the same position.
 - **Live web panel**: dark, responsive and mobile-friendly. Updates arrive over server-sent events, and there is no frontend build step.
 

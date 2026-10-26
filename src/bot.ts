@@ -12,7 +12,7 @@ import {
   type ClientID,
 } from "@honeybbq/teamspeak";
 import { Client, generateIdentity, parseIdentity, subscribeAllChannels, type Identity } from "@honeybbq/teamspeak/client";
-import { handleChatMessage } from "./commands.ts";
+import { handleChatMessage, welcomeText } from "./commands.ts";
 import type { AppConfig, BotConfig } from "./config.ts";
 import { validateNickname } from "./config.ts";
 import { fetchIcyTitle } from "./icy.ts";
@@ -51,6 +51,25 @@ const LISTENER_CHECK_MS = 5_000;
 const DEFAULT_PLAYLIST_REFRESH_MS = 6 * 60 * 60 * 1000;
 /** Description changes are spaced out so they never add up to a flood ban. */
 const PRESENCE_MIN_GAP_MS = 5_000;
+/** The same person is greeted at most this often, and greetings are spaced to stay clear of flood limits. */
+const WELCOME_AGAIN_MS = 30 * 60 * 1000;
+const WELCOME_GAP_MS = 10_000;
+
+/** Decides whether a join is greeted: once per person per half hour, never two greetings within seconds. */
+export class WelcomeLimiter {
+  #seen = new Map<string, number>();
+  #last = -Infinity;
+
+  allow(person: string, now = Date.now()): boolean {
+    if (now - this.#last < WELCOME_GAP_MS) return false;
+    const seen = this.#seen.get(person);
+    if (seen !== undefined && now - seen < WELCOME_AGAIN_MS) return false;
+    for (const [key, at] of this.#seen) if (now - at >= WELCOME_AGAIN_MS) this.#seen.delete(key);
+    this.#seen.set(person, now);
+    this.#last = now;
+    return true;
+  }
+}
 
 export class MusicBot {
   readonly cfg: BotConfig;
@@ -72,6 +91,9 @@ export class MusicBot {
   #appliedDescription: string | undefined;
   #descriptionDenied = false;
   #titleUrl: string | undefined;
+  #welcomes = new WelcomeLimiter();
+  /** Joins are greeted only once the roster has settled after (re)connecting. */
+  #greetFrom = Infinity;
   #defaultLoaded = false;
   #timers: NodeJS.Timeout[] = [];
   #started = false;
@@ -386,11 +408,14 @@ export class MusicBot {
       this.#checkTalkPower();
       this.#checkListeners();
       this.player.setConnectionPaused(false);
+      // Channel subscriptions list existing clients shortly after; those are not joins.
+      this.#greetFrom = Date.now() + 5_000;
     });
 
     c.on("disconnected", ({ error, willReconnect }) => {
       if (c !== this.client) return;
       this.#connected = false;
+      this.#greetFrom = Infinity;
       this.#emptySince = undefined;
       this.lastDisconnect = { at: new Date().toISOString(), reason: error?.message ?? "Connection closed" };
       this.player.setConnectionPaused(true);
@@ -404,6 +429,15 @@ export class MusicBot {
     c.on("viewChanged", () => {
       this.#checkListeners();
       this.#checkTalkPower();
+    });
+
+    // Greet people joining the bot's channel: connecting into it, or moving in from another one.
+    c.on("clientEnter", (e) => {
+      // Reason 2 lists clients already present when a channel subscription starts; they did not just join.
+      if (c === this.client && e.reason !== 2 && e.channelID === this.channelID) this.#welcome(c, e.id);
+    });
+    c.on("clientMoved", (e) => {
+      if (c === this.client && e.targetChannelID === this.channelID) this.#welcome(c, e.clientID);
     });
 
     c.on("textMessage", (msg) => {
@@ -495,6 +529,21 @@ export class MusicBot {
   }
 
   // ---- Auto-pause, radio titles, nickname/description ----
+
+  /** Posts the command overview in channel chat for someone who just joined the bot's channel. */
+  #welcome(c: Client, id: ClientID): void {
+    if (!this.#connected || Date.now() < this.#greetFrom || !this.#app.playlists.welcomes(this.name)) return;
+    const entry = c.view.client(id);
+    // People only: not ServerQuery clients, this bot or the other music bots.
+    if (!entry || entry.type !== 0 || this.#app.bots.some((b) => b.clientID === id)) return;
+    // With several bots in one channel, the first one greets.
+    if (this.#app.bots.find((b) => b.channelID !== undefined && b.channelID === this.channelID) !== this) return;
+    if (!this.#welcomes.allow(entry.uid ?? `client:${id}`)) return;
+    const pl = this.player;
+    const playing = pl.track?.title ?? (pl.radio ? (this.radioTitle ?? pl.radio.name) : undefined);
+    void sendChannelMessage(c, welcomeText(this.#app.config.commandPrefix, entry.nickname, playing)).catch((err: unknown) =>
+      this.log("warn", `Could not send welcome message: ${err instanceof Error ? err.message : String(err)}`));
+  }
 
   #checkListeners(): void {
     const c = this.client;

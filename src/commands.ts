@@ -46,6 +46,15 @@ function helpText(p: string): string {
   ].join("\n");
 }
 
+/** Posted in channel chat when someone joins the bot's channel. */
+export function welcomeText(p: string, nickname: string, playing: string | undefined): string {
+  return [
+    `Welcome, [b]${nickname}[/b]! I'm the music bot.${playing ? ` Now playing: [b]${playing}[/b]` : ""}`,
+    `${p}play <song, link or playlist> — add to queue   ${p}skip   ${p}pause / ${p}resume   ${p}np   ${p}queue   ${p}vol <0-100>`,
+    `${p}radio <station>   ${p}pl play <playlist>   ${p}join — bring me to your channel   ${p}help — all commands`,
+  ].join("\n");
+}
+
 function trackLine(t: Track, n: number): string {
   return `${n}. ${t.title} (${formatDuration(t.duration)})${t.requestedBy ? ` — ${t.requestedBy}` : ""}`;
 }

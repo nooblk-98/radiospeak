@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { fixture, tracks } from "./helpers.ts";
 import { PlaylistStore } from "../src/store.ts";
 import { join } from "node:path";
-import { MusicBot } from "../src/bot.ts";
+import { MusicBot, WelcomeLimiter } from "../src/bot.ts";
+import { welcomeText } from "../src/commands.ts";
 import { Client } from "@honeybbq/teamspeak/client";
 
 test("HTTP queue edits reject stale snapshots; playlist/default/favorite lifecycle persists", async () => {
@@ -235,5 +236,28 @@ test("bot instances can be added, switched independently, persisted and removed 
     assert.deepEqual(f.app.bots.map(b=>b.name),["Test bot"]);
     assert.deepEqual(new PlaylistStore(join(f.dir,"library.json")).panelBots,[]);
     assert.equal(f.app.playlists.nicknameFor("lobby"),undefined);
+  } finally {await f.close();}
+});
+
+test("join greetings list the commands, respect per-person and channel limits, and can be turned off per bot",async()=>{
+  const text=welcomeText("!","Nimal","Blue hour");
+  assert.match(text,/Welcome, \[b\]Nimal\[\/b\]/);
+  assert.match(text,/Now playing: \[b\]Blue hour\[\/b\]/);
+  for(const command of ["!play","!skip","!radio","!help"]) assert.ok(text.includes(command));
+  assert.doesNotMatch(welcomeText("!","Nimal",undefined),/Now playing/);
+  const limiter=new WelcomeLimiter(), minute=60_000;
+  assert.equal(limiter.allow("alice",0),true);
+  assert.equal(limiter.allow("bob",5_000),false,"greetings are spaced to avoid flood limits");
+  assert.equal(limiter.allow("bob",10_000),true);
+  assert.equal(limiter.allow("alice",20*minute),false,"the same person is not greeted again within half an hour");
+  assert.equal(limiter.allow("alice",31*minute),true);
+  const f=await fixture();
+  try {
+    assert.equal((await f.api("/api/state")).data.bots[0].welcomes,true,"greetings are on by default");
+    assert.equal((await f.api("/api/bots/Test%20bot/welcome",{enabled:false})).status,200);
+    assert.equal((await f.api("/api/state")).data.bots[0].welcomes,false);
+    assert.equal(new PlaylistStore(join(f.dir,"library.json")).welcomes("Test bot"),false);
+    await f.api("/api/bots/Test%20bot/welcome",{enabled:true});
+    assert.equal(f.app.playlists.welcomes("Test bot"),true);
   } finally {await f.close();}
 });

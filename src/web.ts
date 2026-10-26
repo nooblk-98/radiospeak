@@ -32,7 +32,7 @@ const undo = new WeakMap<MusicBot, { token: string; track: Track; position: numb
 function stateFor(app: App) {
   return {
     uiVersion, authEnabled: app.config.web.password !== "",
-    bots: app.bots.map((b) => ({ ...botState(b), removable: app.playlists.panelBots.includes(b.name) })), maxInstances: MAX_INSTANCES, collections: app.playlists.collections, defaults: app.playlists.defaults,
+    bots: app.bots.map((b) => ({ ...botState(b), removable: app.playlists.panelBots.includes(b.name), welcomes: app.playlists.welcomes(b.name) })), maxInstances: MAX_INSTANCES, collections: app.playlists.collections, defaults: app.playlists.defaults,
     radioStations: app.playlists.radioStations,
     favorites: app.playlists.favorites.map(trackJson), commandPrefix: app.config.commandPrefix,
     playlists: app.playlists.all.map(summary), imports: imports(app).all.map(job=>({ ...job, errors: job.errors.slice(0,20) })),
@@ -191,6 +191,9 @@ async function botAction(app: App, bot: MusicBot, action: string, body: Record<s
       return "Playback position updated.";
     case "normalization": pl.setNormalization(body.enabled === true); return "Audio normalization updated.";
     case "prebuffer": pl.setPrebuffer(body.enabled === true); return "Next-track prebuffering " + (body.enabled ? "enabled." : "disabled.");
+    case "welcome":
+      app.playlists.setWelcomes(bot.name, body.enabled === true);
+      return body.enabled === true ? "New listeners get the command list in channel chat." : "Join greetings turned off.";
     case "nickname":
       await bot.setNickname(str(body.nickname));
       return "Bot name saved.";

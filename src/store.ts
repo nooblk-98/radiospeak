@@ -25,6 +25,8 @@ interface Library {
   radioStations: RadioStation[];
   /** Bot instances added in the web panel, started alongside the configured ones. */
   panelBots: string[];
+  /** Bots that do not greet people joining their channel (greeting is on by default). */
+  quietBots: string[];
 }
 
 /** Offered until the library has its own station list. */
@@ -56,6 +58,7 @@ export class PlaylistStore {
         ? raw.radioStations.filter((r: RadioStation) => r && r.id && r.name && r.url)
         : starterStations.map((r) => ({ id: randomUUID(), ...r })),
       panelBots: Array.isArray(raw.panelBots) ? raw.panelBots.filter((n: unknown) => typeof n === "string" && n) : [],
+      quietBots: Array.isArray(raw.quietBots) ? raw.quietBots.filter((n: unknown) => typeof n === "string") : [],
     };
   }
 
@@ -79,12 +82,19 @@ export class PlaylistStore {
     delete this.#data.botNicknames[bot];
     delete this.#data.botChannels[bot];
     delete this.#data.defaults[bot];
+    this.#data.quietBots = this.#data.quietBots.filter((n) => n !== bot);
     this.#save();
   }
   get defaults(): Readonly<Record<string, string | null>> { return this.#data.defaults; }
   nicknameFor(bot: string): string | undefined { return this.#data.botNicknames[bot]; }
   setNickname(bot: string, nickname: string): void {
     this.#data.botNicknames[bot] = validateNickname(nickname);
+    this.#save();
+  }
+  welcomes(bot: string): boolean { return !this.#data.quietBots.includes(bot); }
+  setWelcomes(bot: string, enabled: boolean): void {
+    this.#data.quietBots = this.#data.quietBots.filter((n) => n !== bot);
+    if (!enabled) this.#data.quietBots.push(bot);
     this.#save();
   }
   channelFor(bot: string): string | undefined { return this.#data.botChannels[bot]; }

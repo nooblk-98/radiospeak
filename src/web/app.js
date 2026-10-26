@@ -530,6 +530,7 @@ document.addEventListener('click', async event => {
       case 'shuffle': await action('shuffle',{enabled:!b.shuffle});return;
       case 'repeat': await action('loop',{mode:({off:'all',all:'one',one:'off'})[b.loop]});return;
       case 'normalization': await action('normalization',{enabled:!b.normalization});return;
+      case 'welcome': await action('welcome',{enabled:!b.welcomes});return;
       case 'mute': {
         const current = volumeControl.get(b.name) ?? requestedVolumes.get(b.name) ?? b.volume;
         if (current > 0) lastVolumes.set(b.name, current);

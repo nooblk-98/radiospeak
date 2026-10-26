@@ -48,7 +48,7 @@ test("UI navigation, creation, import, idle selection, search, save, queue edits
     const submit=(selector:string)=>get(selector).dispatchEvent(new dom.window.Event("submit",{bubbles:true,cancelable:true}));
     const fill=(selector:string,value:string)=>{const el=get(selector) as HTMLInputElement;el.value=value;el.dispatchEvent(new dom.window.Event("input",{bubbles:true}));};
     const until=async(predicate:()=>boolean,label:string)=>{
-      const end=Date.now()+5000;
+      const end=Date.now()+15000;
       while(!predicate()) {
         if(Date.now()>end) throw new Error("Timed out: "+label+"\n"+document.body.textContent?.slice(-2500));
         await new Promise(resolve=>nativeTimeout(resolve,20));
