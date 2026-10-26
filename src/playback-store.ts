@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { rename, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { PlaybackSnapshot } from "./player.ts";
 
@@ -8,6 +9,11 @@ export class PlaybackStore {
   #bots: Record<string, PlaybackSnapshot> = {};
   #report: (message: string) => void;
   #writeFailed = false;
+  #pending = false;
+  #timer: NodeJS.Timeout | undefined;
+  #writing: Promise<void> | undefined;
+  lastSavedAt: string | null = null;
+  get status() { return { pending: this.#pending || !!this.#writing, error: this.#writeFailed, lastSavedAt: this.lastSavedAt }; }
 
   constructor(path = resolve(process.env.FMBOT_PLAYBACK ?? "playback.json"), report = console.warn) {
     this.#path = path;
@@ -26,13 +32,31 @@ export class PlaybackStore {
 
   set(bot: string, snapshot: PlaybackSnapshot): void {
     this.#bots[bot] = snapshot;
-    try {
-      writeFileSync(this.#path + ".tmp", JSON.stringify({ version: 1, bots: this.#bots }) + "\n");
-      renameSync(this.#path + ".tmp", this.#path);
-      this.#writeFailed = false;
-    } catch (err) {
-      if (!this.#writeFailed) this.#report("Could not save playback checkpoints: " + (err instanceof Error ? err.message : String(err)));
-      this.#writeFailed = true;
+    this.#pending = true;
+    this.#timer ??= setTimeout(() => { this.#timer = undefined; void this.flush(); }, 50).unref();
+  }
+
+  /** Coalesced, serialized atomic writes; shutdown awaits the latest generation. */
+  async flush(): Promise<void> {
+    clearTimeout(this.#timer); this.#timer = undefined;
+    if (this.#writing) return this.#writing;
+    this.#writing = this.#drain().finally(() => { this.#writing = undefined; });
+    return this.#writing;
+  }
+
+  async #drain(): Promise<void> {
+    while (this.#pending) {
+      this.#pending = false;
+      const content = JSON.stringify({ version: 1, bots: this.#bots }) + "\n";
+      try {
+        await writeFile(this.#path + ".tmp", content);
+        await rename(this.#path + ".tmp", this.#path);
+        this.#writeFailed = false;
+        this.lastSavedAt = new Date().toISOString();
+      } catch (err) {
+        if (!this.#writeFailed) this.#report("Could not save playback checkpoints: " + (err instanceof Error ? err.message : String(err)));
+        this.#writeFailed = true;
+      }
     }
   }
 }

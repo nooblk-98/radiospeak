@@ -100,18 +100,28 @@ mobile, and the player dock remains available while switching screens.
 - **Now playing:** playback, live progress, TeamSpeak channel and listener status.
 - **Up next:** drag tracks into order or click a track number to choose a position
   with a keyboard or touch device. Play next, move to top, remove, clear, or save
-  the queue. Stop also clears user requests; Pause keeps them.
+  the queue. Removed tracks offer Undo for 60 seconds, provided playback and the
+  queue have not changed. Estimated wait times account for preceding track lengths;
+  paused playback and repeat-one are labelled. Stop clears user requests; Pause keeps them.
 - **Collections & playlists:** create, rename, move and delete playlists; group
   them in collections; import public YouTube playlists; reorder or enqueue saved
-  tracks. Deleting a collection keeps its playlists as standalone lists.
+  tracks. Track tables show 50 rows per page; reordering works across pages.
+  Deleting a collection keeps its playlists as standalone lists.
 - **Idle playlists:** select one per bot. Requests take priority and the idle
   playlist resumes when they finish. An enabled radio stream takes priority over
   the idle playlist. Deleting an assigned playlist disables that fallback.
 - **Search & import:** debounced YouTube/SoundCloud search, result artwork,
   durations and artists, play now, enqueue, and save to a playlist. Live stream
   URLs and radio presets are also available. Search and imports need `yt-dlp`.
+  Search metadata is cached for 60 seconds (up to 100 searches). Media lookups
+  share two process slots with a bounded waiting list; cancelling a browser search
+  aborts its lookup. Imports run as background jobs with progress, cancellation,
+  unavailable-entry reports, and an optional skip-duplicates checkbox. Alternate
+  YouTube links to the same video count as duplicates.
 - **Bot & TeamSpeak:** customize the fixed bot name, move between available channels, see
-  listeners, toggle FFmpeg loudness normalization, shuffle, and repeat.
+  listeners, toggle FFmpeg loudness normalization, shuffle, and repeat. Bot health
+  shows process uptime/memory, reconnects, buffer underruns, checkpoint status,
+  media lookup load, and the latest disconnect/audio error.
 
 The heart stores favorites in the shared library. Bot volume is the actual
 TeamSpeak output gain (0–100%), not browser playback volume. Audio always plays
@@ -126,10 +136,14 @@ is saved per bot in the library for subsequent connections and restarts, overrid
 next connection. Song changes only update the description; legacy
 `showSongInNickname` / `FMBOT_SONG_IN_NICKNAME` settings are ignored.
 
-The panel polls `/api/state` every 1.5 seconds (5 seconds while hidden). The
-`StateConnection` module emits `track_changed`, `queue_updated`, and
-`playback_progress` events. Requests never overlap, edits validate the displayed
-track order, and failed polling shows a reconnect banner while retaining state.
+The panel receives authenticated server-sent events from `/api/events`. Structural
+changes push a compact state; elapsed time and health use separate progress events
+every second. If SSE is unavailable, polling falls back to 1.5 seconds (5 seconds
+while hidden). `StateConnection` emits `track_changed`, `queue_updated`, and
+`playback_progress`. Late REST responses cannot overwrite newer pushed state.
+`/api/state` contains playlist summaries; tracks load on demand through
+`/api/playlists/:id?offset=0&limit=50` (maximum 100 per response). Playlist version
+tokens prevent stale edits without posting the entire track order back.
 
 Library data is written atomically to `playlists.json` (or `FMBOT_PLAYLISTS`).
 Existing playlist arrays load automatically; the next write upgrades them to a
@@ -139,10 +153,11 @@ Idle selections survive restarts and override configured remote defaults. Playba
 shuffle, volume, and normalization controls apply to the running bot.
 
 Playback recovery is saved separately in `playback.json` (override with
-`FMBOT_PLAYBACK`). Checkpoints are written on player changes and every 10 seconds,
+`FMBOT_PLAYBACK`). Checkpoints are queued on player changes and every 10 seconds,
 including the current track, elapsed time, queue, idle playlist cursor, radio,
 volume, shuffle, repeat, normalization, and user pause/stop state. A clean shutdown
-saves before stopping the decoder. After an unexpected process restart, playback
+saves before stopping the decoder. Writes are asynchronous, coalesced over 50 ms,
+serialized, and atomically renamed. Shutdown waits for pending saves. After an unexpected process restart, playback
 resumes from the last checkpoint once TeamSpeak finishes connecting; up to 10
 seconds can be replayed. The existing Docker `/data` mount preserves this file.
 
@@ -152,6 +167,19 @@ reload the default playlist. Startup logs include the process ID, and restored
 checkpoints and disconnect reasons are logged, so process restarts can be
 distinguished from transport reconnects. An external restart such as a Docker
 out-of-memory kill still needs server/container logs to diagnose.
+
+Interrupted audio retries from its current position up to twice, with 1- and
+2-second backoff. A stream that supplies no buffered audio for 30 seconds also
+enters recovery. Missing tools and known permanent media errors skip immediately;
+the queue remains intact during retries. Health and the player page show recovery.
+
+**Prepare the next track** in Bot & TeamSpeak settings is optional and off by
+default. During the last 15 seconds of a known-length track, one upcoming track
+is decoded into a bounded buffer. The prepared pipeline is promoted at the next
+transition; its audio is never sent early. Queue changes, seeks, normalization
+changes, disabling prebuffering, and Stop discard stale preparation. Preparing
+another track can temporarily double audio process usage; enable it only when
+the server has spare CPU and memory. The setting is included in playback checkpoints.
 
 Playlist names can contain spaces. Use their 1-based number from `!pl` in chat
 commands when a name contains spaces, for example `!pl add 2 <link>`.
@@ -168,6 +196,10 @@ Tests cover library migration/persistence, player controls, authenticated HTTP
 routes, stale queue/playlist edits, input validation, and a DOM workflow through
 the actual panel and local API. The DOM test supplies deterministic media results;
 it does not require TeamSpeak, FFmpeg, or a network media provider.
+Additional tests cover asynchronous checkpoint bursts, SSE authentication and
+client merging, lookup caching/cancellation/concurrency, import progress and
+duplicates, paged edits, Undo, stalled streams, bounded retries, and prebuffer
+promotion/cancellation using controlled child-process streams.
 
 ## Chat commands
 

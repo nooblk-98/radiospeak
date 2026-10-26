@@ -19,6 +19,7 @@ import { fetchIcyTitle } from "./icy.ts";
 import { Player, type PlayerEvent, type Track } from "./player.ts";
 import type { PlaylistStore } from "./store.ts";
 import type { PlaybackStore } from "./playback-store.ts";
+import type { ImportManager } from "./imports.ts";
 import { formatDuration, resolve } from "./ytdlp.ts";
 
 /** What every bot shares: config, saved playlists and each other. */
@@ -26,6 +27,7 @@ export interface App {
   config: AppConfig;
   playlists: PlaylistStore;
   playback?: PlaybackStore;
+  imports?: ImportManager;
   bots: MusicBot[];
   /** Last !search results per user unique ID, so "!pick 3" can choose one. */
   searchResults: Map<string, Track[]>;
@@ -69,6 +71,9 @@ export class MusicBot {
   #timers: NodeJS.Timeout[] = [];
   #started = false;
   lastDisconnect: { at: string; reason: string } | undefined;
+  connectedAt: number | null = null;
+  reconnectCount = 0;
+  restoredCheckpoint = false;
   /** Set while the channel needs more talk power than the bot has: the server drops its audio. */
   talkBlocked: { needed: number; have: number } | undefined;
 
@@ -90,6 +95,7 @@ export class MusicBot {
     if (saved) {
       try {
         this.player.restore(saved);
+        this.restoredCheckpoint = true;
         this.log("info", "Restored playback checkpoint: " + (this.player.track?.title ?? "idle") + " at " + this.player.elapsed + "s");
       } catch (err) {
         this.log("warn", "Ignoring invalid playback checkpoint: " + (err instanceof Error ? err.message : String(err)));
@@ -103,6 +109,10 @@ export class MusicBot {
 
   get nickname(): string {
     return this.#app.playlists.nicknameFor(this.name) ?? this.cfg.nickname;
+  }
+  get health() {
+    return { ...this.player.health, connectedAt: this.connectedAt, reconnectCount: this.reconnectCount,
+      restoredCheckpoint: this.restoredCheckpoint, checkpoint: this.#app.playback?.status ?? null };
   }
 
   /** Only explicit settings changes rename the bot; song updates change its description. */
@@ -283,6 +293,7 @@ export class MusicBot {
   async shutdown(): Promise<void> {
     this.#checkpoint();
     this.#shuttingDown = true;
+    await this.#app.playback?.flush();
     this.#timers.forEach(timer => clearInterval(timer));
     this.#timers = [];
     this.player.stop();
@@ -315,6 +326,8 @@ export class MusicBot {
       if (c !== this.client || this.#shuttingDown) return;
       wasConnected = true;
       this.#connected = true;
+      this.connectedAt = Date.now();
+      if (reconnected) this.reconnectCount++;
       this.#appliedDescription = undefined;
       this.log("info", reconnected ? "Reconnected to server" : `Connected to ${config.server} as "${nickname}"`);
       // A settings edit can arrive while the connection handshake is in progress.

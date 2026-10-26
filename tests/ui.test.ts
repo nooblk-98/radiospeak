@@ -3,9 +3,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
 import { fixture, tracks } from "./helpers.ts";
+import { ImportManager } from "../src/imports.ts";
 
 test("UI navigation, creation, import, idle selection, search, save, queue edits and favorites use the API", async () => {
   const f=await fixture();
+  f.app.imports=new ImportManager(f.app.playlists,"test",300,async(_path,_input,options)=>{
+    options.onProgress?.({processed:2,total:2,title:"Night drive"});
+    return {tracks:tracks.slice(0,2)};
+  });
   const dom=new JSDOM(readFileSync(new URL("../src/web/index.html",import.meta.url),"utf8"),{url:f.base,pretendToBeVisual:true});
   const nativeFetch=globalThis.fetch, nativeTimeout=globalThis.setTimeout, nativeInterval=globalThis.setInterval;
   const timers=new Set<ReturnType<typeof setTimeout>>();
@@ -61,12 +66,12 @@ test("UI navigation, creation, import, idle selection, search, save, queue edits
     await until(()=>document.querySelector("h1")?.textContent==="A home for every mood.","library navigation");
     click('#view [data-action="new-playlist"]');
     fill("#list-name","Night sessions");submit("#modal-form");
-    await until(()=>document.querySelector("h1")?.textContent==="Night sessions"&&!get("#modal").hasAttribute("open"),"playlist creation");
+    await until(()=>!!document.querySelector("#playlist-import")&&!get("#modal").hasAttribute("open"),"playlist creation");
     const list=f.app.playlists.all[0]!;
     assert.equal(list.collectionId,f.app.playlists.collections[0]!.id);
     fill('#playlist-import input',"https://www.youtube.com/playlist?list=public");
     submit("#playlist-import");
-    await until(()=>f.app.playlists.all[0]!.tracks.length===2 && !(document.querySelector('[data-action="default-playlist"]') as HTMLButtonElement)?.disabled,"playlist import");
+    await until(()=>f.app.playlists.all[0]!.tracks.length===2 && !!document.querySelector('[data-action="default-playlist"]') && !(document.querySelector('[data-action="default-playlist"]') as HTMLButtonElement)?.disabled,"playlist import");
     click('[data-action="default-playlist"]');
     await until(()=>f.app.playlists.defaults["Test bot"]===list.id,"default selection");
     click('[data-action="reorder"][data-index="1"]');
@@ -95,11 +100,28 @@ test("UI navigation, creation, import, idle selection, search, save, queue edits
     const queueBefore=f.app.bots[0]!.player.queue.length;
     click('#view [data-action="remove-track"][data-index="0"]');
     await until(()=>f.app.bots[0]!.player.queue.length===queueBefore-1 && get("#queue-badge").textContent===String(queueBefore-1) && get("#toast").textContent?.startsWith("Removed")===true,"queue removal");
+    click('#toast [data-action="undo"]');
+    await until(()=>f.app.bots[0]!.player.queue.length===queueBefore && get("#toast").textContent==="Track restored to the queue.","undo queue removal");
     dom.window.location.hash="settings";
     await until(()=>!!document.querySelector("#bot-nickname"),"bot settings navigation");
     fill("#bot-nickname","Community Radio");submit("#nickname-form");
     await until(()=>f.app.bots[0]!.nickname==="Community Radio" && get("#sidebar-bot").textContent==="Community Radio" && get("#toast").textContent==="Bot name saved.","save fixed bot name");
     assert.match(get(".bot-info").textContent!,/Community Radio/);
+    assert.match(get("#health-values").textContent!,/Server uptime/);
+    click('[data-action="prebuffer"]');
+    await until(()=>f.app.bots[0]!.health.prebufferEnabled && document.querySelector('[data-action="prebuffer"]')?.getAttribute("aria-checked")==="true","enable optional prebuffer");
+    await f.api("/api/playlists/"+list.id+"/add",{tracks:Array.from({length:120},(_,i)=>({url:"https://example.com/page/"+i,title:"Page track "+i,duration:60}))});
+    dom.window.location.hash="library";
+    await until(()=>document.querySelectorAll("#view tbody tr").length===50,"large playlist first page");
+    click('[data-action="page"][data-page="1"]');
+    await until(()=>!!document.querySelector('#view tr[data-index="50"]') && document.querySelectorAll("#view tbody tr").length===50,"large playlist second page");
+    const totalBefore=list.tracks.length,removedTitle=list.tracks[50]!.title;
+    click('#view [data-action="remove-track"][data-index="50"]');
+    await until(()=>list.tracks.length===totalBefore-1 && !!document.querySelector('#view tr[data-index="50"]') && !document.querySelector('#view tr[data-index="50"]')?.textContent?.includes(removedTitle),"global deletion from page two");
+    const moved=list.tracks[50]!.url;
+    click('#view [data-action="reorder"][data-index="50"]');
+    fill("#track-position","1");submit("#modal-form");
+    await until(()=>list.tracks[0]?.url===moved&&!get("#modal").hasAttribute("open") && document.querySelector('#view tr[data-index="50"] .track-title')?.textContent===list.tracks[50]?.title,"reorder a paged track to the first position");
     assert.deepEqual(errors,[]);
   } finally {
     for(const timer of timers) {clearTimeout(timer);clearInterval(timer);}

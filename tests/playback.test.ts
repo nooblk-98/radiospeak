@@ -25,6 +25,7 @@ test("process recovery restores track position, user queue, idle cursor and expl
     player.setLoop("one");
     const store = new PlaybackStore(path);
     store.set("music",player.snapshot());
+    await store.flush();
     restored.restore(new PlaybackStore(path).get("music")!);
     restored.setDefaultPlaylist(idle,"Chill");
     assert.equal(restored.track?.url,tracks[3]!.url);
@@ -38,6 +39,7 @@ test("process recovery restores track position, user queue, idle cursor and expl
     assert.equal(restored.track?.url,tracks[2]!.url,"idle playback resumes at the saved cursor");
     player.stop();
     store.set("music",player.snapshot());
+    await store.flush();
     restored.restore(new PlaybackStore(path).get("music")!);
     restored.setDefaultPlaylist(idle,"Chill");
     assert.equal(restored.track,undefined,"a saved Stop must survive a process restart");
@@ -49,6 +51,7 @@ test("process recovery restores track position, user queue, idle cursor and expl
     assert.throws(()=>restored.restore({...player.snapshot(),elapsed:NaN}),/Invalid playback/);
     const failure = new PlaybackStore(join(f.dir,"missing","playback.json"),message=>warnings.push(message));
     failure.set("music",player.snapshot());
+    await failure.flush();
     assert.equal(warnings.length,2,"checkpoint write errors must not crash playback");
   } finally {player.stop();restored.stop();await f.close();}
 });
@@ -76,6 +79,7 @@ test("welcome interruption and reconnect preserve one session's track, queue, an
   const saved = {...original.player.snapshot(),elapsed:63};
   original.player.stop();
   store.set(original.name,saved);
+  await store.flush();
   f.app.playback = store;
   const bot = new MusicBot(f.app,original.cfg,0);
   bot.log=()=>{};
@@ -106,5 +110,6 @@ test("welcome interruption and reconnect preserve one session's track, queue, an
     assert.equal(restart.player.track?.url,saved.track?.url,"graceful shutdown must not overwrite playback with Stop");
     assert.equal(restart.player.elapsed,63);
     restart.player.stop();
+    await store.flush();
   } finally {await bot.shutdown();await f.close();}
 });

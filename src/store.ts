@@ -2,12 +2,14 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { PLAYLISTS_PATH, validateNickname } from "./config.ts";
 import type { Track } from "./player.ts";
+import { trackKey } from "./track-key.ts";
 
 export interface SavedPlaylist {
   id: string;
   name: string;
   collectionId: string | null;
   tracks: Track[];
+  version: string;
 }
 export interface Collection { id: string; name: string }
 interface Library {
@@ -32,7 +34,7 @@ export class PlaylistStore {
     this.#data = {
       version: 2,
       playlists: lists.filter((p: SavedPlaylist) => p && p.name && Array.isArray(p.tracks))
-        .map((p: SavedPlaylist) => ({ ...p, id: p.id || randomUUID(), collectionId: p.collectionId ?? null })),
+        .map((p: SavedPlaylist) => ({ ...p, id: p.id || randomUUID(), version: p.version || randomUUID(), collectionId: p.collectionId ?? null })),
       collections: Array.isArray(raw.collections) ? raw.collections : [],
       defaults: raw.defaults ?? {},
       favorites: Array.isArray(raw.favorites) ? raw.favorites : [],
@@ -72,7 +74,7 @@ export class PlaylistStore {
 
   create(name: string, collectionId: string | null = null): SavedPlaylist {
     this.#checkCollection(collectionId);
-    const list: SavedPlaylist = { id: randomUUID(), name: this.#name(name, this.all), collectionId, tracks: [] };
+    const list: SavedPlaylist = { id: randomUUID(), version: randomUUID(), name: this.#name(name, this.all), collectionId, tracks: [] };
     this.#data.playlists.push(list);
     this.#save();
     return list;
@@ -82,6 +84,7 @@ export class PlaylistStore {
     this.#checkCollection(collectionId);
     list.name = this.#name(name, this.all, list);
     list.collectionId = collectionId;
+    list.version = randomUUID();
     this.#save();
   }
 
@@ -131,6 +134,7 @@ export class PlaylistStore {
 
   addTracks(list: SavedPlaylist, tracks: Track[]): number {
     list.tracks.push(...tracks.map((t) => this.#cleanTrack(t)));
+    list.version = randomUUID();
     this.#save();
     return list.tracks.length;
   }
@@ -138,6 +142,7 @@ export class PlaylistStore {
   removeTrack(list: SavedPlaylist, position: number): Track | undefined {
     if (!Number.isInteger(position) || position < 1 || position > list.tracks.length) return undefined;
     const [removed] = list.tracks.splice(position - 1, 1);
+    list.version = randomUUID();
     this.#save();
     return removed;
   }
@@ -145,6 +150,7 @@ export class PlaylistStore {
   moveTrack(list: SavedPlaylist, from: number, to: number): void {
     if (![from, to].every((n) => Number.isInteger(n) && n >= 1 && n <= list.tracks.length)) throw new Error("Invalid track position");
     list.tracks.splice(to - 1, 0, list.tracks.splice(from - 1, 1)[0]!);
+    list.version = randomUUID();
     this.#save();
   }
 
@@ -154,6 +160,18 @@ export class PlaylistStore {
       if (this.#data.defaults[bot] === list.id) this.#data.defaults[bot] = null;
     }
     this.#save();
+  }
+
+  addUniqueTracks(list: SavedPlaylist, tracks: Track[], skipDuplicates = true) {
+    const seen = new Set(list.tracks.map(t => trackKey(t.url)));
+    let duplicates = 0;
+    const accepted = tracks.filter(t => {
+      const key = trackKey(t.url);
+      if (skipDuplicates && seen.has(key)) { duplicates++; return false; }
+      seen.add(key); return true;
+    });
+    if (accepted.length) this.addTracks(list, accepted);
+    return { added: accepted.length, duplicates };
   }
 
   #save(): void {

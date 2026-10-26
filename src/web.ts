@@ -1,12 +1,41 @@
 ﻿import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import { asChannelID } from "@honeybbq/teamspeak";
 import { log, type App, type MusicBot } from "./bot.ts";
 import { clampVolume } from "./config.ts";
 import type { LoopMode, Track } from "./player.ts";
-import { resolve } from "./ytdlp.ts";
+import { resolve, mediaStats } from "./ytdlp.ts";
+import { ImportManager } from "./imports.ts";
+import type { SavedPlaylist } from "./store.ts";
+
+const summaries = new WeakMap<SavedPlaylist, { key: string; value: object }>();
+function summary(p: SavedPlaylist) {
+  const key = p.version + "|" + p.collectionId;
+  let entry = summaries.get(p);
+  if (!entry || entry.key !== key) {
+    entry = { key, value: { id: p.id, name: p.name, collectionId: p.collectionId, version: p.version,
+      trackCount: p.tracks.length, totalDuration: p.tracks.reduce((sum,t) => sum + (t.duration ?? 0),0), coverTrack: p.tracks[0] ?? null } };
+    summaries.set(p, entry);
+  }
+  return entry.value;
+}
+function imports(app: App) {
+  return app.imports ??= new ImportManager(app.playlists, app.config.ytdlpPath, app.config.maxPlaylistItems);
+}
+const undo = new WeakMap<MusicBot, { token: string; track: Track; position: number; expires: number; order: string; current: string | undefined }>();
+function stateFor(app: App) {
+  return {
+    bots: app.bots.map(botState), collections: app.playlists.collections, defaults: app.playlists.defaults,
+    favorites: app.playlists.favorites.map(trackJson), commandPrefix: app.config.commandPrefix,
+    playlists: app.playlists.all.map(summary), imports: imports(app).all.map(job=>({ ...job, errors: job.errors.slice(0,20) })),
+    system: stateForSystem(),
+  };
+}
+function stateForSystem() { return { pid: process.pid, uptime: process.uptime(), memoryMB: Math.round(process.memoryUsage().rss / 1048576), media: mediaStats() }; }
 
 const assets = new Map([
   ["/", ["index.html", "text/html"]],
@@ -45,6 +74,7 @@ function botState(bot: MusicBot) {
     connectionPaused: pl.connectionPaused, lastDisconnect: bot.lastDisconnect ?? null,
     normalization: pl.normalization, shuffle: pl.shuffleEnabled, canGoBack: pl.canGoBack,
     listeners: bot.listeners().map((c) => c.nickname),
+    health: bot.health,
   };
 }
 
@@ -109,7 +139,7 @@ function selectedBot(app: App, value: unknown): MusicBot {
   return bot;
 }
 
-async function botAction(app: App, bot: MusicBot, action: string, body: Record<string, unknown>): Promise<string> {
+async function botAction(app: App, bot: MusicBot, action: string, body: Record<string, unknown>): Promise<string | { message: string; undoToken: string }> {
   const pl = bot.player;
   switch (action) {
     case "play": {
@@ -149,6 +179,7 @@ async function botAction(app: App, bot: MusicBot, action: string, body: Record<s
       if (!pl.seek(Number(body.seconds))) throw new HttpError(400, "This track cannot be seeked");
       return "Playback position updated.";
     case "normalization": pl.setNormalization(body.enabled === true); return "Audio normalization updated.";
+    case "prebuffer": pl.setPrebuffer(body.enabled === true); return "Next-track prebuffering " + (body.enabled ? "enabled." : "disabled.");
     case "nickname":
       await bot.setNickname(str(body.nickname));
       return "Bot name saved.";
@@ -156,7 +187,18 @@ async function botAction(app: App, bot: MusicBot, action: string, body: Record<s
       checkOrder(pl.queue, body);
       const removed = pl.removeAt(Number(body.position));
       if (!removed) throw new HttpError(404, "No such queue position");
-      return "Removed " + removed.title;
+      const token = randomUUID();
+      undo.set(bot, { token, track: removed, position: Number(body.position), expires: Date.now() + 60_000,
+        order: JSON.stringify(pl.queue.map(t=>t.url)), current: pl.track?.url });
+      return { message: "Removed " + removed.title, undoToken: token };
+    }
+    case "undo": {
+      const saved = undo.get(bot);
+      if (!saved || saved.token !== body.token || saved.expires < Date.now()) throw new HttpError(409, "Undo expired");
+      if (saved.order !== JSON.stringify(pl.queue.map(t=>t.url)) || saved.current !== pl.track?.url) throw new HttpError(409, "The queue changed. Undo is no longer available.");
+      if (!pl.insertAt(saved.track, saved.position)) throw new HttpError(409, "Cannot restore this position");
+      undo.delete(bot);
+      return "Track restored to the queue.";
     }
     case "move": {
       checkOrder(pl.queue, body);
@@ -186,22 +228,28 @@ async function botAction(app: App, bot: MusicBot, action: string, body: Record<s
   throw new HttpError(404, "Unknown action");
 }
 
-export async function route(app: App, req: IncomingMessage, url: URL): Promise<unknown> {
+export async function route(app: App, req: IncomingMessage, url: URL, signal?: AbortSignal): Promise<unknown> {
   const method = req.method ?? "GET";
   const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
   const store = app.playlists;
   if (method === "GET" && url.pathname === "/api/state") {
-    return {
-      bots: app.bots.map(botState), collections: store.collections, defaults: store.defaults,
-      favorites: store.favorites.map(trackJson), commandPrefix: app.config.commandPrefix,
-      playlists: store.all.map((p) => ({ ...p, tracks: p.tracks.map(trackJson) })),
-    };
+    return stateFor(app);
   }
   if (method === "GET" && url.pathname === "/api/search") {
     const q = url.searchParams.get("q")?.trim() ?? "";
     if (!q || q.length > 1000) throw new HttpError(400, "Enter a search or public media URL (up to 1,000 characters)");
     const source = url.searchParams.get("source") === "soundcloud" ? "soundcloud" : "youtube";
-    return (await resolve(app.config.ytdlpPath, q, { maxItems: 10, results: 10, source })).tracks.map(trackJson);
+    return (await resolve(app.config.ytdlpPath, q, { maxItems: 10, results: 10, source, signal })).tracks.map(trackJson);
+  }
+  if (url.pathname === "/api/imports" && method === "POST") {
+    const body = await readJson(req);
+    return { message: "Import started.", job: imports(app).start(str(body.playlistId), str(body.input), body.skipDuplicates !== false) };
+  }
+  if (parts[0] === "api" && parts[1] === "imports" && parts[2]) {
+    const job = imports(app).get(parts[2]);
+    if (!job) throw new HttpError(404, "Import not found");
+    if (method === "POST" && parts[3] === "cancel") { await readJson(req); imports(app).cancel(job.id); }
+    return { job };
   }
   if (method === "POST" && url.pathname === "/api/favorites") {
     const [track] = tracksFrom([(await readJson(req)).track]);
@@ -209,7 +257,8 @@ export async function route(app: App, req: IncomingMessage, url: URL): Promise<u
     return { message: store.toggleFavorite(track) ? "Saved to favorites." : "Removed from favorites." };
   }
   if (parts[0] === "api" && parts[1] === "bots" && parts[2] && parts[3] && method === "POST") {
-    return { message: plain(await botAction(app, selectedBot(app, parts[2]), parts[3], await readJson(req))) };
+    const result = await botAction(app, selectedBot(app, parts[2]), parts[3], await readJson(req));
+    return typeof result === "string" ? { message: plain(result) } : result;
   }
   if (parts[0] === "api" && parts[1] === "collections") {
     if (method === "POST" && parts.length === 2) {
@@ -233,6 +282,11 @@ export async function route(app: App, req: IncomingMessage, url: URL): Promise<u
   if (parts[0] === "api" && parts[1] === "playlists" && parts[2]) {
     const list = store.find(parts[2]);
     if (!list) throw new HttpError(404, "No such playlist");
+    if (method === "GET" && parts.length === 3) {
+      const offset = Math.max(0, Math.floor(Number(url.searchParams.get("offset")) || 0));
+      const limit = Math.min(100, Math.max(1, Math.floor(Number(url.searchParams.get("limit")) || 50)));
+      return { ...list, tracks: list.tracks.slice(offset, offset + limit).map(trackJson), offset, total: list.tracks.length };
+    }
     if (method === "PATCH" && parts.length === 3) {
       const body = await readJson(req);
       store.update(list, str(body.name) || list.name, body.collectionId === undefined ? list.collectionId : str(body.collectionId) || null);
@@ -244,7 +298,9 @@ export async function route(app: App, req: IncomingMessage, url: URL): Promise<u
       return { message: "Deleted " + list.name };
     }
     if (method === "DELETE" && parts[3] === "tracks" && parts[4]) {
-      checkOrder(list.tracks, await readJson(req));
+      const body = await readJson(req);
+      if (body.expectedVersion !== undefined && body.expectedVersion !== list.version) throw new HttpError(409, "The playlist changed. Please try again.");
+      checkOrder(list.tracks, body);
       const removed = store.removeTrack(list, Number(parts[4]));
       if (!removed) throw new HttpError(404, "No such song");
       syncDefaults(app);
@@ -252,6 +308,7 @@ export async function route(app: App, req: IncomingMessage, url: URL): Promise<u
     }
     if (method === "POST" && parts[3]) {
       const body = await readJson(req);
+      if (body.expectedVersion !== undefined && body.expectedVersion !== list.version) throw new HttpError(409, "The playlist changed. Please try again.");
       const bot = selectedBot(app, body.bot);
       switch (parts[3]) {
         case "move":
@@ -287,29 +344,66 @@ export async function route(app: App, req: IncomingMessage, url: URL): Promise<u
 
 export function startWebServer(app: App) {
   const { host, port, password } = app.config.web;
+  const lag = monitorEventLoopDelay({ resolution: 20 });
+  lag.enable();
+  const peers = new Set<ServerResponse>();
+  let previous = "", sequence = 0;
+  const send = (res: ServerResponse, event: string, payload: unknown) => {
+    if (res.destroyed || res.writableLength > 256 * 1024) { peers.delete(res); res.end(); return; }
+    res.write("id: " + (++sequence) + "\nevent: " + event + "\ndata: " + JSON.stringify(payload) + "\n\n");
+  };
+  const withHealth = () => ({ ...stateFor(app), system: { ...stateForSystem(), eventLoopLagMs: Number.isFinite(lag.mean) ? Math.round(lag.mean / 1e6) : 0 } });
+  const timer = setInterval(() => {
+    if (!peers.size) return;
+    const state = withHealth();
+    const key = JSON.stringify({ ...state, system: undefined, bots: state.bots.map(b=>({
+      ...b, elapsed: undefined, health: { prebufferEnabled: b.health.prebufferEnabled, retrying: b.health.retrying },
+    })) });
+    if (key !== previous) {
+      previous = key;
+      for (const peer of peers) send(peer, "state", state);
+    } else {
+      const progress = { bots: state.bots.map(b=>({ name: b.name, elapsed: b.elapsed, health: b.health })), system: state.system };
+      for (const peer of peers) send(peer, "playback_progress", progress);
+    }
+  }, 1000).unref();
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     if (!authorized(req, password)) {
       res.writeHead(401, { "WWW-Authenticate": 'Basic realm="radiospeak", charset="UTF-8"' }).end("Login required");
       return;
     }
     const respondError = (err: unknown) => {
+      if (res.destroyed || res.headersSent) return;
       const status = err instanceof HttpError ? err.status : 400;
       const message = err instanceof Error ? err.message : String(err);
       res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" }).end(JSON.stringify({ error: message }));
     };
     try {
       const url = new URL(req.url ?? "/", "http://localhost");
+      if (req.method === "GET" && url.pathname === "/api/events") {
+        res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no" });
+        res.setTimeout(0);
+        peers.add(res);
+        send(res, "state", withHealth());
+        res.on("close", () => peers.delete(res));
+        return;
+      }
       const asset = req.method === "GET" ? assets.get(url.pathname) : undefined;
       if (asset) {
         res.writeHead(200, { "Content-Type": asset.type + "; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" }).end(asset.body);
         return;
       }
-      route(app, req, url).then((data) => {
+      const controller = new AbortController();
+      const onClose = () => { if (!res.writableEnded) controller.abort(new Error("Request cancelled")); };
+      res.on("close", onClose);
+      route(app, req, url, controller.signal).then((data) => {
+        if (res.destroyed) return;
         res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }).end(JSON.stringify(data));
-      }).catch(respondError);
+      }).catch(respondError).finally(() => res.off("close", onClose));
     } catch (err) { respondError(err); }
   });
   server.on("error", (err) => log("error", "Web panel failed: " + err.message));
+  server.on("close", () => { clearInterval(timer); lag.disable(); imports(app).close(); for (const peer of peers) peer.end(); peers.clear(); });
   server.listen(port, host, () => {
     log("info", "Web panel on http://" + (host === "0.0.0.0" ? "localhost" : host) + ":" + port);
     if (!password && !["127.0.0.1", "localhost", "::1"].includes(host)) log("warn", "Web panel has no password and is reachable from the network. Set web.password!");

@@ -47,6 +47,7 @@ export async function fixture(password = "") {
   };
   return { app, base, api, dir, async close() {
     app.bots.forEach(b=>b.player.stop());
+    await app.playback?.flush();
     server.closeAllConnections();
     await new Promise<void>(resolve=>server.close(()=>resolve()));
     rmSync(dir,{recursive:true,force:true});
