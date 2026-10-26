@@ -543,10 +543,12 @@ async function loadMoreResults() {
 async function importPlaylist(url) {
   const preview=await request('/api/imports/preview',{input:url});
   let importedId=null;
-  showModal('Import a public playlist','<p>'+e(preview.total?preview.total+' entries found.':'Preview loaded; the provider has not reported the total.')+' Imports run in batches of up to '+preview.batchLimit+' entries. Continue larger playlists from Notifications (the bell at the top right).</p><details><summary>Preview '+preview.tracks.length+' tracks</summary><ol>'+preview.tracks.map(t=>'<li>'+e(t.title)+'</li>').join('')+'</ol></details><label class="field-label" for="import-name">Playlist name</label><input class="field" id="import-name" name="name" required maxlength="80" value="'+e(preview.name)+'" placeholder="e.g. Weekend rotation"><label class="check-label"><input type="checkbox" name="skipDuplicates" checked> Skip duplicate tracks</label>',async d=>{
-    if(!importedId) importedId=(await mutate('/api/playlists',{name:d.get('name'),collectionId:state.collections.some(c=>c.id===libraryFilter)?libraryFilter:null})).playlist.id;
-    // Keep the created playlist selected even if the provider rejects the import.
-    playlistId=importedId;render(true);
+  showModal('Import a public playlist','<p>'+e(preview.total?preview.total+' entries found.':'Preview loaded; the provider has not reported the total.')+' Imports run in batches of up to '+preview.batchLimit+' entries. Continue larger playlists from Notifications (the bell at the top right).</p><details><summary>Preview '+preview.tracks.length+' tracks</summary><ol>'+preview.tracks.map(t=>'<li>'+e(t.title)+'</li>').join('')+'</ol></details><label class="field-label" for="import-target">Import into</label><select id="import-target" name="target"><option value="">A new playlist</option>'+state.playlists.map(p=>'<option value="'+e(p.id)+'">'+e(p.name)+' ('+trackCount(p)+' tracks)</option>').join('')+'</select><div class="import-new"><label class="field-label" for="import-name">New playlist name</label><input class="field" id="import-name" name="name" required maxlength="80" value="'+e(preview.name)+'" placeholder="e.g. Weekend rotation"></div><label class="check-label"><input type="checkbox" name="skipDuplicates" checked> Skip duplicate tracks</label>',async d=>{
+    // An existing playlist, or a new one created once even if the import is retried.
+    const target=String(d.get('target')||'');
+    if(!target&&!importedId) importedId=(await mutate('/api/playlists',{name:d.get('name'),collectionId:state.collections.some(c=>c.id===libraryFilter)?libraryFilter:null})).playlist.id;
+    // Keep the playlist selected even if the provider rejects the import.
+    playlistId=target||importedId;location.hash='library';render(true);
     await mutate('/api/imports',{playlistId,input:url,skipDuplicates:d.get('skipDuplicates')==='on'});
   },'Import playlist');
 }
@@ -780,6 +782,8 @@ document.addEventListener('input',event=>{
 document.addEventListener('change',async event=>{
   if (panelNeedsReload) return;
   const el=event.target;
+  // Importing into an existing playlist needs no new name.
+  if(el.id==='import-target') {const name=$('#import-name');name.required=!el.value;name.closest('.import-new').hidden=!!el.value;return;}
   try {
     if(el.dataset.control==='select-track'){const selected=selectionFor(playlist());if(selected.allMatching){selected.excluded=el.checked?selected.excluded.filter(i=>i!==Number(el.dataset.index)):[...new Set([...selected.excluded,Number(el.dataset.index)])];}else selected.indices=el.checked?[...new Set([...selected.indices,Number(el.dataset.index)])]:selected.indices.filter(i=>i!==Number(el.dataset.index));render(true);return;}
     if(el.id==='volume') volumeControl.set(bot().name, Number(el.value), true);
