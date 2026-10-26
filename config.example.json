@@ -5,7 +5,7 @@
   "channel": "",
   "channelPassword": "",
   "volume": 50,
-  "defaultPlaylist": "https://www.youtube.com/watch?v=R96p0qPSUTY&list=PL_D0g1ys7yh_R8ZS5EKQLX4ml0lzNaJ32",
+  "defaultPlaylist": "",
   "maxPlaylistItems": 300,
   "identityLevel": 8,
   "ffmpegPath": "ffmpeg",

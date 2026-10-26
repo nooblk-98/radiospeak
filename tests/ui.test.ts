@@ -146,6 +146,16 @@ test("UI navigation, creation, import, idle selection, search, save, queue edits
     click('#view [data-action="reorder"][data-index="50"]');
     fill("#track-position","1");submit("#modal-form");
     await until(()=>list.tracks[0]?.url===moved&&!get("#modal").hasAttribute("open") && document.querySelector('#view tr[data-index="50"] .track-title')?.textContent===list.tracks[50]?.title,"reorder a paged track to the first position");
+    click('[data-action="play-playlist-now"]');
+    await until(()=>f.app.bots[0]!.player.track?.url===list.tracks[0]!.url&&f.app.bots[0]!.player.queue.length===list.tracks.length-1,"playlist Play now replaces the queue");
+    dom.window.location.hash="radio";
+    await until(()=>get("#breadcrumb").textContent==="Radio stations"&&document.querySelectorAll(".station-card").length===2,"radio stations view");
+    click('#view .page-heading [data-action="new-station"]');
+    fill("#station-name","Late jazz");fill("#station-url","https://radio.example.com/jazz");submit("#modal-form");
+    await until(()=>document.querySelectorAll(".station-card").length===3&&!get("#modal").hasAttribute("open"),"add a radio station");
+    const jazz=f.app.playlists.radioStations.find(r=>r.name==="Late jazz")!;
+    click('[data-action="play-station"][data-id="'+jazz.id+'"]');
+    await until(()=>f.app.bots[0]!.player.radio?.name==="Late jazz"&&!!document.querySelector(".radio-now"),"tune in to a saved station");
     assert.deepEqual(errors,[]);
   } finally {
     for(const timer of timers) {clearTimeout(timer);clearInterval(timer);}

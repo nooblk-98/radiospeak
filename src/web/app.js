@@ -35,7 +35,7 @@ const playlistCache = new Map(), playlistRequests = new Map(), pages = new Map()
 const PAGE_SIZE = 50;
 const dismissedImports = new Set();
 const playlistErrors = new Map();
-const views = { dashboard:'Now playing', queue:'Up next', library:'Collections & playlists', search:'Search & import', settings:'Bot & TeamSpeak' };
+const views = { dashboard:'Now playing', queue:'Up next', library:'Collections & playlists', search:'Search & import', radio:'Radio stations', settings:'Bot & TeamSpeak' };
 const bot = () => state?.bots.find(b => b.name === botName) || state?.bots[0];
 const trackCount = p => p?.trackCount ?? p?.total ?? p?.tracks?.length ?? 0;
 const playlist = () => playlistCache.get(playlistId) || state?.playlists.find(p => p.id === playlistId);
@@ -147,6 +147,12 @@ function saveTrack(track) {
       await mutate(listPath(id) + '/add', { tracks:[track] });
     }, 'Save track');
 }
+function stationEditor(station) {
+  showModal(station ? 'Edit radio station' : 'Add a radio station',
+    '<label class="field-label" for="station-name">Station name</label><input class="field" id="station-name" name="name" required maxlength="80" placeholder="e.g. Late night jazz" value="' + e(station?.name) + '"><label class="field-label" for="station-url">Stream URL</label><input class="field" id="station-url" name="url" type="url" required placeholder="https://station.example.com/live" value="' + e(station?.url) + '"><p class="small subtle">HTTP, Icecast and SHOUTcast streams work.</p>',
+    data => mutate('/api/radio-stations' + (station ? '/' + encodeURIComponent(station.id) : ''), { name:data.get('name'), url:data.get('url') }, station ? 'PATCH' : 'POST'),
+    station ? 'Save station' : 'Add station');
+}
 function reorderDialog(scope, index) {
   const tracks = tracksFor(scope), track = tracks[index], expected = orderData(scope);
   if (!track) return;
@@ -209,7 +215,8 @@ function library(b) {
 function playlistDetail(b,list) {
   const isDefault = state.defaults[b.name] === list.id;
   return '<button class="text-button" data-action="library-back" style="margin-bottom:22px">' + icon('back') + 'Back to your library</button><div class="playlist-header">' + art(list.tracks[0],'playlist-cover') + '<div><div class="intro-eyebrow">' + e(state.collections.find(c => c.id === list.collectionId)?.name || 'STANDALONE PLAYLIST') + '</div><h1>' + e(list.name) + '</h1><p class="small subtle">' + trackCount(list) + ' tracks · ' + time(state.playlists.find(p=>p.id===list.id)?.totalDuration || 0) + '</p><div class="heading-actions">' +
-    button('Add to queue','plus','queue-playlist','data-id="' + e(list.id) + '" ' + (!trackCount(list) ? 'disabled' : '')) +
+    button('Play now','play','play-playlist-now','data-id="' + e(list.id) + '" title="Clear the queue and play this playlist" ' + (!trackCount(list) ? 'disabled' : '')) +
+    button('Add to queue','plus','queue-playlist','data-id="' + e(list.id) + '" ' + (!trackCount(list) ? 'disabled' : ''),'secondary') +
     button(isDefault ? 'Idle playlist · On' : 'Set as idle playlist','repeat','default-playlist','data-id="' + e(list.id) + '" ' + (!trackCount(list) && !isDefault ? 'disabled' : ''),'secondary') +
     ib('edit','Edit playlist','edit-playlist','data-id="' + e(list.id) + '"') + ib('trash','Delete playlist','delete-playlist','data-id="' + e(list.id) + '"','danger') +
     '</div></div></div>' + (isDefault ? '<div class="notice">This playlist automatically plays when user requests finish. Radio fallback takes priority if enabled.</div>' : '') +
@@ -217,8 +224,21 @@ function playlistDetail(b,list) {
 }
 function searchView() {
   return heading('Find your next favorite.', 'Search a little. Discover a lot. Set the mood for your channel.') +
-    '<section class="card search-panel"><div class="source-toggle" aria-label="Search source">' + ['youtube','soundcloud'].map(s => '<button data-action="search-source" data-id="' + s + '" class="' + (searchSource===s?'active':'') + '" aria-pressed="' + (searchSource===s) + '">' + icon(s) + (s==='youtube'?'YouTube':'SoundCloud') + '</button>').join('') + '</div><form id="search-form"><div class="search-input-wrap">' + icon('search') + '<input id="search-input" type="search" name="query" autocomplete="off" maxlength="1000" placeholder="Search for a track, artist, or paste a link…" aria-label="Search music" value="' + e(query) + '"><button class="button primary" type="submit">Search</button></div></form><p class="search-hint">Your next great find is a search away. Public YouTube and SoundCloud links work too.</p></section><div id="search-results">' + searchResultsMarkup() + '</div>' +
-    '<section class="card import-card"><h3>' + icon('radio') + 'Tune into something good</h3><p>Set a live radio stream to play whenever your queue is empty. Supports HTTP, Icecast, and SHOUTcast streams.</p><form id="radio-form" class="inline-form"><input class="field" type="url" name="url" required placeholder="https://station.example.com/live" aria-label="Live radio stream URL"><button type="submit" class="button secondary">' + icon('radio') + 'Set radio</button></form><div class="radio-presets"><button class="radio-preset" data-action="radio-preset" data-id="groovesalad">' + icon('radio') + '<div>Groove Salad<span>SomaFM · Ambient & downtempo</span></div></button><button class="radio-preset" data-action="radio-preset" data-id="dronezone">' + icon('radio') + '<div>Drone Zone<span>SomaFM · Atmospheric ambient</span></div></button>' + (bot().radio ? button('Turn radio off','stop','radio-off','','secondary') : '') + '</div></section>';
+    '<section class="card search-panel"><div class="source-toggle" aria-label="Search source">' + ['youtube','soundcloud'].map(s => '<button data-action="search-source" data-id="' + s + '" class="' + (searchSource===s?'active':'') + '" aria-pressed="' + (searchSource===s) + '">' + icon(s) + (s==='youtube'?'YouTube':'SoundCloud') + '</button>').join('') + '</div><form id="search-form"><div class="search-input-wrap">' + icon('search') + '<input id="search-input" type="search" name="query" autocomplete="off" maxlength="1000" placeholder="Search for a track, artist, or paste a link…" aria-label="Search music" value="' + e(query) + '"><button class="button primary" type="submit">Search</button></div></form><p class="search-hint">Your next great find is a search away. Public YouTube and SoundCloud links work too.</p></section><div id="search-results">' + searchResultsMarkup() + '</div>';
+}
+function radioView(b) {
+  const onAir = b.radio && !b.track && !paused(b);
+  const status = !b.radio ? '' : '<section class="card card-padding radio-now"><div class="bot-avatar">' + icon('radio') + '</div><div><div class="eyebrow">' + (onAir ? 'ON THE AIR' : b.track ? 'PLAYS WHEN THE QUEUE IS EMPTY' : 'RADIO PAUSED') + '</div><h2>' + e(b.radio.name) + '</h2><p class="small subtle">' + e(b.radioTitle ? '♪ ' + b.radioTitle : b.radio.url) + '</p></div>' + button('Turn radio off','stop','radio-off','','secondary') + '</section>';
+  const stations = state.radioStations.map(r => {
+    const active = b.radio?.url === r.url;
+    return '<article class="card station-card ' + (active ? 'active' : '') + '"><div class="station-head"><div class="bot-avatar">' + icon('radio') + '</div><div class="station-copy"><h3>' + e(r.name) + '</h3><p title="' + e(r.url) + '">' + e(r.url) + '</p></div>' + (active ? '<span class="tag green">On air</span>' : '') + '</div><div class="result-actions">' +
+      (active ? button('Turn off','stop','radio-off','','secondary') : button('Tune in','play','play-station','data-id="' + e(r.id) + '"')) +
+      ib('edit','Edit station','edit-station','data-id="' + e(r.id) + '"') + ib('trash','Delete station','delete-station','data-id="' + e(r.id) + '"','danger') + '</div></article>';
+  }).join('');
+  return heading('Tune into something good.', 'Save live streams for this server. A station plays whenever the queue is empty.', button('Add station','plus','new-station')) + status +
+    '<div class="section-heading"><h2>Your stations <span class="count-badge">' + state.radioStations.length + '</span></h2></div>' +
+    (state.radioStations.length ? '<div class="station-grid">' + stations + '</div>' : empty('No stations yet', 'Add an HTTP, Icecast or SHOUTcast stream to get started.', button('Add station','plus','new-station','','secondary'))) +
+    '<p class="small subtle">Tuning in replaces the idle playlist right away. Songs people request still play first. In chat: <code>' + e(state.commandPrefix) + 'radio &lt;station&gt;</code></p>';
 }
 function searchResultsMarkup() {
   if (searchStatus === 'loading') return '<div class="loading" aria-live="polite">Searching ' + (searchSource==='youtube'?'YouTube':'SoundCloud') + '…</div>';
@@ -316,7 +336,7 @@ function render(force = false) {
   if (!['all','standalone','favorites'].includes(libraryFilter) && !state.collections.some(c=>c.id===libraryFilter)) libraryFilter = 'all';
   const bWithoutProgress = {...b}; delete bWithoutProgress.elapsed;
   delete bWithoutProgress.health;
-  const signature = JSON.stringify([activeView,playlistId,libraryFilter,[...pages],bWithoutProgress,state.playlists,state.collections,state.defaults,state.favorites,searchSource]);
+  const signature = JSON.stringify([activeView,playlistId,libraryFilter,[...pages],bWithoutProgress,state.playlists,state.collections,state.defaults,state.favorites,state.radioStations,searchSource]);
   const active = document.activeElement;
   const editing = $('#view').contains(active) && /INPUT|SELECT|TEXTAREA/.test(active.tagName);
   if ((force || signature !== renderedView) && !dragging && (!editing || force)) {
@@ -331,7 +351,7 @@ function render(force = false) {
       viewTracks.set(id,sparse);viewVersions.set(id,detail.version);
     }
     $('#view').innerHTML = (b.talkBlocked ? '<div class="notice" role="alert">The bot cannot be heard in this channel. Required talk power: ' + b.talkBlocked.needed + '; bot talk power: ' + b.talkBlocked.have + '. Ask a TeamSpeak admin to assign this bot a permanent server or channel group with enough talk power. A temporary talk grant can be lost on reconnect. You can also choose another channel.</div>' : '') +
-      ({dashboard,queue:b=>heading('Good things are up next.', 'Your channel’s requests, in the order you want to hear them.', '<a href="#search" class="button primary">' + icon('plus') + 'Add tracks</a>') + hero(b) + '<div style="margin-top:28px">' + queueSection(b,true) + '</div>',library,search:searchView,settings}[activeView] || dashboard)(b);
+      ({dashboard,queue:b=>heading('Good things are up next.', 'Your channel’s requests, in the order you want to hear them.', '<a href="#search" class="button primary">' + icon('plus') + 'Add tracks</a>') + hero(b) + '<div style="margin-top:28px">' + queueSection(b,true) + '</div>',library,search:searchView,radio:radioView,settings}[activeView] || dashboard)(b);
     if (focusId && document.getElementById(focusId)) {
       document.getElementById(focusId).focus({preventScroll:true});
       if (selection) document.getElementById(focusId).setSelectionRange(...selection);
@@ -440,6 +460,7 @@ document.addEventListener('click', async event => {
       case 'edit-playlist': return playlistEditor(state.playlists.find(p=>p.id===id));
       case 'delete-playlist': return confirmAction('Delete playlist?', 'This deletes the playlist and its saved tracks. If it is an idle playlist, that fallback will be disabled.',async()=>{await mutate(listPath(id),{},'DELETE');playlistId=null;render(true);});
       case 'queue-playlist': await mutate(listPath(id)+'/play',{bot:b.name});return;
+      case 'play-playlist-now': await mutate(listPath(id)+'/play-now',{bot:b.name});return;
       case 'default-playlist': await action('default',{playlistId:state.defaults[b.name]===id?null:id});return;
       case 'toggle-play':
         if(b.connectionPaused) {toast('Playback is held until the bot reconnects to TeamSpeak.');return;}
@@ -483,7 +504,10 @@ document.addEventListener('click', async event => {
           await mutate(listPath(result.playlist.id)+'/save',{bot:b.name});
         },'Save queue');
       case 'search-source': searchSource=id;render(true);if(query.trim()) void search();return;
-      case 'radio-preset': await action('radio',{url:'https://ice5.somafm.com/'+id+'-128-mp3'});return;
+      case 'new-station': return stationEditor();
+      case 'edit-station': return stationEditor(state.radioStations.find(r=>r.id===id));
+      case 'delete-station': return confirmAction('Delete station?', 'It is removed from your saved stations. A bot playing it keeps playing until you turn the radio off.',()=>mutate('/api/radio-stations/'+encodeURIComponent(id),{},'DELETE'));
+      case 'play-station': await action('radio',{stationId:id});return;
       case 'radio-off': await action('radio',{url:''});return;
     }
   } catch(error) { toast(error.message,true); }
@@ -519,7 +543,7 @@ document.addEventListener('submit',async event=>{
         playlistId=importedId;render(true);
         await mutate('/api/imports',{playlistId,input:url,skipDuplicates:d.get('skipDuplicates')==='on'});
       },'Import playlist');
-    } else if(form.id==='radio-form') {await action('radio',{url:data.get('url')});form.reset();}
+    }
     renderedView='';render();
   } catch(error) {toast(error.message,true);}
   finally {submit.disabled=false;}

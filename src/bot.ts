@@ -41,6 +41,11 @@ export function log(level: LogLevel, msg: string): void {
   else console.log(line);
 }
 
+/** "Parent/Child", the form TeamSpeak accepts as a default channel. */
+function channelPath(c: Client, id: ChannelID): string {
+  return c.view.path(id).map((ch) => ch.name).join("/");
+}
+
 const TITLE_POLL_MS = 20_000;
 const LISTENER_CHECK_MS = 5_000;
 const DEFAULT_PLAYLIST_REFRESH_MS = 6 * 60 * 60 * 1000;
@@ -188,14 +193,14 @@ export class MusicBot {
     return (position === 0 ? `Playing: ${what}` : `Queued #${position}: ${what}`) + hint;
   }
 
-  playRadio(url: string | undefined): string {
+  playRadio(url: string | undefined, stationName?: string): string {
     if (!url) {
       this.player.playRadio(undefined);
       return "Radio off.";
     }
     let name = url;
     try {
-      name = new URL(url).hostname;
+      name = stationName || new URL(url).hostname;
     } catch {
       return "That doesn't look like a link.";
     }
@@ -214,10 +219,27 @@ export class MusicBot {
     return `Volume set to ${this.player.volume}`;
   }
 
-  async moveTo(channelID: ChannelID): Promise<void> {
+  /** `remember` makes it the channel the bot joins after reconnects and restarts. */
+  async moveTo(channelID: ChannelID, remember = false): Promise<void> {
     const c = this.client;
     if (!c || !this.#connected) throw new Error("Not connected");
-    await moveClient(c, c.clientID, channelID);
+    if (c.channelID !== channelID) await moveClient(c, c.clientID, channelID);
+    if (remember) this.#app.playlists.setChannel(this.name, channelPath(c, channelID));
+  }
+
+  /** A reconnect reuses the channel the client was created with, so return to the one saved since. */
+  #returnHome(c: Client): void {
+    const saved = this.#app.playlists.channelFor(this.name);
+    if (!saved || c.channelID === undefined || channelPath(c, c.channelID) === saved) return;
+    const home = [...c.view.channels.values()].find((ch) => channelPath(c, ch.id) === saved);
+    if (!home) return this.log("warn", `Saved channel "${saved}" no longer exists; staying here.`);
+    void moveClient(c, c.clientID, home.id).catch((err: unknown) =>
+      this.log("warn", `Could not return to "${saved}": ${err instanceof Error ? err.message : String(err)}`));
+  }
+
+  /** The channel saved in the web panel, else the configured one. */
+  get homeChannel(): string {
+    return this.#app.playlists.channelFor(this.name) ?? this.cfg.channel;
   }
 
   status(): string {
@@ -314,10 +336,12 @@ export class MusicBot {
   #createClient(identity: Identity): Client {
     const { config } = this.#app;
     const nickname = this.nickname;
+    const channel = this.homeChannel;
     const c = new Client(identity, config.server, nickname, {
       serverPassword: config.serverPassword || undefined,
-      defaultChannel: this.cfg.channel || undefined,
-      defaultChannelPassword: this.cfg.channelPassword || undefined,
+      defaultChannel: channel || undefined,
+      // The configured password belongs to the configured channel only.
+      defaultChannelPassword: (channel === this.cfg.channel && this.cfg.channelPassword) || undefined,
       reconnect: {},
     });
     let wasConnected = false;
@@ -351,6 +375,7 @@ export class MusicBot {
     // transport drops while the server is still sending its welcome roster.
     c.on("viewReady", () => {
       if (c !== this.client || !this.#connected || this.#shuttingDown) return;
+      this.#returnHome(c);
       this.#checkTalkPower();
       this.#checkListeners();
       this.player.setConnectionPaused(false);

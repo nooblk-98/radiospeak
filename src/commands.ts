@@ -42,7 +42,7 @@ function helpText(p: string): string {
     `${p}pl — list   ${p}pl new <name>   ${p}pl add <name> [link|search] (no link = current song)`,
     `${p}pl show <name>   ${p}pl play <name> [shuffle]   ${p}pl save <name> — save the queue   ${p}pl remove <name> <n>   ${p}pl delete <name>`,
     "[b]Other[/b]",
-    `${p}radio <stream link|off> — live radio when the queue is empty   ${p}join — come to my channel   ${p}bots`,
+    `${p}radio <station|stream link|off> — live radio when the queue is empty   ${p}radio list   ${p}join — come to my channel   ${p}bots`,
   ].join("\n");
 }
 
@@ -268,9 +268,16 @@ export async function runCommand(app: App, bot: MusicBot, msg: TextMessageEvent)
       return Number.isFinite(v) ? bot.setVolume(clampVolume(v)) : `Usage: ${p}vol 0-100`;
     }
 
-    case "radio":
-      if (!arg) return player.radio ? `Radio: ${player.radio.name}. ${p}radio off to stop it.` : `Usage: ${p}radio <stream link|off>`;
-      return bot.playRadio(arg.toLowerCase() === "off" ? undefined : arg);
+    case "radio": {
+      if (!arg) return player.radio ? `Radio: ${player.radio.name}. ${p}radio off to stop it.` : `Usage: ${p}radio <station|stream link|off>`;
+      if (arg.toLowerCase() === "off") return bot.playRadio(undefined);
+      const stations = app.playlists.radioStations;
+      if (arg.toLowerCase() === "list") {
+        return stations.length ? "[b]Radio stations[/b]\n" + stations.map((r, i) => `${i + 1}. ${r.name}`).join("\n") : "No saved stations. Add them in the web panel.";
+      }
+      const station = app.playlists.findStation(arg);
+      return station ? bot.playRadio(station.url, station.name) : bot.playRadio(arg);
+    }
 
     case "pl":
     case "playlist":

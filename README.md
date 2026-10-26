@@ -14,7 +14,7 @@ a default playlist for when nobody has requested anything, live radio links and 
 - **Queue** with play-next, skip, remove, shuffle, loop (one / all), pause and resume (songs continue where they stopped)
 - **Default playlist** that plays whenever the queue is empty; a request interrupts it and it picks up again afterwards
 - **Saved playlists** built from chat or the web panel (`playlists.json`)
-- **Radio**: any live stream link plays while the queue is empty
+- **Radio stations**: saved stream links, managed in the web panel, play while the queue is empty
 - **Fixed bot nickname**, defaulting to `radiospeak`, customizable in Bot & TeamSpeak settings; current song in the description
 - **Auto-pause** while nobody is listening in the channel
 - **`!join`** moves the bot to your channel
@@ -43,9 +43,9 @@ Edit `config.json`:
 | --- | --- |
 | `server` | `host:port` of your TeamSpeak server (port is usually 9987) |
 | `serverPassword` | Server password, empty if none |
-| `nickname`, `channel`, `channelPassword` | Bot name and channel to join (`"Music"` or `"Lounge/Music"`) |
+| `nickname`, `channel`, `channelPassword` | Bot name and first channel to join (`"Music"` or `"Lounge/Music"`). Optional: a channel chosen in the web panel replaces it |
 | `volume` | Starting volume, 0-100 |
-| `defaultPlaylist` | YouTube playlist link (or a song link from inside one) to play when idle |
+| `defaultPlaylist` | Optional YouTube playlist link to play when idle; usually left empty and an idle playlist chosen per bot in the web panel |
 | `maxPlaylistItems` | Most songs taken from one playlist link |
 | `bots` | List of bots; each can override `name`, `nickname`, `channel`, `channelPassword`, `volume`, `defaultPlaylist`, `identityFile` |
 | `admins`, `adminGroups` | Unique IDs / server group IDs allowed to delete saved playlists. Both empty = everyone |
@@ -71,8 +71,8 @@ npm run test:audio -- "song name or link"
 
 ## Docker
 
-Edit the `FMBOT_*` settings in `docker-compose.yml` (server, password, channel, default playlist and
-**web panel password**), then:
+Edit the `FMBOT_*` settings in `docker-compose.yml` (server, server password and **web panel password**),
+then:
 
 ```bash
 docker compose up -d --build
@@ -85,6 +85,8 @@ docker compose logs -f
 The compose file publishes the web panel at `http://<server>:48080` (any user name, the password you set).
 The fixed Docker volume `radiospeak-data` keeps identity files, playlists, playback checkpoints and optional
 `config.json`. `FMBOT_*` variables override that configuration. Keep this volume when upgrading.
+Each bot's channel, idle playlist, nickname and the radio stations are set in the web panel and saved
+in the same volume, so the compose file needs no per-bot defaults.
 
 **Existing installs using `./data`: migrate before the first deployment with the new compose file.**
 On the Docker host, disable scheduled Portainer redeployments for radiospeak while migrating, then run:
@@ -133,17 +135,23 @@ mobile, and the player dock remains available while switching screens.
   them in collections; import public YouTube playlists; reorder or enqueue saved
   tracks. Track tables show 50 rows per page; reordering works across pages.
   Deleting a collection keeps its playlists as standalone lists.
+- **Playlist Play now:** clears the bot's queue and starts the playlist at once
+  (shuffled when shuffle is on). **Add to queue** appends it instead.
 - **Idle playlists:** select one per bot. Requests take priority and the idle
   playlist resumes when they finish. An enabled radio stream takes priority over
   the idle playlist. Deleting an assigned playlist disables that fallback.
 - **Search & import:** debounced YouTube/SoundCloud search, result artwork,
-  durations and artists, play now, enqueue, and save to a playlist. Live stream
-  URLs and radio presets are also available. Search and imports need `yt-dlp`.
+  durations and artists, play now, enqueue, and save to a playlist. Search and
+  imports need `yt-dlp`.
   Search metadata is cached for 60 seconds (up to 100 searches). Media lookups
   share two process slots with a bounded waiting list; cancelling a browser search
   aborts its lookup. Imports run as background jobs with progress, cancellation,
   unavailable-entry reports, and an optional skip-duplicates checkbox. Alternate
   YouTube links to the same video count as duplicates.
+- **Radio stations:** add, rename, edit and delete saved stream URLs (HTTP,
+  Icecast, SHOUTcast), shared by all bots. Tune in sets the selected bot's radio:
+  it replaces the idle playlist immediately, while user requests still finish
+  first. Two SomaFM stations are offered until the list is edited.
 - **Bot & TeamSpeak:** customize the fixed bot name, move between available channels, see
   listeners, toggle FFmpeg loudness normalization, shuffle, and repeat. Bot health
   shows process uptime/memory, reconnects, buffer underruns, checkpoint status,
@@ -178,7 +186,7 @@ tokens prevent stale edits without posting the entire track order back.
 Library data is written atomically to `playlists.json` (or `FMBOT_PLAYLISTS`).
 Existing playlist arrays load automatically; the next write upgrades them to a
 versioned object containing playlists, stable IDs, collections, favorites, and
-per-bot idle selections. Back up that file before downgrading to an older release.
+per-bot idle selections, channels and nicknames, and radio stations. Back up that file before downgrading to an older release.
 Idle selections survive restarts and override configured remote defaults. Playback,
 shuffle, volume, and normalization controls apply to the running bot.
 
@@ -257,7 +265,7 @@ Send these in the bot's channel or as a private message to the bot:
 | `!pl show <name> [page]`, `!pl remove <name> <n>` | View / edit |
 | `!pl play <name> [shuffle]` | Queue a saved playlist |
 | `!pl delete <name>` | Delete (admin) |
-| `!radio <stream link\|off>` | Live radio while the queue is empty |
+| `!radio <station\|stream link\|off>`, `!radio list` | Live radio while the queue is empty (saved station name or number) |
 | `!join`, `!bots`, `!help` | Other |
 
 ## Notes
