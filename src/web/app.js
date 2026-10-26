@@ -49,7 +49,7 @@ function enforcePermissions() {
   document.querySelectorAll('[data-min-role]').forEach(el=>{el.hidden=rank[role]<rank[el.dataset.minRole];});
   if(role==='admin')return;
   const adminActions=new Set(['new-instance','remove-instance','delete-instance','delete-account']);
-  const listenerActions=new Set(['menu','close-modal','reload-panel','logout','sign-out','collection','filter','favorites','library-back','open-playlist','page','search-source','search-type','search-more','search-playlist-queue','enqueue-track','queue-playlist','history-enqueue','skip','undo','switch-bot','toggle-switcher','switcher','notifications-read']);
+  const listenerActions=new Set(['menu','close-menu','close-modal','reload-panel','logout','sign-out','collection','filter','favorites','library-back','open-playlist','page','search-source','search-type','search-more','search-playlist-queue','enqueue-track','queue-playlist','history-enqueue','skip','undo','switch-bot','toggle-switcher','switcher','notifications-read']);
   document.querySelectorAll('[data-action]').forEach(el=>{
     const action=el.dataset.action;
     let allowed=role==='dj'?!adminActions.has(action):listenerActions.has(action);
@@ -638,6 +638,7 @@ document.addEventListener('click', async event => {
       }
       case 'delete-schedule': return confirmAction('Remove schedule?','The saved playlist stays in your library.',()=>mutate('/api/schedules/'+encodeURIComponent(id),{},'DELETE'),'Remove');
       case 'delete-account': return confirmAction('Remove '+id+'?','This account will be signed out and lose panel access.',async()=>{await mutate('/api/accounts/'+encodeURIComponent(id),{},'DELETE');accessData=null;render(true);},'Remove account');
+      case 'close-menu': $('#sidebar').classList.remove('open');$('[data-action="menu"]').setAttribute('aria-expanded','false');return;
       case 'menu': {
         const open=$('#sidebar').classList.toggle('open');el.setAttribute('aria-expanded',String(open));return;
       }
