@@ -498,10 +498,10 @@ export async function route(app: App, req: IncomingMessage, url: URL, signal?: A
         }
         case "play":
           if (!list.tracks.length) throw new HttpError(400, "Playlist is empty");
-          return { message: plain(bot.enqueue([...list.tracks], { requestedBy: viewer.username, requesterId: viewer.id, privileged: viewer.role !== "listener", playlistName: list.name })) };
+          return { message: plain(bot.enqueue(list.tracks.map((t) => ({ ...t, playlistId: list.id })), { requestedBy: viewer.username, requesterId: viewer.id, privileged: viewer.role !== "listener", playlistName: list.name })) };
         case "play-now":
           if (!list.tracks.length) throw new HttpError(400, "Playlist is empty");
-          bot.player.playNow(list.tracks.map((t) => ({ ...t, requestedBy: "web" })), true);
+          bot.player.playNow(list.tracks.map((t) => ({ ...t, requestedBy: "web", playlistId: list.id })), true);
           return { message: "Playing " + list.name + " now. It replaced the queue." };
         case "save": {
           const tracks = [...(bot.player.track && !bot.player.track.auto ? [bot.player.track] : []), ...bot.player.queue];

@@ -51,6 +51,7 @@ export class PlaylistStore {
   #writer: AtomicFile;
   revision = 0;
   onChange?: () => void;
+  #tracksAdded = new Set<(list: SavedPlaylist, tracks: readonly Track[]) => void>();
 
   constructor(path = PLAYLISTS_PATH) {
     this.#path = path;
@@ -372,15 +373,23 @@ export class PlaylistStore {
   }
 
   #cleanTrack(t: Track): Track {
-    const { requestedBy, requesterId, auto, ...saved } = t;
+    const { requestedBy, requesterId, auto, playlistId, ...saved } = t;
     return saved;
   }
 
   addTracks(list: SavedPlaylist, tracks: Track[]): number {
-    list.tracks.push(...tracks.map((t) => this.#cleanTrack(t)));
+    const added = tracks.map((t) => this.#cleanTrack(t));
+    list.tracks.push(...added);
     list.version = randomUUID();
     this.#save();
+    for (const listener of this.#tracksAdded) listener(list, added);
     return list.tracks.length;
+  }
+
+  /** Every way of adding songs to a playlist ends here; returns a function that stops listening. */
+  onTracksAdded(listener: (list: SavedPlaylist, tracks: readonly Track[]) => void): () => void {
+    this.#tracksAdded.add(listener);
+    return () => { this.#tracksAdded.delete(listener); };
   }
 
   removeTrack(list: SavedPlaylist, position: number): Track | undefined {

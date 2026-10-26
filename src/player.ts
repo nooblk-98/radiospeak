@@ -38,6 +38,8 @@ export interface Track {
   importKey?: string;
   /** From the default playlist, played only while nobody has requested anything. */
   auto?: boolean;
+  /** The saved playlist this request was queued from; songs added to it later follow it into the queue. */
+  playlistId?: string;
 }
 
 /** A live stream played whenever the queue is empty. */
@@ -295,6 +297,14 @@ export class Player {
     this.#prebuffer = enabled;
     if (!enabled) this.#cancelPrepared();
     else this.#prepareNext();
+    this.#emit({ type: "change" });
+  }
+  /** Places songs right after the queued songs from saved playlist `playlistId`, or first in line when none are left. */
+  insertFromPlaylist(tracks: Track[], playlistId: string): void {
+    if (!tracks.length) return;
+    this.checkQueue(tracks);
+    const last = this.#queue.findLastIndex((t) => t.playlistId === playlistId);
+    this.#queue.splice(last + 1, 0, ...tracks);
     this.#emit({ type: "change" });
   }
   insertAt(track: Track, position: number): boolean {

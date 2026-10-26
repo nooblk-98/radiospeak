@@ -17,7 +17,8 @@ import type { AppConfig, BotConfig } from "./config.ts";
 import { validateNickname } from "./config.ts";
 import { fetchIcyTitle } from "./icy.ts";
 import { Player, type PlayerEvent, type Track } from "./player.ts";
-import type { PlaylistStore } from "./store.ts";
+import type { PlaylistStore, SavedPlaylist } from "./store.ts";
+import { trackKey } from "./track-key.ts";
 import type { PlaybackStore } from "./playback-store.ts";
 import type { ImportManager } from "./imports.ts";
 import type { Operations } from "./operations.ts";
@@ -95,6 +96,7 @@ export class MusicBot {
   #descriptionDenied = false;
   #titleUrl: string | undefined;
   #welcomes = new WelcomeLimiter();
+  #unfollow: () => void = () => {};
   /** Joins are greeted only once the roster has settled after (re)connecting. */
   #greetFrom = Infinity;
   #defaultLoaded = false;
@@ -142,6 +144,33 @@ export class MusicBot {
     const current = this.player.track;
     if (current && !app.playlists.historyFor(this.name).some(h => h.track.url === current.url && !h.endedAt)) app.playlists.recordStart(this.name,current);
     this.syncLibrary();
+    this.#unfollow = app.playlists.onTracksAdded((list, tracks) => this.#followPlaylist(list, tracks));
+  }
+
+  /** Songs added to a saved playlist while it is playing join the queue right after its other songs. */
+  #followPlaylist(list: SavedPlaylist, tracks: readonly Track[]): void {
+    const pl = this.player;
+    const playing = [pl.track, ...pl.queue].filter((t): t is Track => t !== undefined);
+    const source = playing.find((t) => t.playlistId === list.id);
+    if (!source) return;
+    // Skip songs already queued, e.g. when the queue itself is saved back into the playlist.
+    const queued = new Set(playing.map((t) => trackKey(t.url)));
+    const fresh: Track[] = [];
+    for (const t of tracks) {
+      const key = trackKey(t.url);
+      if (queued.has(key)) continue;
+      queued.add(key);
+      fresh.push({ ...t, playlistId: list.id,
+        ...(source.requestedBy ? { requestedBy: source.requestedBy } : {}),
+        ...(source.requesterId ? { requesterId: source.requesterId } : {}) });
+    }
+    if (!fresh.length) return;
+    try {
+      pl.insertFromPlaylist(fresh, list.id);
+      this.log("info", `Queued ${fresh.length} song(s) just added to ${list.name}`);
+    } catch (err) {
+      this.log("warn", `Could not queue songs added to ${list.name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   get name(): string {
@@ -409,6 +438,7 @@ export class MusicBot {
   async shutdown(): Promise<void> {
     this.#checkpoint();
     this.#shuttingDown = true;
+    this.#unfollow();
     await this.#app.playback?.flush();
     await this.#app.playlists.flush();
     this.#timers.forEach(timer => clearInterval(timer));

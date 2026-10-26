@@ -262,3 +262,27 @@ test("join greetings list the commands, respect per-person and channel limits, a
     assert.equal(f.app.playlists.welcomes("Test bot"),true);
   } finally {await f.close();}
 });
+
+test("songs added to a playing saved playlist join the queue after its other songs",async()=>{
+  const f=await fixture(), p=f.app.bots[0]!.player;
+  try {
+    const party=(await f.api("/api/playlists",{name:"Party"})).data.playlist;
+    const other=(await f.api("/api/playlists",{name:"Other"})).data.playlist;
+    await f.api("/api/playlists/"+party.id+"/add",{tracks:tracks.slice(0,2)});
+    assert.equal((await f.api("/api/playlists/"+party.id+"/play-now",{bot:"Test bot"})).status,200);
+    p.enqueue([{...tracks[2]!,requestedBy:"someone"}]);
+    const fresh={url:"https://www.youtube.com/watch?v=freshsong01",title:"Fresh song",duration:120};
+    assert.equal((await f.api("/api/playlists/"+party.id+"/add",{tracks:[fresh]})).status,200);
+    assert.deepEqual(p.queue.map(t=>t.url),[tracks[1]!.url,fresh.url,tracks[2]!.url],"new playlist songs come before later requests");
+    assert.equal(p.queue[1]!.playlistId,party.id);
+    assert.equal(p.queue[1]!.requestedBy,"web");
+    await f.api("/api/playlists/"+party.id+"/add",{tracks:[tracks[1]]});
+    assert.equal(p.queue.length,3,"songs already queued are not added twice");
+    await f.api("/api/playlists/"+other.id+"/add",{tracks:[tracks[3]]});
+    assert.equal(p.queue.length,3,"playlists that are not playing do not touch the queue");
+    assert.equal(f.app.playlists.find(party.id)!.tracks.some(t=>"playlistId" in t),false,"saved playlists never store the queue tag");
+    p.clearQueue();p.skip();
+    await f.api("/api/playlists/"+party.id+"/add",{tracks:[{...fresh,url:"https://www.youtube.com/watch?v=latersong01"}]});
+    assert.equal(p.queue.length,0,"a finished playlist no longer pulls new songs in");
+  } finally {await f.close();}
+});

@@ -125,7 +125,7 @@ async function playlistCommand(app: App, bot: MusicBot, msg: TextMessageEvent, a
     case "play": {
       const list = need();
       if (list.tracks.length === 0) return `[b]${list.name}[/b] is empty.`;
-      const tracks = [...list.tracks];
+      const tracks = list.tracks.map((t) => ({ ...t, playlistId: list.id }));
       if (rest[0]?.toLowerCase() === "shuffle") {
         for (let i = tracks.length - 1; i > 0; i--) {
           const j = Math.floor(Math.random() * (i + 1));
