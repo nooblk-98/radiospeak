@@ -130,7 +130,7 @@ test("UI navigation, creation, import, idle selection, search, save, queue edits
     assert.equal(get('#import-progress').textContent,'',"import cards stay out of the workspace");
     click('#notification-panel [data-action="undo"]');
     await until(()=>f.app.bots[0]!.player.queue.length===queueBefore && get("#toast").textContent==="Track restored to the queue.","undo queue removal");
-    click('[data-action="notifications-read"]');assert.equal(document.querySelector('.notification-badge'),null);
+    click('[data-action="notifications-read"]');assert.equal((get('.notification-badge') as HTMLElement).hidden,true);
     document.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));assert.equal(get('#notification-panel').hidden,true);
     dom.window.location.hash="settings";
     await until(()=>!!document.querySelector("#bot-nickname"),"bot settings navigation");

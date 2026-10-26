@@ -5,9 +5,13 @@ export class NotificationCenter {
   constructor() {
     this.items=[];this.read={};this.jobs=[];this.key='';this.signature='';this.seen=new Map();
     this.button=document.querySelector('#notification-button');this.panel=document.querySelector('#notification-panel');
+    this.container=document.querySelector('#notification-center');
+    this.button.innerHTML=icon('bell')+'<span class="notification-badge" hidden></span>';
+    this.badge=this.button.querySelector('.notification-badge');
     this.button.addEventListener('click',()=>this.toggle());
     document.addEventListener('click',event=>{
-      if(!event.target.closest('#notification-center'))this.close();
+      // Keep the original event path: a mark-read action can replace its own DOM.
+      if(!event.composedPath().includes(this.container))this.close();
       if(event.target.closest('[data-action="notifications-read"]')){for(const item of this.entries())this.read[item.id]=item.signature;this.save();this.render();}
     });
     document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!this.panel.hidden){this.close();this.button.focus();}});
@@ -23,7 +27,7 @@ export class NotificationCenter {
     if(key&&(this.seen.get(key)===message || this.items.some(item=>item.key===key&&item.message===message)))return;
     if(key)this.seen.set(key,message);
     if(this.seen.size>500)this.seen.delete(this.seen.keys().next().value);
-    const id=crypto.randomUUID();
+    const id=globalThis.crypto?.randomUUID?.() ?? Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
     this.items.unshift({id,signature:id,message,error,key,at:new Date().toISOString(),undoToken,undoBot,expires:Date.now()+10000});this.items.length=Math.min(80,this.items.length);
     document.querySelector('#toast').textContent=message;
     this.save();this.render();
@@ -47,9 +51,14 @@ export class NotificationCenter {
   close(){this.panel.hidden=true;this.button.setAttribute('aria-expanded','false');}
   render() {
     const entries=this.entries(),unread=entries.filter(i=>this.read[i.id]!==i.signature).length;
-    this.button.innerHTML=icon('bell')+(unread?'<span class="notification-badge">'+Math.min(99,unread)+'</span>':'');
+    // Never detach an icon/badge between pointerdown and click during SSE updates.
+    const count=String(Math.min(99,unread));
+    if(this.badge.textContent!==count)this.badge.textContent=count;
+    this.badge.hidden=!unread;
     this.button.setAttribute('aria-label','Notifications'+(unread?', '+unread+' unread':''));
-    const signature=JSON.stringify([entries,this.read,Date.now()>>13]);if(signature===this.signature)return;this.signature=signature;
+    const signature=JSON.stringify([entries,this.read,this.items.filter(item=>item.undoToken&&item.expires>Date.now()).map(item=>item.id)]);if(signature===this.signature)return;this.signature=signature;
+    const focused=this.panel.contains(document.activeElement)?{...document.activeElement.dataset}:null;
+    const scrollTop=this.panel.querySelector('.notification-list')?.scrollTop||0;
     this.panel.innerHTML='<div class="notification-heading"><h2>Notifications</h2><button class="text-button" data-action="notifications-read">Mark all read</button></div><div class="notification-list">'+(entries.length?entries.map(item=>{
       const unread=this.read[item.id]!==item.signature;
       if(item.job) {
@@ -59,5 +68,7 @@ export class NotificationCenter {
       }
       return '<article class="notification-item '+(unread?'unread ':'')+(item.error?'notification-error':'')+'"><p>'+e(item.message)+'</p><time>'+e(new Date(item.at).toLocaleString())+'</time>'+(item.key==='panel-update'?'<button class="button secondary" data-action="reload-panel">Reload panel</button>':'')+(item.undoToken&&item.expires>Date.now()?'<button class="button secondary" data-action="undo" data-token="'+e(item.undoToken)+'" data-bot="'+e(item.undoBot)+'">Undo</button>':'')+'</article>';
     }).join(''):'<p class="subtle">You’re all caught up.</p>')+'</div>';
+    if(focused?.action)[...this.panel.querySelectorAll('[data-action]')].find(el=>['action','id','token'].every(key=>el.dataset[key]===focused[key]))?.focus({preventScroll:true});
+    this.panel.querySelector('.notification-list').scrollTop=scrollTop;
   }
 }
