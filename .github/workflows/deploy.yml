@@ -4,7 +4,21 @@ name: Deploy
 on:
   push:
     branches: [main]
+    paths:
+      - 'src/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - 'package*.json'
+      - 'tsconfig.json'
+      - 'Dockerfile'
+      - 'docker-compose.yml'
+      - '.github/workflows/deploy.yml'
   workflow_dispatch:
+    inputs:
+      force_redeploy:
+        description: Rebuild even when the same source is already healthy
+        type: boolean
+        default: false
 
 concurrency:
   group: deploy
@@ -21,22 +35,34 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Install audio tools
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: npm run check
       - run: npm test
+        env:
+          FFMPEG_PATH: /usr/bin/ffmpeg
 
   redeploy:
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Check health URL configuration
+        env:
+          DEPLOY_HEALTH_URL: ${{ secrets.DEPLOY_HEALTH_URL }}
+        run: test -n "$DEPLOY_HEALTH_URL" || { echo "::error::Set DEPLOY_HEALTH_URL to the public radiospeak /healthz URL."; exit 1; }
       - name: Trigger Portainer stack redeploy
         env:
           # Repository secret holding the stack's webhook URL (Settings → Secrets and variables → Actions).
           WEBHOOK_URL: ${{ secrets.PORTAINER_WEBHOOK_URL }}
-        run: |
-          if [ -z "$WEBHOOK_URL" ]; then
-            echo "::error::Set the PORTAINER_WEBHOOK_URL repository secret to the Portainer stack webhook URL."
-            exit 1
-          fi
-          curl --fail-with-body --silent --show-error --max-time 60 --retry 3 --retry-delay 5 -X POST "$WEBHOOK_URL"
-          echo "Portainer redeploy triggered."
+          DEPLOY_HEALTH_URL: ${{ secrets.DEPLOY_HEALTH_URL }}
+          FORCE_REDEPLOY: ${{ inputs.force_redeploy }}
+        run: node scripts/deploy.mjs
+      - name: Verify deployed source and bot readiness
+        env:
+          DEPLOY_HEALTH_URL: ${{ secrets.DEPLOY_HEALTH_URL }}
+        run: node scripts/check-deployment.mjs

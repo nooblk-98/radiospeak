@@ -156,6 +156,22 @@ test("UI navigation, creation, import, idle selection, search, save, queue edits
     const jazz=f.app.playlists.radioStations.find(r=>r.name==="Late jazz")!;
     click('[data-action="play-station"][data-id="'+jazz.id+'"]');
     await until(()=>f.app.bots[0]!.player.radio?.name==="Late jazz"&&!!document.querySelector(".radio-now"),"tune in to a saved station");
+    dom.window.location.hash="settings";
+    await until(()=>!!document.querySelector("#performance-form"),"performance settings form");
+    fill('#performance-form [name="audioProfile"]','balanced');fill('#performance-form [name="maxTracks"]','200');
+    fill('#performance-form [name="failover"]',jazz.id);submit('#performance-form');
+    await until(()=>f.app.bots[0]!.settings.audioProfile==='balanced'&&f.app.bots[0]!.settings.queue.maxTracks===200&&get('#toast').textContent==='Bot performance and request settings saved.',"save audio profile and queue policy");
+    assert.deepEqual(f.app.bots[0]!.settings.failover,[jazz.id]);
+    fill('#schedule-form [name="playlistId"]',list.id);submit('#schedule-form');
+    await until(()=>f.app.playlists.schedules.length===1&&!!document.querySelector('[data-action="edit-schedule"]'),"create a playlist schedule");
+    assert.equal(f.app.playlists.schedules[0]!.timezone,'Asia/Colombo');
+    click('[data-action="delete-schedule"]');submit('#modal-form');
+    await until(()=>f.app.playlists.schedules.length===0&&!get('#modal').hasAttribute('open'),"delete schedule while keeping playlist");
+    assert.ok(f.app.playlists.find(list.id));
+    dom.window.location.hash='history';
+    await until(()=>!!document.querySelector('[data-action="history-enqueue"]'),"persistent playback history view");
+    const historyQueue=f.app.bots[0]!.player.queue.length;click('[data-action="history-enqueue"]');
+    await until(()=>f.app.bots[0]!.player.queue.length===historyQueue+1&&get('#toast').textContent?.startsWith('Queued')===true,"request a track from playback history");
     assert.deepEqual(errors,[]);
   } finally {
     for(const timer of timers) {clearTimeout(timer);clearInterval(timer);}

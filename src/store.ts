@@ -1,5 +1,7 @@
 ﻿import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { AtomicFile } from "./atomic-file.ts";
+import { settingsFrom, validateSchedule, type BotSettings, type PlaylistSchedule, type Role } from "./policies.ts";
 import { PLAYLISTS_PATH, validateNickname } from "./config.ts";
 import type { Track } from "./player.ts";
 import { trackKey } from "./track-key.ts";
@@ -13,6 +15,8 @@ export interface SavedPlaylist {
 }
 export interface Collection { id: string; name: string }
 export interface RadioStation { id: string; name: string; url: string }
+export interface WebAccount { username: string; role: Role; salt: string; hash: string; version: string }
+export interface HistoryEntry { id: string; track: Track; startedAt: string; endedAt: string | null; error: string | null }
 interface Library {
   version: 2;
   playlists: SavedPlaylist[];
@@ -27,6 +31,11 @@ interface Library {
   panelBots: string[];
   /** Bots that do not greet people joining their channel (greeting is on by default). */
   quietBots: string[];
+  settings: Record<string, BotSettings>;
+  schedules: PlaylistSchedule[];
+  history: Record<string, HistoryEntry[]>;
+  accounts: WebAccount[];
+  chatAccess: { enabled: boolean; users: Record<string, Role>; groups: Record<string, Role> };
 }
 
 /** Offered until the library has its own station list. */
@@ -39,6 +48,8 @@ const starterStations: Omit<RadioStation, "id">[] = [
 export class PlaylistStore {
   #path: string;
   #data: Library;
+  #writer: AtomicFile;
+  revision = 0;
   onChange?: () => void;
 
   constructor(path = PLAYLISTS_PATH) {
@@ -59,7 +70,76 @@ export class PlaylistStore {
         : starterStations.map((r) => ({ id: randomUUID(), ...r })),
       panelBots: Array.isArray(raw.panelBots) ? raw.panelBots.filter((n: unknown) => typeof n === "string" && n) : [],
       quietBots: Array.isArray(raw.quietBots) ? raw.quietBots.filter((n: unknown) => typeof n === "string") : [],
+      settings: raw.settings && typeof raw.settings === "object" && !Array.isArray(raw.settings) ? raw.settings : {},
+      schedules: Array.isArray(raw.schedules) ? raw.schedules.filter((s: PlaylistSchedule) => {
+        try { if (!s?.id || !s.bot || !s.playlistId) return false; validateSchedule(s); return true; } catch { return false; }
+      }) : [],
+      history: Object.fromEntries(Object.entries(raw.history ?? {}).filter(([,items]) => Array.isArray(items)).map(([bot,items]) => [bot,(items as HistoryEntry[]).filter(h => h?.track?.url && h.track.title && typeof h.startedAt === "string").slice(0,200)])),
+      accounts: Array.isArray(raw.accounts) ? raw.accounts.filter((a: WebAccount) => a?.username && ["listener","dj","admin"].includes(a.role) && a.salt && a.hash && a.version) : [],
+      chatAccess: raw.chatAccess && raw.chatAccess.users && raw.chatAccess.groups && typeof raw.chatAccess.users === "object" && typeof raw.chatAccess.groups === "object" ? raw.chatAccess : { enabled: false, users: {}, groups: {} },
     };
+    this.#writer = new AtomicFile(path, () => JSON.stringify(this.#data, null, 2) + "\n");
+  }
+
+  flush() { return this.#writer.flush(); }
+  get path() { return this.#path; }
+  get persistenceError() { return this.#writer.error; }
+  get schedules(): readonly PlaylistSchedule[] { return this.#data.schedules; }
+  get accounts(): readonly WebAccount[] { return this.#data.accounts; }
+  get chatAccess() { return this.#data.chatAccess; }
+  settingsFor(bot: string): BotSettings { return settingsFrom(this.#data.settings[bot]); }
+  setSettings(bot: string, value: Partial<BotSettings>): void {
+    const current = this.settingsFor(bot);
+    const merged = { ...current, ...value, queue: { ...current.queue, ...value.queue } };
+    if (!["balanced","high"].includes(merged.audioProfile)) throw new Error("Unknown audio profile");
+    for (const [v,min,max] of [[merged.queue.maxTracks,1,5000],[merged.queue.perRequester,1,5000],[merged.queue.cooldownSeconds,0,300],[merged.avoidRecent,0,100],[merged.idleReleaseSeconds,15,3600]]) {
+      if (!Number.isInteger(v) || v! < min! || v! > max!) throw new Error("Settings contain an out-of-range number");
+    }
+    if (!Array.isArray(merged.failover) || !merged.failover.every(id => typeof id === "string")) throw new Error("Choose fallback stations");
+    const settings = settingsFrom(merged);
+    if (settings.failover.some(id => !this.radioStations.some(r => r.id === id))) throw new Error("A fallback station no longer exists");
+    this.#data.settings[bot] = settings; this.#save();
+  }
+  historyFor(bot: string): readonly HistoryEntry[] { return this.#data.history[bot] ?? []; }
+  recordStart(bot: string, track: Track): void {
+    const history = this.#data.history[bot] ??= [];
+    history.unshift({ id: randomUUID(), track: { ...track }, startedAt: new Date().toISOString(), endedAt: null, error: null });
+    history.length = Math.min(history.length, 200); this.#save();
+  }
+  recordEnd(bot: string, track: Track, error?: string): void {
+    const entry = this.historyFor(bot).find(h => h.track.url === track.url && !h.endedAt);
+    if (entry) { entry.endedAt = new Date().toISOString(); entry.error = error ?? null; this.#save(); }
+  }
+  saveSchedule(value: Omit<PlaylistSchedule, "id">, id?: string): PlaylistSchedule {
+    validateSchedule({ ...value, id: id ?? "" });
+    if (!this.find(value.playlistId)?.tracks.length) throw new Error("Choose a non-empty playlist");
+    if (id && !this.schedules.some(s => s.id === id)) throw new Error("Schedule not found");
+    const slots = (s: Omit<PlaylistSchedule,"id">) => s.days.flatMap(day => {
+      const minutes = (time: string) => Number(time.slice(0,2)) * 60 + Number(time.slice(3));
+      const start = day * 1440 + minutes(s.start), end = day * 1440 + minutes(s.end) + (s.end < s.start ? 1440 : 0);
+      return end > 10080 ? [[start,10080],[0,end-10080]] : [[start,end]];
+    });
+    for (const other of this.schedules.filter(s => s.bot === value.bot && s.id !== id && s.enabled && value.enabled)) {
+      if (other.timezone !== value.timezone) throw new Error("Schedules on one bot must use the same time zone");
+      if (slots(other).some(([a,b]) => slots(value).some(([c,d]) => a! < d! && c! < b!))) throw new Error("This schedule overlaps another enabled schedule");
+    }
+    const schedule = { ...value, days: [...new Set(value.days)], id: id ?? randomUUID() };
+    this.#data.schedules = this.#data.schedules.filter(s => s.id !== schedule.id); this.#data.schedules.push(schedule); this.#save();
+    return schedule;
+  }
+  deleteSchedule(id: string): void { this.#data.schedules = this.#data.schedules.filter(s => s.id !== id); this.#save(); }
+  saveAccount(account: WebAccount): void {
+    if (!/^[a-z][a-z0-9_-]{1,31}$/.test(account.username) || account.username === "owner") throw new Error("Use 2–32 lowercase letters, numbers, - or _; owner is reserved");
+    if (!["listener","dj","admin"].includes(account.role)) throw new Error("Unknown role");
+    if (this.accounts.length >= 200 && !this.accounts.some(a => a.username === account.username)) throw new Error("This panel supports up to 200 accounts");
+    this.#data.accounts = this.#data.accounts.filter(a => a.username !== account.username); this.#data.accounts.push(account); this.#save();
+  }
+  deleteAccount(username: string): void { this.#data.accounts = this.#data.accounts.filter(a => a.username !== username); this.#save(); }
+  setChatAccess(value: Library["chatAccess"]): void {
+    if (!value || typeof value.enabled !== "boolean" || !value.users || !value.groups || typeof value.users !== "object" || typeof value.groups !== "object" || Array.isArray(value.users) || Array.isArray(value.groups)) throw new Error("Invalid chat access policy");
+    for (const role of [...Object.values(value.users), ...Object.values(value.groups)]) if (!["listener","dj","admin"].includes(role)) throw new Error("Unknown chat role");
+    if (Object.keys(value.users).length + Object.keys(value.groups).length > 200) throw new Error("Too many chat role assignments");
+    this.#data.chatAccess = structuredClone(value); this.#save();
   }
 
   get all(): readonly SavedPlaylist[] { return this.#data.playlists; }
@@ -82,6 +162,8 @@ export class PlaylistStore {
     delete this.#data.botNicknames[bot];
     delete this.#data.botChannels[bot];
     delete this.#data.defaults[bot];
+    delete this.#data.settings[bot];
+    this.#data.schedules = this.#data.schedules.filter(s => s.bot !== bot);
     this.#data.quietBots = this.#data.quietBots.filter((n) => n !== bot);
     this.#save();
   }
@@ -190,6 +272,7 @@ export class PlaylistStore {
   deleteStation(id: string): void {
     if (!this.radioStations.some((r) => r.id === id)) throw new Error("Radio station not found");
     this.#data.radioStations = this.#data.radioStations.filter((r) => r.id !== id);
+    for (const settings of Object.values(this.#data.settings)) settings.failover = settings.failover.filter(s => s !== id);
     this.#save();
   }
 
@@ -208,7 +291,7 @@ export class PlaylistStore {
   }
 
   #cleanTrack(t: Track): Track {
-    const { requestedBy, auto, ...saved } = t;
+    const { requestedBy, requesterId, auto, ...saved } = t;
     return saved;
   }
 
@@ -236,6 +319,7 @@ export class PlaylistStore {
 
   delete(list: SavedPlaylist): void {
     this.#data.playlists = this.#data.playlists.filter((p) => p !== list);
+    this.#data.schedules = this.#data.schedules.filter(s => s.playlistId !== list.id);
     for (const bot of Object.keys(this.#data.defaults)) {
       if (this.#data.defaults[bot] === list.id) this.#data.defaults[bot] = null;
     }
@@ -255,8 +339,8 @@ export class PlaylistStore {
   }
 
   #save(): void {
-    writeFileSync(this.#path + ".tmp", JSON.stringify(this.#data, null, 2) + "\n");
-    renameSync(this.#path + ".tmp", this.#path);
+    this.revision++;
+    this.#writer.schedule();
     this.onChange?.();
   }
 }

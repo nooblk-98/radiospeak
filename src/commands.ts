@@ -23,6 +23,7 @@ function cleanInput(s: string): string {
 }
 
 export function isAdmin(app: App, bot: MusicBot, msg: TextMessageEvent): boolean {
+  if (app.playlists.chatAccess.enabled) return bot.chatRole(msg.invokerUID,msg.invokerGroups ?? bot.client?.view.client(msg.invokerID)?.serverGroups ?? []) === "admin";
   const { admins, adminGroups } = app.config;
   if (admins.length === 0 && adminGroups.length === 0) return true;
   if (admins.includes(msg.invokerUID)) return true;
@@ -47,10 +48,11 @@ function helpText(p: string): string {
 }
 
 /** Posted in channel chat when someone joins the bot's channel. */
-export function welcomeText(p: string, nickname: string, playing: string | undefined): string {
+export function welcomeText(p: string, nickname: string, playing: string | undefined, role = "admin"): string {
   return [
     `Welcome, [b]${nickname}[/b]! I'm the music bot.${playing ? ` Now playing: [b]${playing}[/b]` : ""}`,
-    `${p}play <song, link or playlist> — add to queue   ${p}skip   ${p}pause / ${p}resume   ${p}np   ${p}queue   ${p}vol <0-100>`,
+    role === "listener" ? `${p}play <song, link or playlist> — request music   ${p}skip — vote to skip   ${p}np   ${p}queue   ${p}history`
+      : `${p}play <song, link or playlist> — add to queue   ${p}skip   ${p}pause / ${p}resume   ${p}np   ${p}queue   ${p}vol <0-100>`,
     `${p}radio <station>   ${p}pl play <playlist>   ${p}join — bring me to your channel   ${p}help — all commands`,
   ].join("\n");
 }
@@ -130,7 +132,7 @@ async function playlistCommand(app: App, bot: MusicBot, msg: TextMessageEvent, a
           [tracks[i], tracks[j]] = [tracks[j]!, tracks[i]!];
         }
       }
-      return bot.enqueue(tracks, { requestedBy: msg.invokerName, playlistName: list.name });
+      return bot.enqueue(tracks, { requestedBy: msg.invokerName, requesterId: "ts:"+msg.invokerUID, privileged: bot.chatRole(msg.invokerUID,msg.invokerGroups ?? bot.client?.view.client(msg.invokerID)?.serverGroups ?? []) !== "listener", playlistName: list.name });
     }
 
     case "remove":
@@ -142,7 +144,7 @@ async function playlistCommand(app: App, bot: MusicBot, msg: TextMessageEvent, a
 
     case "delete":
     case "del": {
-      if (!isAdmin(app, bot, msg)) return "Only bot admins can delete playlists.";
+      if (!isAdmin(app, bot, msg) && !(app.playlists.chatAccess.enabled && bot.chatRole(msg.invokerUID,msg.invokerGroups ?? bot.client?.view.client(msg.invokerID)?.serverGroups ?? []) === "dj")) return "Only bot admins or assigned DJs can delete playlists.";
       const list = need();
       store.delete(list);
       return `Deleted playlist [b]${list.name}[/b].`;
@@ -159,6 +161,19 @@ export async function runCommand(app: App, bot: MusicBot, msg: TextMessageEvent)
   const cmd = rawCmd.toLowerCase();
   const arg = cleanInput(args.join(" "));
   const player = bot.player;
+  const role = bot.chatRole(msg.invokerUID,msg.invokerGroups ?? bot.client?.view.client(msg.invokerID)?.serverGroups ?? []);
+  const request = { requestedBy: msg.invokerName, requesterId: "ts:"+msg.invokerUID, privileged: role !== "listener" };
+  if (role === "listener") {
+    if (["skip","next","n"].includes(cmd)) {
+      if (bot.channelID !== bot.client?.view.client(msg.invokerID)?.channelID) return "Join the music channel to vote.";
+      return bot.voteSkip(request.requesterId);
+    }
+    const read = ["help","h","search","find","queue","q","list","np","status","bots","history"].includes(cmd)
+      || (["vol","volume","v"].includes(cmd) && !arg) || (cmd === "radio" && (!arg || arg.toLowerCase() === "list"));
+    const enqueue = ["play","p","yt","sc","playall","pa","pick"].includes(cmd) && !!arg;
+    const playlist = ["pl","playlist","playlists"].includes(cmd) && ["list","ls","show","play"].includes((args[0] || "list").toLowerCase());
+    if (!read && !enqueue && !playlist && !["remove","rm"].includes(cmd)) return "A DJ manages playback and playlists. You can request songs or vote with !skip.";
+  }
 
   switch (cmd) {
     case "help":
@@ -178,24 +193,25 @@ export async function runCommand(app: App, bot: MusicBot, msg: TextMessageEvent)
         if (player.isActive || player.playIfIdle()) return bot.status();
         return `Nothing to play. ${p}play <song name or link>`;
       }
-      return bot.play(arg, { requestedBy: msg.invokerName });
+      return bot.play(arg, request);
     }
 
     case "playall":
     case "pa":
       if (!arg) return `Usage: ${p}playall <playlist link or a song link from a playlist>`;
-      return bot.play(arg, { requestedBy: msg.invokerName, wholePlaylist: true });
+      return bot.play(arg, { ...request, wholePlaylist: true });
 
     case "playnext":
     case "pn":
       if (!arg) return `Usage: ${p}playnext <song name or link>`;
-      return bot.play(arg, { requestedBy: msg.invokerName, next: true });
+      return bot.play(arg, { ...request, next: true });
 
     case "search":
     case "find": {
       if (!arg) return `Usage: ${p}search <words>`;
       const { tracks } = await resolve(app.config.ytdlpPath, arg, { maxItems: 5, results: 5 });
       app.searchResults.set(msg.invokerUID, tracks);
+      if (app.searchResults.size > 1000) app.searchResults.delete(app.searchResults.keys().next().value!);
       return `Results (choose with ${p}pick <n>):\n${tracks.map((t, i) => trackLine(t, i + 1)).join("\n")}`;
     }
 
@@ -204,7 +220,7 @@ export async function runCommand(app: App, bot: MusicBot, msg: TextMessageEvent)
       if (!results) return `Run ${p}search first.`;
       const chosen = args.map(Number).map((n) => results[n - 1]).filter((t): t is Track => !!t);
       if (chosen.length === 0) return `Usage: ${p}pick <n> [n...] (1-${results.length})`;
-      return bot.enqueue(chosen, { requestedBy: msg.invokerName });
+      return bot.enqueue(chosen, request);
     }
 
     case "pause":
@@ -248,6 +264,7 @@ export async function runCommand(app: App, bot: MusicBot, msg: TextMessageEvent)
 
     case "remove":
     case "rm": {
+      if (role === "listener" && player.queue[Number(args[0])-1]?.requesterId !== request.requesterId) return "You can only remove your own requests.";
       const removed = player.removeAt(Number(args[0]));
       return removed ? `Removed [b]${removed.title}[/b]` : `Usage: ${p}remove <queue number>`;
     }
@@ -268,6 +285,8 @@ export async function runCommand(app: App, bot: MusicBot, msg: TextMessageEvent)
     case "np":
     case "status":
       return bot.status();
+    case "history":
+      return app.playlists.historyFor(bot.name).slice(0,10).map((h,i) => `${i+1}. ${h.track.title}${h.error ? " (failed)" : ""}`).join("\n") || "No playback history yet.";
 
     case "vol":
     case "volume":
@@ -341,6 +360,7 @@ export async function handleChatMessage(app: App, bot: MusicBot, c: Client, msg:
   let answer: string | undefined;
   try {
     answer = await runCommand(app, bot, msg);
+    await app.playlists.flush();
     if (answer === undefined && !msg.message.trim().startsWith(app.config.commandPrefix)) return;
     bot.log("info", `${msg.invokerName}: ${msg.message}`);
   } catch (err) {

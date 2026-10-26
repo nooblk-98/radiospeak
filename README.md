@@ -128,8 +128,9 @@ The bot keeps its state in its working directory (`/data` in Docker):
 | File | Contents |
 | --- | --- |
 | `identity.txt`, `identity-<name>.txt` | Each bot's TeamSpeak identity. Keep these so server groups stick to the bots |
-| `playlists.json` (`FMBOT_PLAYLISTS`) | Library: playlists, collections, favorites, radio stations, and per-bot channels, nicknames and idle playlists |
+| `playlists.json` (`FMBOT_PLAYLISTS`) | Library, per-bot settings, schedules, playback history, named account hashes and chat roles |
 | `playback.json` (`FMBOT_PLAYBACK`) | Playback checkpoints: track, position, queue, radio, volume and modes |
+| `imports.json` (beside the library file) | Recoverable import jobs and continuation cursors |
 
 > [!WARNING]
 > If the panel has no password, the sign-in page is skipped, so set `web.host` to `127.0.0.1`. With a password, the panel is still plain HTTP, so put it behind a reverse proxy with TLS before exposing it to the internet.
@@ -186,7 +187,7 @@ Playlist names can contain spaces. In commands, use the playlist's number from `
 - Checkpoints are saved on every player change and every 10 seconds, with atomic, coalesced writes. After an unexpected restart, playback resumes from the last checkpoint once TeamSpeak reconnects. Up to 10 seconds may replay.
 - A TeamSpeak disconnect pauses the audio pipeline and holds the track and queue until the channel list is ready again.
 - Interrupted audio retries from its current position up to twice. A stream that delivers nothing for 30 seconds also enters recovery. Permanent media errors skip immediately.
-- **Prepare the next track** (optional, off by default) decodes the upcoming song during the last 15 seconds of the current one. It uses extra CPU and memory.
+- **Prepare the next track** (optional, off by default) decodes the upcoming song during the last 15 seconds. All bots share two preparation slots. Pausing releases speculative work; long-paused songs release their audio processes and resume from their saved position.
 - Bot volume is the real TeamSpeak output gain, applied just before encoding with at most 0.5 s of lead. Changing it never restarts the decoder.
 
 </details>
@@ -200,13 +201,43 @@ Playlist names can contain spaces. In commands, use the playlist's number from `
 - The panel is modular vanilla HTML, CSS and JavaScript in [src/web](src/web), served by the bot itself.
 - Live updates use authenticated server-sent events from `/api/events`. Structural changes push compact state, and elapsed time and health use lightweight progress events. If SSE is unavailable, the panel falls back to polling.
 - `/api/state` contains playlist summaries. Tracks load on demand from `/api/playlists/:id?offset=0&limit=50`. Version tokens reject stale edits.
-- Search results are cached for 60 seconds. Media lookups share two process slots, and cancelling a search aborts its lookup.
+- Search results are cached for 60 seconds and small URL metadata lookups for 120 seconds. Identical pending lookups share one process. Cancelling one consumer leaves the lookup running for any others. Media lookups share two process slots.
+- Library writes are asynchronous, coalesced and atomic. HTTP mutations await their durable save, and graceful shutdown flushes the library, playback checkpoints and imports. Only a changed selected playlist reloads a bot's idle tracks.
+- Structural updates use revision counters, and each SSE broadcast is serialized once for all viewers. Signed-out, expired or revoked accounts lose their live stream as well as API access.
 
 </details>
 
 ### Auto-deploy from GitHub
 
-[.github/workflows/deploy.yml](.github/workflows/deploy.yml) tests every push to `main` and then calls a Portainer stack webhook to redeploy. Add the webhook URL as the `PORTAINER_WEBHOOK_URL` repository secret (**Settings → Secrets and variables → Actions**). Keep it secret: anyone with the URL can redeploy the stack.
+[.github/workflows/deploy.yml](.github/workflows/deploy.yml) tests application changes on `main`, including real FFmpeg/Opus output. Documentation-only pushes do not restart the bot. Configure `PORTAINER_WEBHOOK_URL` and `DEPLOY_HEALTH_URL` (the public `https://<panel>/healthz` URL) as repository secrets under **Settings → Secrets and variables → Actions**.
+
+Deployment first checks whether the expected source is already healthy. Otherwise it triggers the webhook once and waits up to three minutes for the matching source revision, successful persistence and connected bot instances. A lost webhook response does not trigger duplicate redeploys. Manual workflow runs have a **force_redeploy** option for rebuilding tool versions at the same source revision.
+
+`/healthz` is a public, minimal status endpoint; it contains no playlists, identities, accounts or connection secrets. Docker checks process/web liveness; GitHub additionally checks bot readiness. An unhealthy Docker status alone does not restart the bot.
+
+## Performance, schedules and access
+
+**Bot & TeamSpeak → Performance & requests** provides per-instance settings:
+
+- **Audio profile:** High quality retains Opus complexity 10. Balanced uses complexity 5; normalization remains independently selectable. Quality and CPU tradeoffs depend on the source. Existing installs keep High quality.
+- **Request limits:** default 500 tracks total, 50 queued per listener and a three-second listener cooldown. DJs/admins bypass per-listener limits and cooldowns; the total queue limit still applies. Requests that exceed a limit are rejected as a whole. Existing recovered queues are preserved.
+- **Idle release:** paused audio processes are released after 120 seconds by default. Resume keeps the track position. Live radio resumes at its live position.
+- **Radio fallback order:** select stations to try after two consecutive failures. Retries retain their bounded backoff, user requests take priority, and the health card explains a fallback switch.
+- **Avoid recent idle tracks:** skip the last ten played URLs while choosing an idle track, when another track is available. User requests and repeat modes remain explicit choices.
+
+**Playlist schedules** choose a bot's idle playlist by weekday and local time. The default zone is `Asia/Colombo`; any valid IANA time zone is accepted. Overnight schedules belong to their starting day. Enabled overlaps are rejected, and a bot's enabled schedules use the same zone. Checks run every 15 seconds; the selection applies to subsequent idle tracks and does not interrupt a user request. Outside a schedule, the saved default returns. An enabled radio station takes priority.
+
+**Playback history** retains 200 entries per bot across restarts, including requester, time and failures. Request a track again from that view; requester totals summarize those retained entries. TeamSpeak also supports `!history`.
+
+**Import recovery:** the public-playlist dialog previews up to ten entries and shows the configured batch limit. Imports save tracks in batches and persist their cursor in `imports.json`. Use **Continue next batch**, **Resume import** or **Retry unavailable entries** from the import card. Cancel keeps tracks already saved. Entry identifiers prevent duplicates after interruption even when URL deduplication is off. If the provider changes playlist order, start a new import with duplicate skipping enabled to refresh it.
+
+**Access & roles:** sign in as `owner` with the existing panel password to add named accounts. Passwords use salted scrypt hashes. Listeners can search, enqueue, remove their own requests and vote to skip. DJs manage playback, playlists, stations and schedules. Administrators also manage accounts and instances. Named account passwords need at least ten characters; changing or deleting an account invalidates its sessions. Scripts retain administrator Basic authentication using the panel password.
+
+TeamSpeak chat role enforcement is opt-in to preserve existing command behavior. Enable it in **Access & roles**, then assign client unique IDs or server-group IDs. Unlisted clients become listeners; existing configured bot admins retain administrator access. A listener's `!skip` is a vote, with one vote per identity and a threshold of half the channel's listeners, rounded up.
+
+Compose defaults to four CPU cores, 4 GiB memory, 512 tasks and rotated logs. Override `FMBOT_CPU_LIMIT`, `FMBOT_MEMORY_LIMIT` and `FMBOT_PIDS_LIMIT` in the Compose environment for your host. These are ceilings, not reserved resources.
+
+Run the isolated synthetic benchmark with `npm run benchmark:audio` (`FFMPEG_PATH` overrides the executable). On the deployed Linux host, the ten-pipeline, High-quality/normalization-on test sustained 50 fps with zero underruns, 1,256 MiB combined RSS (about 1.23 GiB) and 1.15 CPU cores during a short steady-state window. It uses generated audio, not YouTube extraction, and does not measure long-term memory growth or music quality. Profile comparisons were noisy, so the default quality was retained.
 
 ## Upgrading existing Docker installs
 

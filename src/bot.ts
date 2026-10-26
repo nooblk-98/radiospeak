@@ -21,6 +21,7 @@ import type { PlaylistStore } from "./store.ts";
 import type { PlaybackStore } from "./playback-store.ts";
 import type { ImportManager } from "./imports.ts";
 import { formatDuration, resolve } from "./ytdlp.ts";
+import { activeSchedule, type Role } from "./policies.ts";
 
 /** What every bot shares: config, saved playlists and each other. */
 export interface App {
@@ -97,10 +98,17 @@ export class MusicBot {
   #defaultLoaded = false;
   #timers: NodeJS.Timeout[] = [];
   #started = false;
+  #settingsKey = "";
+  #defaultKey: string | undefined;
+  #scheduleKey = "";
+  #remoteDefault?: { tracks: Track[]; name?: string };
+  #requestTimes = new Map<string, number>();
   lastDisconnect: { at: string; reason: string } | undefined;
   connectedAt: number | null = null;
   reconnectCount = 0;
   restoredCheckpoint = false;
+  revision = 0;
+  #votes = new Set<string>();
   /** Set while the channel needs more talk power than the bot has: the server drops its audio. */
   talkBlocked: { needed: number; have: number } | undefined;
 
@@ -128,6 +136,10 @@ export class MusicBot {
         this.log("warn", "Ignoring invalid playback checkpoint: " + (err instanceof Error ? err.message : String(err)));
       }
     }
+    this.player.setRecentTracks(app.playlists.historyFor(this.name).map(h => h.track.url));
+    const current = this.player.track;
+    if (current && !app.playlists.historyFor(this.name).some(h => h.track.url === current.url && !h.endedAt)) app.playlists.recordStart(this.name,current);
+    this.syncLibrary();
   }
 
   get name(): string {
@@ -140,6 +152,51 @@ export class MusicBot {
   get health() {
     return { ...this.player.health, connectedAt: this.connectedAt, reconnectCount: this.reconnectCount,
       restoredCheckpoint: this.restoredCheckpoint, checkpoint: this.#app.playback?.status ?? null };
+  }
+  voteSkip(id: string): string {
+    if (!this.player.track) return "Nothing playing.";
+    const needed = Math.max(1, Math.ceil(this.listeners().length / 2));
+    this.#votes.add(id); this.revision++;
+    if (this.#votes.size >= needed) { this.player.skip(); return "Vote passed. Track skipped."; }
+    return `Skip votes: ${this.#votes.size}/${needed}`;
+  }
+  get votes() { return { count: this.#votes.size, needed: Math.max(1,Math.ceil(this.listeners().length / 2)) }; }
+  get settings() { return this.#app.playlists.settingsFor(this.name); }
+  get historyVersion() { const history=this.#app.playlists.historyFor(this.name); return history.length+":"+history[0]?.id+":"+history[0]?.endedAt; }
+  get activeSchedule() { return activeSchedule(this.#app.playlists.schedules, this.name); }
+  syncLibrary(now = new Date()): void {
+    const store = this.#app.playlists;
+    const settings = store.settingsFor(this.name);
+    const fallbacks = settings.failover.map(id => store.radioStations.find(s => s.id === id)).filter(s => !!s);
+    const settingsKey = JSON.stringify([settings,fallbacks]);
+    if (settingsKey !== this.#settingsKey) {
+      this.#settingsKey = settingsKey; this.player.configure(settings); this.player.setRadioFallbacks(fallbacks);
+    }
+    const schedule = activeSchedule(store.schedules, this.name, now);
+    const scheduleKey = schedule?.id ?? "";
+    if (scheduleKey !== this.#scheduleKey) { this.#scheduleKey = scheduleKey; this.revision++; }
+    const selected = schedule ? store.find(schedule.playlistId) : store.defaultFor(this.name);
+    if (!schedule && !store.hasDefault(this.name) && this.#defaultKey === undefined) return;
+    const key = selected ? selected.id + ":" + selected.version : store.hasDefault(this.name) ? "none" : "remote";
+    if (key === this.#defaultKey) return;
+    this.#defaultKey = key;
+    const fallback = !store.hasDefault(this.name) ? this.#remoteDefault : undefined;
+    this.player.setDefaultPlaylist(selected?.tracks ?? fallback?.tracks ?? [], selected?.name ?? fallback?.name);
+  }
+  chatRole(uid: string, groups: readonly unknown[] = []): Role {
+    const policy = this.#app.playlists.chatAccess;
+    if (!policy.enabled) return "admin";
+    if (this.#app.config.admins.includes(uid) || groups.some(g => this.#app.config.adminGroups.includes(Number(g)))) return "admin";
+    const roles = [policy.users[uid], ...groups.map(g => policy.groups[String(g)])];
+    return roles.includes("admin") ? "admin" : roles.includes("dj") ? "dj" : "listener";
+  }
+  #admit(id: string, privileged: boolean): void {
+    if (privileged) return;
+    const now = Date.now(), cutoff = now - this.settings.queue.cooldownSeconds * 1000;
+    if ((this.#requestTimes.get(id) ?? -Infinity) > cutoff) throw new Error(`Wait ${this.settings.queue.cooldownSeconds} seconds between requests`);
+    for (const [key, at] of this.#requestTimes) if (at <= now - 300_000) this.#requestTimes.delete(key);
+    if (this.#requestTimes.size >= 2000 && !this.#requestTimes.has(id)) throw new Error("Request service is busy");
+    this.#requestTimes.set(id, now);
   }
 
   /** Only explicit settings changes rename the bot; song updates change its description. */
@@ -186,20 +243,24 @@ export class MusicBot {
    * Queues a song or a playlist from a link or search words. `wholePlaylist`
    * takes the whole playlist when the link is a song inside one.
    */
-  async play(input: string, options: { requestedBy?: string; next?: boolean; wholePlaylist?: boolean } = {}): Promise<string> {
+  async play(input: string, options: { requestedBy?: string; requesterId?: string; privileged?: boolean; next?: boolean; wholePlaylist?: boolean } = {}): Promise<string> {
+    this.#admit(options.requesterId ?? options.requestedBy ?? "unknown", options.privileged ?? true);
     const found = await resolve(this.#app.config.ytdlpPath, input, {
       maxItems: this.#app.config.maxPlaylistItems,
       ...(options.wholePlaylist ? { wholePlaylist: true } : {}),
     });
-    return this.enqueue(found.tracks, { ...options, ...(found.playlist ? { playlistName: found.playlist } : {}) }, input);
+    return this.enqueue(found.tracks, { ...options, admitted: true, ...(found.playlist ? { playlistName: found.playlist } : {}) }, input);
   }
 
   enqueue(
     tracks: Track[],
-    options: { requestedBy?: string; next?: boolean; playlistName?: string },
+    options: { requestedBy?: string; requesterId?: string; privileged?: boolean; admitted?: boolean; next?: boolean; playlistName?: string },
     input = "",
   ): string {
-    const tagged = tracks.map((t) => ({ ...t, ...(options.requestedBy ? { requestedBy: options.requestedBy } : {}) }));
+    const id = options.requesterId ?? options.requestedBy ?? "unknown";
+    if (!options.admitted) this.#admit(id, options.privileged ?? true);
+    if (options.privileged === false && this.player.queue.filter(t => t.requesterId === id).length + tracks.length > this.settings.queue.perRequester) throw new Error(`You may queue at most ${this.settings.queue.perRequester} tracks at once`);
+    const tagged = tracks.map((t) => ({ ...t, requesterId: id, ...(options.requestedBy ? { requestedBy: options.requestedBy } : {}) }));
     const position = this.player.enqueue(tagged, options.next);
     const p = this.#app.config.commandPrefix;
     const hint =
@@ -295,9 +356,8 @@ export class MusicBot {
 
   /** Loads (or reloads) the configured default playlist. */
   async loadDefaultPlaylist(): Promise<void> {
-    if (this.#app.playlists.hasDefault(this.name)) {
-      const list = this.#app.playlists.defaultFor(this.name);
-      this.player.setDefaultPlaylist(list?.tracks ?? [], list?.name);
+    if (this.#app.playlists.hasDefault(this.name) || this.activeSchedule) {
+      this.syncLibrary();
       return;
     }
     const link = this.cfg.defaultPlaylist;
@@ -309,6 +369,8 @@ export class MusicBot {
       });
       // A web selection made while the remote lookup was running takes precedence.
       if (this.#app.playlists.hasDefault(this.name)) return this.loadDefaultPlaylist();
+      this.#remoteDefault = { tracks: found.tracks, name: found.playlist };
+      if (this.activeSchedule) return this.syncLibrary();
       this.player.setDefaultPlaylist(found.tracks, found.playlist);
       this.log("info", `Default playlist: ${found.playlist ?? link} (${found.tracks.length} songs)`);
     } catch (err) {
@@ -326,6 +388,7 @@ export class MusicBot {
     this.#timers.push(setInterval(() => void this.#pollTitle(), TITLE_POLL_MS).unref());
     this.#timers.push(setInterval(() => void this.loadDefaultPlaylist(), DEFAULT_PLAYLIST_REFRESH_MS).unref());
     this.#timers.push(setInterval(() => this.#checkpoint(), 10_000).unref());
+    this.#timers.push(setInterval(() => this.syncLibrary(), 15_000).unref());
     this.#timers.push(setInterval(() => {
       if (this.player.isActive && !this.player.paused) {
         const under = this.player.underruns;
@@ -345,6 +408,7 @@ export class MusicBot {
     this.#checkpoint();
     this.#shuttingDown = true;
     await this.#app.playback?.flush();
+    await this.#app.playlists.flush();
     this.#timers.forEach(timer => clearInterval(timer));
     this.#timers = [];
     this.player.stop();
@@ -379,6 +443,7 @@ export class MusicBot {
       if (c !== this.client || this.#shuttingDown) return;
       wasConnected = true;
       this.#connected = true;
+      this.revision++;
       this.connectedAt = Date.now();
       if (reconnected) this.reconnectCount++;
       this.#appliedDescription = undefined;
@@ -415,6 +480,7 @@ export class MusicBot {
     c.on("disconnected", ({ error, willReconnect }) => {
       if (c !== this.client) return;
       this.#connected = false;
+      this.revision++;
       this.#greetFrom = Infinity;
       this.#emptySince = undefined;
       this.lastDisconnect = { at: new Date().toISOString(), reason: error?.message ?? "Connection closed" };
@@ -427,6 +493,7 @@ export class MusicBot {
     });
 
     c.on("viewChanged", () => {
+      this.revision++;
       this.#checkListeners();
       this.#checkTalkPower();
     });
@@ -515,6 +582,7 @@ export class MusicBot {
     const blocked = needed > have && !self.isTalker;
     if (blocked === (this.talkBlocked !== undefined)) return;
     this.talkBlocked = blocked ? { needed, have } : undefined;
+    this.revision++;
     if (blocked) {
       const msg =
         `Can't be heard in #${channel.name}: it needs talk power ${needed}, the bot has ${have}. ` +
@@ -541,7 +609,7 @@ export class MusicBot {
     if (!this.#welcomes.allow(entry.uid ?? `client:${id}`)) return;
     const pl = this.player;
     const playing = pl.track?.title ?? (pl.radio ? (this.radioTitle ?? pl.radio.name) : undefined);
-    void sendChannelMessage(c, welcomeText(this.#app.config.commandPrefix, entry.nickname, playing)).catch((err: unknown) =>
+    void sendChannelMessage(c, welcomeText(this.#app.config.commandPrefix, entry.nickname, playing, this.chatRole(entry.uid ?? "",entry.serverGroups ?? []))).catch((err: unknown) =>
       this.log("warn", `Could not send welcome message: ${err instanceof Error ? err.message : String(err)}`));
   }
 
@@ -571,10 +639,15 @@ export class MusicBot {
     if (url !== this.player.radioUrl || (url === this.#titleUrl && title === this.radioTitle)) return;
     this.#titleUrl = url;
     this.radioTitle = title;
+    this.revision++;
     this.#schedulePresence();
   }
 
   #onPlayerEvent(event: PlayerEvent): void {
+    this.revision++;
+    if (event.type === "trackStart") this.#votes.clear();
+    if (event.type === "trackStart") this.#app.playlists.recordStart(this.name,event.track);
+    if (event.type === "trackEnd") this.#app.playlists.recordEnd(this.name,event.track,event.error);
     this.#checkpoint();
     const c = this.client;
     const online = c && this.#connected;

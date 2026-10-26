@@ -205,6 +205,7 @@ test("radio stations persist and tune in; playlist Play now replaces the queue; 
 
     assert.equal((await f.api("/api/state")).data.bots[0].homeChannel,null);
     f.app.playlists.setChannel("Test bot","Lounge/Music");
+    await f.app.playlists.flush();
     assert.equal((await f.api("/api/state")).data.bots[0].homeChannel,"Lounge/Music");
     assert.equal(new PlaylistStore(join(f.dir,"library.json")).channelFor("Test bot"),"Lounge/Music");
   } finally {await f.close();}

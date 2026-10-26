@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { PlaylistStore } from "../src/store.ts";
 import { tracks } from "./helpers.ts";
 
-test("legacy playlists migrate without losing metadata; hierarchy, defaults, favorites survive restart", () => {
+test("legacy playlists migrate without losing metadata; hierarchy, defaults, favorites survive restart", async () => {
   const dir = mkdtempSync(join(tmpdir(),"radiospeak-library-")), path = join(dir,"playlists.json");
   try {
     writeFileSync(path,JSON.stringify([{name:"Legacy",tracks:[tracks[0]]}]));
@@ -19,6 +19,7 @@ test("legacy playlists migrate without losing metadata; hierarchy, defaults, fav
     store.setDefault("bot1",legacy);
     store.moveTrack(legacy,3,1);
     store.toggleFavorite(tracks[1]!);
+    await store.flush();
     store = new PlaylistStore(path);
     assert.equal(store.all[0]!.collectionId,collection.id);
     assert.equal(store.defaultFor("bot1")?.name,"Old favorites");
@@ -31,6 +32,7 @@ test("legacy playlists migrate without losing metadata; hierarchy, defaults, fav
     assert.equal(store.all[0]!.collectionId,null);
     assert.equal(store.collections.length,0);
     store.delete(store.all[0]!);
+    await store.flush();
     store = new PlaylistStore(path);
     assert.equal(store.defaults.bot1,null);
     assert.equal(store.defaultFor("bot1"),undefined);
@@ -38,7 +40,7 @@ test("legacy playlists migrate without losing metadata; hierarchy, defaults, fav
   } finally {rmSync(dir,{recursive:true,force:true});}
 });
 
-test("invalid positions never remove the last track; names and empty defaults are validated", () => {
+test("invalid positions never remove the last track; names and empty defaults are validated", async () => {
   const dir=mkdtempSync(join(tmpdir(),"radiospeak-validation-"));
   try {
     const store=new PlaylistStore(join(dir,"library.json")), list=store.create("Late night");
@@ -53,5 +55,6 @@ test("invalid positions never remove the last track; names and empty defaults ar
     assert.equal(list.name,"Late night");
     store.toggleFavorite(tracks[0]!);assert.equal(store.favorites.length,1);
     store.toggleFavorite(tracks[0]!);assert.equal(store.favorites.length,0);
+    await store.flush();
   } finally {rmSync(dir,{recursive:true,force:true});}
 });

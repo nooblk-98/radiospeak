@@ -28,6 +28,22 @@ test("search cache reuses metadata, clones cached results, and separates source/
     assert.equal(calls,2);
   } finally {t.mock.restoreAll();syncBuiltinESMExports();}
 });
+test("identical pending lookups share one child and an individual cancellation keeps the other consumer alive",async t=>{
+  let calls=0,finish:Function,childSignal:AbortSignal;
+  t.mock.method(childProcess,"execFile",(_path:string,_args:string[],options:any,callback:Function)=>{
+    calls++;finish=callback;childSignal=options.signal;return Object.assign(new EventEmitter(),{stdout:new PassThrough()});
+  });syncBuiltinESMExports();
+  try{
+    const controller=new AbortController();
+    const one=resolve("shared-fake","same work",{maxItems:10,results:10,signal:controller.signal});
+    const cancelled=assert.rejects(one,/cancel/);
+    const two=resolve("shared-fake","same work",{maxItems:10,results:10});
+    await new Promise(r=>setImmediate(r));assert.equal(calls,1);
+    controller.abort(new Error("cancel this consumer"));await cancelled;assert.equal(childSignal!.aborted,false);
+    finish!(null,"T\t"+JSON.stringify({...tracks[0],webpage_url:tracks[0]!.url})+"\n","");
+    assert.equal((await two).tracks[0]?.title,tracks[0]!.title);
+  }finally{t.mock.restoreAll();syncBuiltinESMExports();}
+});
 test("abandoned searches abort active children and queued lookups never launch",async t=>{
   let calls=0,aborts=0;
   t.mock.method(childProcess,"execFile",(_path:string,_args:string[],options:any,callback:Function)=>{

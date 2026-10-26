@@ -46,6 +46,7 @@ export class StateConnection extends EventTarget {
   }
   #accept(state) {
     if (!this.#compatible(state)) return;
+    if (!state.viewer && this.state?.viewer) state = { ...state, viewer: this.state.viewer };
     const fingerprints = {
       track_changed: JSON.stringify(state.bots.map(b => [b.name, b.track, b.radio, b.userPaused, b.autoPaused])),
       queue_updated: JSON.stringify(state.bots.map(b => b.queue)),

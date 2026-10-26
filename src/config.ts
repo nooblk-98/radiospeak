@@ -20,7 +20,7 @@ export interface WebConfig {
   enabled: boolean;
   host: string;
   port: number;
-  /** Basic-auth password for the panel; empty means no login (only safe on localhost). */
+  /** Administrator panel password; empty means no login (only safe on localhost). */
   password: string;
 }
 
@@ -164,7 +164,7 @@ export function loadConfig(): AppConfig {
     ytdlpPath: raw.ytdlpPath ?? "yt-dlp",
     bitrateKbps: raw.bitrateKbps ?? 96,
     commandPrefix: raw.commandPrefix ?? "!",
-    maxPlaylistItems: raw.maxPlaylistItems ?? 300,
+    maxPlaylistItems: Number.isFinite(raw.maxPlaylistItems) ? Math.max(1,Math.min(5000,Math.floor(raw.maxPlaylistItems!))) : 300,
     admins: raw.admins ?? [],
     adminGroups: raw.adminGroups ?? [],
     pauseWhenEmpty: raw.pauseWhenEmpty ?? true,

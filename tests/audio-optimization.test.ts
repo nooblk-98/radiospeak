@@ -6,6 +6,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { Player } from "../src/player.ts";
 import { tracks } from "./helpers.ts";
+import { PrebufferBudget, settingsFrom } from "../src/policies.ts";
 
 class Process extends EventEmitter {
   stdin=new PassThrough();stdout=new PassThrough();stderr=new PassThrough();killed=false;
@@ -23,13 +24,44 @@ function page(value:number) {
   for(let i=0;i<count;i++){data[27+i]=2;data[27+count+i*2]=value;data[28+count+i*2]=value;}
   return data;
 }
-function setup(t:any) {
+function setup(t:any, budget?: PrebufferBudget) {
   const procs:Process[]=[],frames:number[]=[];
   t.mock.method(childProcess,"spawn",(_path:string,args:string[])=>{const p=new Process(args);procs.push(p);return p;});
   syncBuiltinESMExports();
-  const player=new Player({ffmpegPath:"ffmpeg",ytdlpPath:"yt-dlp",bitrateKbps:96,volume:50,log(){},sendFrame(frame){if(frame.length)frames.push(frame[0]!);}});
+  const player=new Player({ffmpegPath:"ffmpeg",ytdlpPath:"yt-dlp",bitrateKbps:96,volume:50,prebufferBudget:budget,log(){},sendFrame(frame){if(frame.length)frames.push(frame[0]!);}});
   return {player,procs,frames,encoder:()=>procs.filter(p=>p.args.includes("libopus")&&!p.killed).at(-1)!};
 }
+test("shared prebuffer capacity is released on pause and another bot can prepare",async t=>{
+  const budget=new PrebufferBudget(1),f=setup(t,budget);
+  const second=new Player({ffmpegPath:"ffmpeg",ytdlpPath:"yt-dlp",bitrateKbps:96,volume:50,prebufferBudget:budget,log(){},sendFrame(){}});
+  try{
+    f.player.enqueue(tracks.slice(0,2));f.player.seek(200);f.player.setPrebuffer(true);
+    await wait(()=>budget.used===1);
+    second.enqueue(tracks.slice(0,2));second.seek(200);second.setPrebuffer(true);
+    await new Promise(r=>setTimeout(r,25));assert.equal(second.health.activeProcesses,3);
+    f.player.setAutoPaused(true);await wait(()=>second.health.activeProcesses===6);assert.equal(budget.used,1);
+    second.setAutoPaused(true);assert.equal(budget.used,0);
+  }finally{f.player.stop();second.stop();t.mock.restoreAll();syncBuiltinESMExports();}
+});
+test("long-paused audio releases child processes and resumes the same track position",async t=>{
+  const f=setup(t);t.mock.timers.enable({apis:["setTimeout"]});
+  try{
+    f.player.configure(settingsFrom({idleReleaseSeconds:15}));f.player.enqueue(tracks.slice(0,2));f.player.seek(70);
+    f.player.setAutoPaused(true);t.mock.timers.tick(15001);
+    assert.equal(f.player.health.activeProcesses,0);assert.equal(f.player.health.parked,true);assert.equal(f.player.elapsed,70);
+    f.player.setAutoPaused(false);assert.equal(f.player.track?.url,tracks[0]!.url);assert.equal(f.player.elapsed,70);assert.equal(f.player.health.activeProcesses,3);
+  }finally{f.player.stop();t.mock.timers.reset();t.mock.restoreAll();syncBuiltinESMExports();}
+});
+test("repeated radio failures choose the next fallback instead of looping on one station",async t=>{
+  const f=setup(t);
+  try{
+    f.player.setRadioFallbacks([{name:"Backup",url:"https://example.com/backup"}]);
+    f.player.playRadio({name:"Primary",url:"https://example.com/primary"});
+    const first=f.encoder();first.emit("close",1);await wait(()=>!!f.encoder()&&f.encoder()!==first);
+    f.encoder().emit("close",1);
+    assert.equal(f.player.radio?.name,"Backup");assert.match(f.player.health.failoverReason!,/Primary.*Backup/);
+  }finally{f.player.stop();t.mock.restoreAll();syncBuiltinESMExports();}
+});
 test("optional prebuffer promotes the next song's existing decoder and never sends its audio early",async t=>{
   const f=setup(t);
   try {

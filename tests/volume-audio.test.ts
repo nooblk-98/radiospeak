@@ -5,6 +5,7 @@ import { once } from "node:events";
 import childProcess, { execFileSync, type ChildProcess } from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { Player } from "../src/player.ts";
+import { settingsFrom } from "../src/policies.ts";
 
 function wave() {
   const samples=48000*20, buffer=Buffer.alloc(44+samples*4);
@@ -35,7 +36,7 @@ function rms(pcm:Buffer,startFrame:number,endFrame:number) {
   for(let offset=startFrame*3840;offset<Math.min(pcm.length,endFrame*3840);offset+=2){const n=pcm.readInt16LE(offset);sum+=n*n;count++;}
   return Math.sqrt(sum/count);
 }
-for(const normalization of [false,true]) test("real Opus output follows live volume changes"+(normalization?" with normalization":""),{skip:!process.env.FFMPEG_PATH,timeout:20000},async t=>{
+for(const profile of ["high","balanced"] as const) for(const normalization of [false,true]) test("real Opus output follows live volume changes: "+profile+(normalization?" with normalization":""),{skip:!process.env.FFMPEG_PATH,timeout:20000},async t=>{
   const running=new Set<ChildProcess>(),spawn=childProcess.spawn;
   t.mock.method(childProcess,"spawn",(...args:Parameters<typeof spawn>)=>{
     const child=spawn(...args);running.add(child);
@@ -60,6 +61,7 @@ for(const normalization of [false,true]) test("real Opus output follows live vol
   let timer:ReturnType<typeof setTimeout>;
   try {
     player.setNormalization(normalization);
+    player.configure(settingsFrom({audioProfile:profile}));
     player.playRadio({name:"Test tone",url:"http://127.0.0.1:"+address.port+"/tone.wav"});
     await Promise.race([done,new Promise((_accept,reject)=>{timer=setTimeout(()=>reject(new Error("Audio timeout: "+JSON.stringify(player.health)+" "+errors.join(";"))),15000);})]);
     player.stop();

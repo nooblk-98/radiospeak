@@ -12,13 +12,17 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY src ./src
+COPY scripts ./scripts
 COPY config.example.json ./
+COPY Dockerfile ./
+COPY docker-compose.yml ./
 
 # Runtime state (identity files, playlists.json, optional config.json) lives in /data.
 # Runs as root so it can write to a bind-mounted ./data that Docker created as root.
 WORKDIR /data
 ENV NODE_ENV=production
 EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 CMD node /app/scripts/container-health.mjs
 
 ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["node", "/app/src/index.ts"]

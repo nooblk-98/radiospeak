@@ -2,6 +2,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import type { Readable } from "node:stream";
 import { AudioGain } from "./audio-gain.ts";
 import { OggPacketReader, isOpusHeader } from "./ogg.ts";
+import { prebufferBudget, settingsFrom, type BotSettings, type PrebufferBudget } from "./policies.ts";
+import { trackKey } from "./track-key.ts";
 
 const SAMPLE_RATE = 48000;
 const CHANNELS = 2;
@@ -31,6 +33,9 @@ export interface Track {
   artist?: string;
   thumbnail?: string;
   requestedBy?: string;
+  requesterId?: string;
+  /** Idempotent import entry identifier; never accepted from the public track API. */
+  importKey?: string;
   /** From the default playlist, played only while nobody has requested anything. */
   auto?: boolean;
 }
@@ -74,6 +79,7 @@ export interface PlayerOptions {
   sendFrame: (frame: Uint8Array) => void;
   log: (level: "info" | "warn" | "error", msg: string) => void;
   onEvent?: (event: PlayerEvent) => void;
+  prebufferBudget?: PrebufferBudget;
 }
 
 interface Pipeline {
@@ -118,7 +124,14 @@ export class Player {
   #stopped = false;
 
   #pipe: Pipeline | undefined;
-  #prepared: { track: Track; pipe: Pipeline } | undefined;
+  #prepared: { track: Track; pipe: Pipeline; release: () => void } | undefined;
+  #settings = settingsFrom();
+  #recent: string[] = [];
+  #idleTimer?: NodeJS.Timeout;
+  #parked = false;
+  #radioFallbacks: RadioStream[] = [];
+  #radioFailures = 0;
+  #failoverReason: string | null = null;
   #prebuffer = false;
   #prepareFailedUrl: string | undefined;
   #retries = 0;
@@ -234,7 +247,22 @@ export class Player {
       lastError: this.#lastError, prebufferEnabled: this.#prebuffer,
       prebufferStatus: !this.#prebuffer ? "off" : this.#prepared ? this.#prepared.pipe.frames.length >= PREBUFFER_FRAMES ? "ready" : "preparing" : "standby",
       activeProcesses: (this.#pipe?.procs.length ?? 0) + (this.#prepared?.pipe.procs.length ?? 0),
+      audioProfile: this.#settings.audioProfile, parked: this.#parked,
+      prebufferSlots: (this.#opts.prebufferBudget ?? prebufferBudget).used,
+      failoverReason: this.#failoverReason,
     };
+  }
+  configure(value: BotSettings): void {
+    const before = this.#settings.audioProfile;
+    const releaseChanged = value.idleReleaseSeconds !== this.#settings.idleReleaseSeconds;
+    this.#settings = settingsFrom(value);
+    if (before !== this.#settings.audioProfile && this.isActive) this.#restart();
+    if (releaseChanged && this.paused) this.#applyPause();
+  }
+  setRecentTracks(urls: string[]): void { this.#recent = urls.slice(0,100).map(trackKey); }
+  setRadioFallbacks(stations: RadioStream[]): void { this.#radioFallbacks = stations.map(s => ({ ...s })); }
+  checkQueue(tracks: readonly Track[], replace = false): void {
+    if ((replace ? 0 : this.#queue.length) + tracks.length > this.#settings.queue.maxTracks) throw new Error(`Queue limit is ${this.#settings.queue.maxTracks} tracks. Remove some tracks first.`);
   }
   setPrebuffer(enabled: boolean): void {
     this.#prebuffer = enabled;
@@ -242,6 +270,7 @@ export class Player {
     this.#emit({ type: "change" });
   }
   insertAt(track: Track, position: number): boolean {
+    this.checkQueue([track]);
     if (!Number.isInteger(position) || position < 1 || position > this.#queue.length + 1) return false;
     this.#queue.splice(position - 1, 0, track);
     this.#emit({ type: "change" });
@@ -265,7 +294,8 @@ export class Player {
    */
   setDefaultPlaylist(tracks: Track[], name: string | undefined): void {
     // Reloading the same list (a periodic refresh) keeps the place in it.
-    const samePlace = name !== undefined && name === this.#defaultName && tracks.length > 0;
+    const samePlace = tracks.length > 0 && ((name !== undefined && name === this.#defaultName)
+      || (tracks.length === this.#defaultList.length && tracks.every((t,i) => t.url === this.#defaultList[i]?.url)));
     this.#defaultList = tracks.map((t) => ({ ...t, auto: true }));
     this.#defaultName = name;
     this.#defaultIndex = samePlace ? this.#defaultIndex % tracks.length : 0;
@@ -286,6 +316,7 @@ export class Player {
   /** Adds songs to the end (or the front with `next`); starts playing if idle. Returns the first one's queue position, 0 if it started now. */
   enqueue(tracks: Track[], next = false): number {
     if (tracks.length === 0) return -1;
+    this.checkQueue(tracks);
     this.#stopped = false;
     if (next) this.#queue.unshift(...tracks);
     else this.#queue.push(...tracks);
@@ -317,6 +348,8 @@ export class Player {
     this.#radio = stream;
     if (stream) this.#stopped = false;
     this.#radioDelayMs = 2000;
+    this.#radioFailures = 0;
+    this.#failoverReason = null;
     // A station takes over from the idle playlist at once; user requests still finish first.
     if (stream && this.#track?.auto) this.#finishTrack(undefined, true, true);
     else if (!this.#track) {
@@ -327,6 +360,8 @@ export class Player {
   }
 
   stop(): void {
+    clearTimeout(this.#idleTimer);
+    this.#parked = false;
     this.#cancelPrepared();
     this.#retrying = false;
     this.#stopped = true;
@@ -376,6 +411,7 @@ export class Player {
   /** Plays `tracks` at once; `replaceQueue` drops what was queued first (a playlist's "Play now"). */
   playNow(tracks: Track[], replaceQueue = false): void {
     if (!tracks.length) return;
+    this.checkQueue(tracks, replaceQueue);
     this.#stopped = false;
     if (replaceQueue) this.#queue = [];
     this.#queue.unshift(...tracks);
@@ -452,6 +488,7 @@ export class Player {
   // ---- internals ----
 
   #emit(event: PlayerEvent): void {
+    if (event.type === "trackStart") { this.#recent.unshift(trackKey(event.track.url)); this.#recent.length = Math.min(this.#recent.length,100); }
     if (event.type === "change" && this.#prepared && this.#prepared.track.url !== this.#nextTrack()?.url) this.#cancelPrepared();
     this.#opts.onEvent?.(event);
   }
@@ -462,10 +499,18 @@ export class Player {
    * the same spot. A live radio stream is closed instead and reopened later.
    */
   #applyPause(): void {
+    clearTimeout(this.#idleTimer);
     this.#endTalking();
     if (this.paused) {
+      this.#cancelPrepared();
+      clearInterval(this.#timer); this.#timer = undefined;
       if (!this.#track) this.#teardown();
+      else this.#idleTimer = setTimeout(() => {
+        if (!this.paused) return;
+        this.#teardown(); this.#parked = true;
+      }, this.#settings.idleReleaseSeconds * 1000).unref();
     } else {
+      this.#parked = false;
       this.#buffering = true;
       this.#bufferingSince = Date.now();
       if (!this.#pipe) this.#restart();
@@ -481,8 +526,9 @@ export class Player {
     this.#prepareFailedUrl = undefined;
     this.#track = this.#queue.shift();
     if (!this.#track && !this.#radio && this.#defaultList.length) {
-      this.#track = this.#defaultList[this.#defaultIndex % this.#defaultList.length];
-      this.#defaultIndex = (this.#defaultIndex + 1) % this.#defaultList.length;
+      const index = this.#idleIndex();
+      this.#track = this.#defaultList[index];
+      this.#defaultIndex = (index + 1) % this.#defaultList.length;
     }
     this.#trackFrames = 0;
     if (this.#track) this.#emit({ type: "trackStart", track: this.#track });
@@ -520,8 +566,10 @@ export class Player {
 
   #restart(allowPrepared = false): void {
     this.#teardown();
+    if (this.paused) { this.#cancelPrepared(); return; }
     if (allowPrepared && this.#prepared && this.#prepared.track.url === this.#track?.url && !this.#connectionPaused) {
       this.#pipe = this.#prepared.pipe;
+      this.#prepared.release();
       this.#prepared = undefined;
     } else {
       this.#cancelPrepared();
@@ -538,18 +586,30 @@ export class Player {
   #nextTrack(): Track | undefined {
     if (this.#track && !this.#track.auto && this.#loop === "one") return this.#track;
     return this.#queue[0] ?? (this.#track && !this.#track.auto && this.#loop === "all" ? this.#track
-      : !this.#radio ? this.#defaultList[this.#defaultIndex % this.#defaultList.length] : undefined);
+      : !this.#radio ? this.#defaultList[this.#idleIndex()] : undefined);
+  }
+  #idleIndex(): number {
+    const start = this.#defaultIndex % this.#defaultList.length;
+    const recent = new Set(this.#recent.slice(0,this.#settings.avoidRecent));
+    for (let n=0; n<this.#defaultList.length; n++) {
+      const index=(start+n)%this.#defaultList.length;
+      if (!recent.has(trackKey(this.#defaultList[index]!.url))) return index;
+    }
+    return start;
   }
   #cancelPrepared(): void {
     const prepared = this.#prepared;
     this.#prepared = undefined;
-    if (prepared) this.#killPipe(prepared.pipe);
+    if (prepared) { prepared.release(); this.#killPipe(prepared.pipe); }
   }
   #prepareNext(): void {
     if (!this.#pipe || !this.#prebuffer || this.#prepared || !this.#track?.duration || this.#track.duration - this.elapsed > 15) return;
     const next = this.#nextTrack();
     if (!next || next.url === this.#prepareFailedUrl) return;
-    this.#prepared = { track: next, pipe: this.#start("track", next.url, 0, next) };
+    const release = (this.#opts.prebufferBudget ?? prebufferBudget).acquire();
+    if (!release) return;
+    try { this.#prepared = { track: next, pipe: this.#start("track", next.url, 0, next), release }; }
+    catch (error) { release(); throw error; }
   }
 
   #retryTrack(reason: string): void {
@@ -606,6 +666,7 @@ export class Player {
         "-probesize", "32", "-analyzeduration", "0",
         "-f", "s16le", "-ar", String(SAMPLE_RATE), "-ac", String(CHANNELS), "-i", "pipe:0",
         "-c:a", "libopus", "-b:a", `${bitrateKbps}k`, "-vbr", "on", "-application", "audio",
+        "-compression_level", this.#settings.audioProfile === "balanced" ? "5" : "10",
         "-frame_duration", String(FRAME_MS),
         "-f", "ogg", "-page_duration", "20000", "-flush_packets", "1", "pipe:1",
       ],
@@ -684,7 +745,16 @@ export class Player {
       return;
     }
     // Radio: reconnect, backing off while it keeps failing quickly.
-    if (Date.now() - pipe.startedAt > HEALTHY_MS) this.#radioDelayMs = 2000;
+    if (Date.now() - pipe.startedAt > HEALTHY_MS) { this.#radioDelayMs = 2000; this.#radioFailures = 0; }
+    this.#radioFailures++;
+    if (this.#radioFailures >= 2 && this.#radioFallbacks.some(s => s.url !== this.#radio?.url)) {
+      const index = this.#radioFallbacks.findIndex(s => s.url === this.#radio?.url);
+      const next = this.#radioFallbacks[(index + 1) % this.#radioFallbacks.length]!;
+      this.#failoverReason = `${this.#radio?.name}: ${reason}. Switched to ${next.name}`;
+      this.#opts.log("warn", this.#failoverReason);
+      this.#radio = { ...next }; this.#radioFailures = 0;
+      this.#emit({ type: "change" });
+    }
     const delay = this.#radioDelayMs;
     this.#radioDelayMs = Math.min(this.#radioDelayMs * 2, 30_000);
     this.#opts.log("info", `Reconnecting radio in ${delay / 1000}s`);

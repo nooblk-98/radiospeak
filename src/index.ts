@@ -19,11 +19,7 @@ const panelBots = app.playlists.panelBots.filter((name) => !configured.has(name.
 app.bots = [...config.bots, ...panelBots].map((cfg, i) => new MusicBot(app, cfg, i));
 // Saved defaults also follow edits made through TeamSpeak chat commands.
 app.playlists.onChange = () => {
-  for (const bot of app.bots) {
-    if (!app.playlists.hasDefault(bot.name)) continue;
-    const list = app.playlists.defaultFor(bot.name);
-    bot.player.setDefaultPlaylist(list?.tracks ?? [], list?.name);
-  }
+  for (const bot of app.bots) bot.syncLibrary();
 };
 
 let shuttingDown = false;
@@ -32,6 +28,8 @@ async function shutdown(): Promise<void> {
   shuttingDown = true;
   log("info", "Shutting down...");
   await Promise.all(app.bots.map((b) => b.shutdown()));
+  await app.imports?.shutdown();
+  await app.playlists.flush();
   process.exit(0);
 }
 process.on("SIGINT", () => void shutdown());

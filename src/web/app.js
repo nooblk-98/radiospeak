@@ -2,10 +2,45 @@ import { request, StateConnection } from './api.js';
 import { VolumeControl } from './volume.js';
 import { escape as e, icon, iconButton as ib, button, art, heading, empty, channelSelect, botCard, commands, playlistCard, trackTable, resultCard, time, duration, source } from './components.js';
 
+import { operationsMarkup, accessMarkup, historyMarkup, scheduleFields, scheduleData } from './operations.js';
 const $ = selector => document.querySelector(selector);
 const connection = new StateConnection();
 let state, botName = localStorage.getItem('radiospeak.bot') || '', activeView = '', libraryFilter = 'all', playlistId = null;
 let panelNeedsReload = false;
+let accessData = null, accessPending = false;
+const historyCache = new Map();
+function ensureAccess() {
+  if (accessData || accessPending || state?.viewer?.role !== 'admin') return;
+  accessPending = true;
+  void request('/api/access').then(data => { accessData=data; renderedView=''; render(); }).catch(error=>toast(error.message,true)).finally(()=>{accessPending=false;});
+}
+function historyView(b) {
+  let cached=historyCache.get(b.name);
+  if (!cached || cached.version!==b.historyVersion) {
+    if (!cached?.pending) {
+      cached={...cached,pending:true};historyCache.set(b.name,cached);
+      void request('/api/bots/'+encodeURIComponent(b.name)+'/history').then(data=>{
+        historyCache.set(b.name,{entries:data.entries,version:b.historyVersion,pending:false});renderedView='';if(activeView==='history')render();
+      }).catch(error=>{historyCache.delete(b.name);toast(error.message,true);});
+    }
+  }
+  return historyMarkup(b,cached?.entries);
+}
+function enforcePermissions() {
+  const role=state?.viewer?.role||'admin',rank={listener:0,dj:1,admin:2};
+  document.querySelectorAll('[data-min-role]').forEach(el=>{el.hidden=rank[role]<rank[el.dataset.minRole];});
+  if(role==='admin')return;
+  const adminActions=new Set(['new-instance','remove-instance','delete-instance','delete-account']);
+  const listenerActions=new Set(['menu','close-modal','reload-panel','logout','sign-out','collection','filter','favorites','library-back','open-playlist','page','search-source','enqueue-track','queue-playlist','history-enqueue','skip','undo','switch-bot','toggle-switcher','switcher']);
+  document.querySelectorAll('[data-action]').forEach(el=>{
+    const action=el.dataset.action;
+    let allowed=role==='dj'?!adminActions.has(action):listenerActions.has(action);
+    if(role==='listener'&&action==='remove-track'&&el.dataset.scope==='queue') allowed=bot()?.queue[Number(el.dataset.index)]?.requesterId===state.viewer.id;
+    if(!allowed)el.disabled=true;
+    if(role==='listener'&&action==='skip'){el.setAttribute('aria-label','Vote to skip');el.title='Vote to skip';}
+  });
+  if(role==='listener') document.querySelectorAll('#view form:not(#search-form) input,#view form:not(#search-form) select,#view form:not(#search-form) textarea,#view form:not(#search-form) button,#volume,#seek,#modal-submit').forEach(el=>{el.disabled=true;});
+}
 let query = '', searchSource = 'youtube', searchResults = [], searchStatus = 'idle', searchError = '', searchController, searchTimer;
 let dragging = null, sliderActive = false, toastTimer, modalSubmit, renderedView = '', renderedDock = '', renderedChrome = '';
 let receivedAt = 0, lastRenderBot = '';
@@ -35,7 +70,7 @@ const playlistCache = new Map(), playlistRequests = new Map(), pages = new Map()
 const PAGE_SIZE = 50;
 const dismissedImports = new Set();
 const playlistErrors = new Map();
-const views = { dashboard:'Now playing', queue:'Up next', library:'Collections & playlists', search:'Search & import', radio:'Radio stations', settings:'Bot & TeamSpeak' };
+const views = { dashboard:'Now playing', queue:'Up next', library:'Collections & playlists', search:'Search & import', radio:'Radio stations', history:'Playback history', settings:'Bot & TeamSpeak' };
 const bot = () => state?.bots.find(b => b.name === botName) || state?.bots[0];
 const trackCount = p => p?.trackCount ?? p?.total ?? p?.tracks?.length ?? 0;
 const playlist = () => playlistCache.get(playlistId) || state?.playlists.find(p => p.id === playlistId);
@@ -261,10 +296,14 @@ function renderBackground() {
       ['Playback recovery',h.retrying?'Retrying ('+h.retryAttempt+'/2)':h.restoredCheckpoint?'Checkpoint restored':'Ready'],
       ['Checkpoint',!h.checkpoint?'Not enabled':h.checkpoint.error?'Save failed':h.checkpoint.pending?'Saving…':h.checkpoint.lastSavedAt?'Saved '+new Date(h.checkpoint.lastSavedAt).toLocaleTimeString():'Waiting'],
       ['Media lookups',(system.media?.active||0)+' active · '+(system.media?.queued||0)+' queued'],
+      ['Event loop p99',(system.eventLoopP99Ms??'—')+' ms'],['Audio profile',h.audioProfile||'high'],
+      ['Shared preparations',(h.prebufferSlots||0)+' / 2'],['Paused audio',h.parked?'Released; resumes from saved position':'Ready'],
     ];
     container.innerHTML='<dl class="detail-list">'+metrics.map(([label,value])=>'<dt>'+e(label)+'</dt><dd>'+e(value)+'</dd>').join('')+'</dl>'+
       (b.lastDisconnect?'<p class="small subtle">Last disconnect: '+e(b.lastDisconnect.reason)+' · '+e(new Date(b.lastDisconnect.at).toLocaleString())+'</p>':'')+
       (h.lastError?'<p class="small subtle">Last audio error: '+e(h.lastError)+'</p>':'');
+    if(system.libraryError) container.innerHTML+='<p class="notice">Library save failed: '+e(system.libraryError)+'</p>';
+    if(h.failoverReason) container.innerHTML+='<p class="small subtle">Radio fallback: '+e(h.failoverReason)+'</p>';
   }
   const toggle=$('[data-action="prebuffer"]');
   if(toggle) toggle.setAttribute('aria-checked',String(!!h.prebufferEnabled));
@@ -285,11 +324,14 @@ function renderBackground() {
       return '<section class="card import-job"><div><strong>'+e(job.playlistName)+'</strong><span class="small subtle">'+e(label)+'</span></div>'+
         (active?'<progress aria-label="Playlist import progress" '+(job.total?'max="'+job.total+'" value="'+job.processed+'"':'')+'></progress>':'')+
         (job.errors?.length?'<details><summary>'+job.errors.length+' import issue(s)</summary><ul>'+job.errors.map(error=>'<li>'+e(error)+'</li>').join('')+'</ul></details>':'')+
+        (!active&&(['interrupted','cancelled','failed'].includes(job.status)||job.hasMore)?'<button class="button secondary" data-action="resume-import" data-id="'+e(job.id)+'">'+(job.status==='completed'?'Continue next batch':'Resume import')+'</button>':'')+
+        (!active&&job.failed?'<button class="button secondary" data-action="retry-import" data-id="'+e(job.id)+'">Retry unavailable entries</button>':'')+
         '<button class="icon-button" data-action="'+(active?'cancel-import':'dismiss-import')+'" data-id="'+e(job.id)+'" aria-label="'+(active?'Cancel import':'Dismiss import result')+'">'+icon('close')+'</button></section>';
     }).join('');
   }
 }
 function settings(b) {
+  ensureAccess();
   return heading('Keep your channel in tune.', 'Manage your bots, choose their channels, and dial in the sound.') + instancesCard(b) +
     '<section class="card import-card"><h3>Bot name</h3><p>This fixed name is shown in TeamSpeak. It stays the same when songs change.</p><form id="nickname-form" class="inline-form"><label class="field-label" for="bot-nickname" style="align-self:center;margin:0">TeamSpeak name</label><input class="field" id="bot-nickname" name="nickname" required maxlength="30" value="' + e(b.nickname || 'radiospeak') + '" placeholder="radiospeak"><button class="button primary" type="submit">' + icon('check') + 'Save name</button></form></section>' +
     healthCard(b) + '<div class="settings-grid">' + botCard(b) + '<section class="card card-padding"><div class="card-title"><h2>Playback & output</h2>' + icon('headphones') + '</div><div class="setting-line"><div>Shuffle queue<p>Randomize queued and newly added tracks</p></div><button class="switch" role="switch" aria-label="Shuffle queue" aria-checked="' + b.shuffle + '" data-action="shuffle"></button></div><div class="setting-line"><div>Repeat mode<p>Applies to tracks requested by users</p></div><select data-control="repeat" aria-label="Repeat mode">' + ['off','all','one'].map(m => '<option value="' + m + '" ' + (b.loop===m?'selected':'') + '>' + ({off:'Off',all:'Repeat all',one:'Repeat one'}[m]) + '</option>').join('') + '</select></div><div class="setting-line"><div>Default idle playlist<p>Used when the queue is empty and radio is off</p></div><select data-control="default" aria-label="Default idle playlist"><option value="">None</option>' + state.playlists.map(p => '<option value="' + e(p.id) + '" ' + (state.defaults[b.name]===p.id?'selected':'') + (!trackCount(p)?' disabled':'') + '>' + e(p.name) + '</option>').join('') + '</select></div><dl class="detail-list"><dt>Output</dt><dd>TeamSpeak · Opus Music</dd><dt>Bot gain</dt><dd>' + b.volume + '%</dd><dt>Listener auto-pause</dt><dd>' + (b.autoPaused?'Paused · empty channel':'Ready') + '</dd><dt>Radio fallback</dt><dd>' + e(b.radio?.name || 'Off') + '</dd></dl>' + (b.radio ? button('Turn radio off','stop','radio-off','','secondary') : '') + '</section>' + commands(state.commandPrefix) + '<section class="card card-padding"><h3>Your listeners</h3><p class="small subtle">People in the current channel who can hear the bot.</p>' + (b.listeners.length ? b.listeners.map(n => '<div class="listeners-row"><span>' + e(n) + '</span><span class="tag green">Listening</span></div>').join('') : '<p class="small subtle">No listeners in this channel yet.</p>') + '</section></div>';
@@ -378,7 +420,7 @@ function render(force = false) {
   if (!['all','standalone','favorites'].includes(libraryFilter) && !state.collections.some(c=>c.id===libraryFilter)) libraryFilter = 'all';
   const bWithoutProgress = {...b}; delete bWithoutProgress.elapsed;
   delete bWithoutProgress.health;
-  const signature = JSON.stringify([activeView,playlistId,libraryFilter,[...pages],bWithoutProgress,state.playlists,state.collections,state.defaults,state.favorites,state.radioStations,instanceSummaries(),searchSource]);
+  const signature = JSON.stringify([activeView,playlistId,libraryFilter,[...pages],bWithoutProgress,state.playlists,state.collections,state.defaults,state.favorites,state.radioStations,state.schedules,state.viewer?.role,instanceSummaries(),searchSource]);
   const active = document.activeElement;
   const editing = $('#view').contains(active) && /INPUT|SELECT|TEXTAREA/.test(active.tagName);
   if ((force || signature !== renderedView) && !dragging && (!editing || force)) {
@@ -393,7 +435,7 @@ function render(force = false) {
       viewTracks.set(id,sparse);viewVersions.set(id,detail.version);
     }
     $('#view').innerHTML = (b.talkBlocked ? '<div class="notice" role="alert">The bot cannot be heard in this channel. Required talk power: ' + b.talkBlocked.needed + '; bot talk power: ' + b.talkBlocked.have + '. Ask a TeamSpeak admin to assign this bot a permanent server or channel group with enough talk power. A temporary talk grant can be lost on reconnect. You can also choose another channel.</div>' : '') +
-      ({dashboard,queue:b=>heading('Good things are up next.', 'Your channel’s requests, in the order you want to hear them.', '<a href="#search" class="button primary">' + icon('plus') + 'Add tracks</a>') + hero(b) + '<div style="margin-top:28px">' + queueSection(b,true) + '</div>',library,search:searchView,radio:radioView,settings}[activeView] || dashboard)(b);
+      ({dashboard,queue:b=>heading('Good things are up next.', 'Your channel’s requests, in the order you want to hear them.', '<a href="#search" class="button primary">' + icon('plus') + 'Add tracks</a>') + hero(b) + '<div style="margin-top:28px">' + queueSection(b,true) + '</div>',library,search:searchView,radio:radioView,history:historyView,settings:b=>settings(b)+operationsMarkup(state,b)+(state.viewer?.role==='admin'?accessMarkup(accessData):'')}[activeView] || dashboard)(b);
     if (focusId && document.getElementById(focusId)) {
       document.getElementById(focusId).focus({preventScroll:true});
       if (selection) document.getElementById(focusId).setSelectionRange(...selection);
@@ -402,7 +444,7 @@ function render(force = false) {
         ['action','id','scope','index'].every(key=>el.dataset[key]===focusData[key]))?.focus({preventScroll:true});
     }
   }
-  const dockSignature = JSON.stringify([b.name,b.track,b.radio,b.radioTitle,b.userPaused,b.autoPaused,b.loop,b.shuffle,b.canGoBack,b.volume,state.favorites.map(t=>t.url),b.defaultPlaylist]);
+  const dockSignature = JSON.stringify([b.name,b.track,b.radio,b.radioTitle,b.userPaused,b.autoPaused,b.loop,b.shuffle,b.canGoBack,b.volume,state.favorites.map(t=>t.url),b.defaultPlaylist,state.viewer?.role]);
   if (dockSignature !== renderedDock && !sliderActive && !$('#player-dock').contains(document.activeElement)) {
     renderedDock = dockSignature;
     $('#player-dock').innerHTML = dock(b);
@@ -422,6 +464,7 @@ function render(force = false) {
   }
   updateProgress();
   renderBackground();
+  enforcePermissions();
 }
 function updateProgress() {
   const b = bot(), seek = $('#seek');
@@ -497,7 +540,19 @@ document.addEventListener('click', async event => {
       case 'undo': await mutate('/api/bots/'+encodeURIComponent(el.dataset.bot)+'/undo',{token:el.dataset.token});return;
       case 'prebuffer': await action('prebuffer',{enabled:!b.health?.prebufferEnabled});render(true);return;
       case 'cancel-import': await mutate('/api/imports/'+encodeURIComponent(id)+'/cancel',{});return;
-      case 'dismiss-import': dismissedImports.add(id);renderBackground();return;
+      case 'dismiss-import': await mutate('/api/imports/'+encodeURIComponent(id),{},'DELETE');dismissedImports.add(id);renderBackground();return;
+      case 'resume-import': await mutate('/api/imports/'+encodeURIComponent(id)+'/resume',{});return;
+      case 'retry-import': await mutate('/api/imports/'+encodeURIComponent(id)+'/retry',{});return;
+      case 'history-enqueue': {
+        const track=historyCache.get(b.name)?.entries.find(h=>h.id===id)?.track;
+        if(track)await action('enqueue',{tracks:[track]});return;
+      }
+      case 'edit-schedule': {
+        const schedule=state.schedules.find(s=>s.id===id);if(!schedule)return;
+        return showModal('Edit playlist schedule',scheduleFields(state,b,schedule),data=>mutate('/api/schedules/'+encodeURIComponent(id),scheduleData(data,b.name),'PATCH'));
+      }
+      case 'delete-schedule': return confirmAction('Remove schedule?','The saved playlist stays in your library.',()=>mutate('/api/schedules/'+encodeURIComponent(id),{},'DELETE'),'Remove');
+      case 'delete-account': return confirmAction('Remove '+id+'?','This account will be signed out and lose panel access.',async()=>{await mutate('/api/accounts/'+encodeURIComponent(id),{},'DELETE');accessData=null;render(true);},'Remove account');
       case 'menu': {
         const open=$('#sidebar').classList.toggle('open');el.setAttribute('aria-expanded',String(open));return;
       }
@@ -524,7 +579,7 @@ document.addEventListener('click', async event => {
         if(b.connectionPaused) {toast('Playback is held until the bot reconnects to TeamSpeak.');return;}
         if(b.autoPaused) {toast('Playback will resume when a listener joins the channel.');return;}
         await action(currentTrack()?(b.userPaused?'resume':'pause'):'start');return;
-      case 'skip': await action('skip');return;
+      case 'skip': await action(state.viewer?.role==='listener'?'vote-skip':'skip');return;
       case 'previous': await action('previous');return;
       case 'stop': return confirmAction('Stop playback?', 'This stops audio and clears user requests. Your saved playlists remain available.',()=>action('stop'),'Stop playback');
       case 'shuffle': await action('shuffle',{enabled:!b.shuffle});return;
@@ -591,12 +646,25 @@ document.addEventListener('submit',async event=>{
   try {
     if(form.id==='nickname-form') {
       await action('nickname',{nickname:data.get('nickname')});
+    } else if(form.id==='performance-form') {
+      const settings={audioProfile:data.get('audioProfile'),queue:{maxTracks:Number(data.get('maxTracks')),perRequester:Number(data.get('perRequester')),cooldownSeconds:Number(data.get('cooldownSeconds'))},avoidRecent:Number(data.get('avoidRecent')),idleReleaseSeconds:Number(data.get('idleReleaseSeconds')),failover:data.getAll('failover').filter(Boolean)};
+      await action('settings',{settings});
+    } else if(form.id==='schedule-form') {
+      await mutate('/api/schedules',scheduleData(data,bot().name));
+    } else if(form.id==='account-form') {
+      await mutate('/api/accounts',{username:data.get('username'),password:data.get('password'),role:data.get('role')});accessData=null;render(true);
+    } else if(form.id==='chat-access-form') {
+      const assignments=text=>Object.fromEntries(String(text).split(/\n/).map(line=>line.trim()).filter(Boolean).map(line=>{
+        const parts=line.split(/\s+/);if(parts.length!==2||!['listener','dj','admin'].includes(parts[1]))throw new Error('Use one ID and role per line.');return parts;
+      }));
+      await mutate('/api/access',{chatAccess:{enabled:data.get('enabled')==='on',users:assignments(data.get('users')),groups:assignments(data.get('groups'))}});accessData=null;render(true);
     } else if(form.id==='playlist-import') {
       await mutate('/api/imports',{playlistId,input:data.get('input'),skipDuplicates:data.get('skipDuplicates')==='on'});form.reset();
     } else if(form.id==='quick-import') {
       const url=String(data.get('url'));
+      const preview=await request('/api/imports/preview',{input:url});
       let importedId=null;
-      showModal('Import a public playlist','<p>Import all playable tracks from this link into a new playlist.</p><label class="field-label" for="import-name">Playlist name</label><input class="field" id="import-name" name="name" required maxlength="80" placeholder="e.g. Weekend rotation"><label class="check-label"><input type="checkbox" name="skipDuplicates" checked> Skip duplicate tracks</label>',async d=>{
+      showModal('Import a public playlist','<p>'+e(preview.total?preview.total+' entries found.':'Preview loaded; the provider has not reported the total.')+' Imports run in batches of up to '+preview.batchLimit+' entries. Continue larger playlists from the import card.</p><details><summary>Preview '+preview.tracks.length+' tracks</summary><ol>'+preview.tracks.map(t=>'<li>'+e(t.title)+'</li>').join('')+'</ol></details><label class="field-label" for="import-name">Playlist name</label><input class="field" id="import-name" name="name" required maxlength="80" value="'+e(preview.name)+'" placeholder="e.g. Weekend rotation"><label class="check-label"><input type="checkbox" name="skipDuplicates" checked> Skip duplicate tracks</label>',async d=>{
         if(!importedId) importedId=(await mutate('/api/playlists',{name:d.get('name'),collectionId:state.collections.some(c=>c.id===libraryFilter)?libraryFilter:null})).playlist.id;
         // Keep the created playlist selected even if the provider rejects the import.
         playlistId=importedId;render(true);

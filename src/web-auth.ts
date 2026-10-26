@@ -1,5 +1,8 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
+import { verifyAccount } from "./accounts.ts";
+import type { WebAccount } from "./store.ts";
+import { owner, type Viewer } from "./policies.ts";
 
 const COOKIE = "radiospeak_session";
 const SESSION_MS = 12 * 60 * 60 * 1000;
@@ -26,20 +29,28 @@ export class WebAuth {
   /** Signed-out session nonces, kept until the session would have expired. */
   #revoked = new Map<string, number>();
   #failures = new Map<string, { count: number; since: number }>();
+  #accounts: () => readonly WebAccount[];
+  #pending = 0;
 
-  constructor(password: string) {
+  constructor(password: string, accounts: () => readonly WebAccount[] = () => []) {
     this.enabled = password !== "";
     this.#password = Buffer.from(password);
     this.#key = createHmac("sha256", "radiospeak-session").update(password).digest();
+    this.#accounts = accounts;
   }
 
   /** Session cookie for any request; Basic auth only where `allowBasic` (the API). */
   authorized(req: IncomingMessage, allowBasic: boolean): boolean {
-    return !this.enabled || this.#session(req) !== undefined || (allowBasic && this.#basic(req));
+    return this.viewer(req,allowBasic) !== undefined;
+  }
+  viewer(req: IncomingMessage, allowBasic = true): Viewer | undefined {
+    if (!this.enabled) return owner;
+    const session = this.#session(req);
+    return session?.viewer ?? (allowBasic && this.#basic(req) ? owner : undefined);
   }
 
   /** Checks the password and returns the Set-Cookie header for a new session. */
-  login(req: IncomingMessage, password: string, remember: boolean): string {
+  async login(req: IncomingMessage, password: string, remember: boolean, username = "owner"): Promise<string> {
     const ip = req.socket.remoteAddress ?? "";
     const now = Date.now();
     const failed = this.#failures.get(ip);
@@ -48,15 +59,24 @@ export class WebAuth {
       const minutes = Math.ceil((failed.since + LOCKOUT_MS - now) / 60_000);
       throw new AuthError(429, `Too many attempts. Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.`);
     }
-    if (!sameBytes(Buffer.from(password), this.#password)) {
+    username = username.trim().toLowerCase() || "owner";
+    const account = this.#accounts().find(a => a.username === username);
+    if (this.#pending >= 4) throw new AuthError(429,"Sign-in service is busy. Try again shortly.");
+    this.#pending++;
+    let valid: boolean;
+    try { valid = username === "owner" ? sameBytes(Buffer.from(password), this.#password) : account ? await verifyAccount(account,password) : false; }
+    finally { this.#pending--; }
+    if (!valid) {
       const entry = this.#failures.get(ip) ?? { count: 0, since: now };
       entry.count++;
       this.#failures.set(ip, entry);
+      for (const [key,value] of this.#failures) if (now - value.since > LOCKOUT_MS) this.#failures.delete(key);
+      if (this.#failures.size > 4096) this.#failures.delete(this.#failures.keys().next().value!);
       throw new AuthError(401, "That password isn't right.");
     }
     this.#failures.delete(ip);
     const expires = now + (remember ? REMEMBER_MS : SESSION_MS);
-    const payload = expires + "." + randomBytes(16).toString("base64url");
+    const payload = [expires, randomBytes(16).toString("base64url"), Buffer.from(username).toString("base64url"), account?.version ?? "owner"].join(".");
     const token = payload + "." + this.#sign(payload);
     return this.#cookie(req, token, remember ? Math.floor(REMEMBER_MS / 1000) : undefined);
   }
@@ -73,15 +93,22 @@ export class WebAuth {
     return createHmac("sha256", this.#key).update(payload).digest("base64url");
   }
 
-  #session(req: IncomingMessage): { expires: number; nonce: string } | undefined {
+  #session(req: IncomingMessage): { expires: number; nonce: string; viewer: Viewer } | undefined {
     const token = (req.headers.cookie ?? "").split(";").map((c) => c.trim())
       .find((c) => c.startsWith(COOKIE + "="))?.slice(COOKIE.length + 1);
-    const [expiresText, nonce, signature] = token?.split(".") ?? [];
+    const parts = token?.split(".") ?? [];
+    if (parts.length !== 3 && parts.length !== 5) return;
+    const [expiresText, nonce] = parts;
+    const signature = parts.at(-1), payload = parts.slice(0,-1).join(".");
     if (!expiresText || !nonce || !signature) return undefined;
-    if (!sameBytes(Buffer.from(signature), Buffer.from(this.#sign(expiresText + "." + nonce)))) return undefined;
+    if (!sameBytes(Buffer.from(signature), Buffer.from(this.#sign(payload)))) return undefined;
     const expires = Number(expiresText);
     if (!(expires > Date.now()) || this.#revoked.has(nonce)) return undefined;
-    return { expires, nonce };
+    if (parts.length === 3) return { expires, nonce, viewer: owner };
+    const username = Buffer.from(parts[2]!,"base64url").toString();
+    if (username === "owner" && parts[3] === "owner") return { expires, nonce, viewer: owner };
+    const account = this.#accounts().find(a => a.username === username && a.version === parts[3]);
+    return account ? { expires, nonce, viewer: { id: "web:" + username, username, role: account.role } } : undefined;
   }
 
   #basic(req: IncomingMessage): boolean {
