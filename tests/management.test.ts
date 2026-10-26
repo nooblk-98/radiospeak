@@ -6,8 +6,6 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import { fixture, tracks } from "./helpers.ts";
 import { PlaylistStore } from "../src/store.ts";
-import { Operations } from "../src/operations.ts";
-import { sourceRevision } from "../src/build-info.ts";
 
 test("portable exports merge atomically, remap references and exclude credentials and identities",async()=>{
   const f=await fixture("a-private-master-password");
@@ -53,25 +51,7 @@ test("audit journal is durable, bounded, secret-free and restricted to administr
     const journal=await f.api('/api/audit');assert.equal(journal.data.entries[0].actor,'owner');assert.equal(journal.data.entries[0].resource,'api/accounts');
     const text=readFileSync(join(f.dir,'operations.json'),'utf8');assert.ok(!text.includes('never-save-this-password'));assert.ok(!text.includes('owner-test-password'));
     const login=await fetch(f.base+'/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'listener',password:'never-save-this-password'})});const cookie=login.headers.get('set-cookie')!.split(';')[0]!;
-    for(const path of ['/api/audit','/api/transfer','/api/operations'])assert.equal((await fetch(f.base+path,{headers:{Cookie:cookie}})).status,403);
+    for(const path of ['/api/audit','/api/transfer'])assert.equal((await fetch(f.base+path,{headers:{Cookie:cookie}})).status,403);
     for(let n=0;n<2010;n++)f.app.operations!.audit('test','POST','/api/bots/one/volume');assert.equal(f.app.operations!.entries().total,2000);await f.app.operations!.flush();
   }finally{await f.close();}
-});
-
-test("deployment coordinator authenticates, holds paused playback, encrypts webhook, triggers once and releases on failure",async()=>{
-  const f=await fixture('admin-test-password');let triggers=0;
-  const server=createServer((_req,res)=>{triggers++;res.end();});server.listen(0,'127.0.0.1');await once(server,'listening');
-  const address=server.address();assert.ok(address&&typeof address!=='string');const webhook='http://127.0.0.1:'+address.port+'/secret-webhook';
-  try {
-    const ops=f.app.operations!,token=readFileSync(join(f.dir,'deployment-token.txt'),'utf8').trim();
-    assert.equal((await f.api('/api/deployments',{revision:'a'.repeat(64),webhook})).status,401);
-    const response=await fetch(f.base+'/api/deployments',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify({revision:'a'.repeat(64),webhook})});assert.equal(response.status,200);assert.ok(!(await response.text()).includes('secret-webhook'));
-    assert.ok(!readFileSync(join(f.dir,'operations.json'),'utf8').includes('secret-webhook'));
-    const queueBefore=f.app.bots[0]!.player.snapshot();await ops.tick();assert.equal(triggers,1);assert.equal(ops.status.deployment?.status,'deploying');assert.equal(f.app.bots[0]!.player.deploymentReady,true);
-    await ops.tick();assert.equal(triggers,1);await ops.tick(new Date(Date.now()+181000));assert.equal(ops.status.deployment?.status,'failed');assert.equal(f.app.bots[0]!.player.deploymentReady,false);assert.deepEqual(f.app.bots[0]!.player.snapshot(),queueBefore);
-    ops.queue('b'.repeat(64),webhook);ops.cancel();assert.equal(ops.status.deployment?.status,'cancelled');await ops.tick();assert.equal(triggers,1);
-    ops.setPolicy({mode:'window',start:'02:00',end:'04:00',timezone:'Asia/Colombo',maxWaitMinutes:1});ops.queue('c'.repeat(64),webhook);await ops.tick(new Date('2026-10-26T07:00:00Z'));assert.equal(triggers,1);assert.equal(ops.status.deployment?.status,'waiting');ops.cancel();await ops.flush();
-    ops.close();f.app.operations=new Operations(f.app);assert.equal(f.app.operations.status.policy.mode,'window');
-    f.app.operations.queue(sourceRevision,webhook,true);await f.app.operations.tick();assert.equal(triggers,2);assert.equal(f.app.operations.status.deployment?.status,'deploying',"force never completes on the old process merely because source matches");
-  }finally{server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));await f.close();}
 });

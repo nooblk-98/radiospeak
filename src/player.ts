@@ -153,8 +153,6 @@ export class Player {
   #restartTimer: NodeJS.Timeout | undefined;
   #radioDelayMs = 2000;
   #talking = false;
-  #deployPending = false;
-  #deployHeld = false;
   #level = { rmsDb: -96, peakDb: -96, sourceDb: -96 };
   #quietFrames = 0;
   #silenceAlert: { id: string; message: string; at: string } | null = null;
@@ -200,7 +198,7 @@ export class Player {
     return this.#autoPaused;
   }
   get paused(): boolean {
-    return this.#userPaused || this.#autoPaused || this.#connectionPaused || this.#deployHeld;
+    return this.#userPaused || this.#autoPaused || this.#connectionPaused;
   }
   get connectionPaused(): boolean { return this.#connectionPaused; }
 
@@ -268,7 +266,6 @@ export class Player {
       failoverReason: this.#failoverReason,
       level: this.paused || !this.#pipe ? { rmsDb:-96,peakDb:-96,sourceDb:-96 } : this.#level,
       silenceAlert: this.#silenceAlert, silenceSeconds: this.#quietFrames * FRAME_MS / 1000,
-      deploymentHeld: this.#deployHeld,
       frameTiming: { samples:this.#deadlineSamples, meanLateMs:this.#deadlineSamples ? Math.round(this.#deadlineTotal/this.#deadlineSamples*100)/100 : 0, maxLateMs:Math.round(this.#deadlineMax*100)/100 },
     };
   }
@@ -280,17 +277,6 @@ export class Player {
     if (releaseChanged && this.paused) this.#applyPause();
   }
   setRecentTracks(urls: string[]): void { this.#recent = urls.slice(0,100).map(trackKey); }
-  /** Finish a finite track, then hold at its boundary until deployment or cancellation. */
-  holdForDeployment() {
-    this.#deployPending = true;
-    this.#cancelPrepared();
-    if (!this.#track || this.paused || !this.#track.duration) { this.#deployHeld=true; this.#applyPause(); }
-  }
-  get deploymentReady() { return this.#deployHeld; }
-  releaseDeployment() {
-    const held=this.#deployHeld; this.#deployPending=false; this.#deployHeld=false;
-    if(held) { if(!this.#track) this.#advance(); else this.#applyPause(); }
-  }
   setRadioFallbacks(stations: RadioStream[]): void { this.#radioFallbacks = stations.map(s => ({ ...s })); }
   checkQueue(tracks: readonly Track[], replace = false): void {
     if ((replace ? 0 : this.#queue.length) + tracks.length > this.#settings.queue.maxTracks) throw new Error(`Queue limit is ${this.#settings.queue.maxTracks} tracks. Remove some tracks first.`);
@@ -561,7 +547,6 @@ export class Player {
 
   /** Moves to the next song; with an empty queue, to the radio or else the default playlist. */
   #advance(): void {
-    if (this.#deployPending) { this.#deployHeld=true; this.#teardown(); this.#emit({type:"change"}); return; }
     this.#retries = 0;
     this.#retrying = false;
     this.#prepareFailedUrl = undefined;
@@ -663,7 +648,7 @@ export class Player {
     if (prepared) { prepared.release(); this.#killPipe(prepared.pipe); }
   }
   #prepareNext(): void {
-    if (this.paused || this.#deployPending || !this.#pipe || !this.#prebuffer || this.#prepared || !this.#track?.duration || this.#track.duration - this.elapsed > 15) return;
+    if (this.paused || !this.#pipe || !this.#prebuffer || this.#prepared || !this.#track?.duration || this.#track.duration - this.elapsed > 15) return;
     const next = this.#nextTrack();
     if (!next || next.url === this.#prepareFailedUrl) return;
     const budget=this.#opts.prebufferBudget ?? prebufferBudget;

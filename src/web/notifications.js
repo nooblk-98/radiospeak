@@ -4,13 +4,12 @@ const ACTIVE_IMPORT = ['queued','resolving'];
 /** Icon and label for each kind of notification; the kind also sets its colour. */
 const KINDS = {
   success:['check','Done'], error:['alert','Needs attention'], warning:['alert','Warning'],
-  import:['download','Import'], progress:['download','Importing'], deploy:['shield','Deployment'], update:['repeat','Update'],
+  import:['download','Import'], progress:['download','Importing'], update:['repeat','Update'],
 };
 function kindOf(item) {
   if (item.job) return item.job.status === 'failed' ? 'error' : ACTIVE_IMPORT.includes(item.job.status) ? 'progress' : 'import';
   const key = item.key || '';
   if (/^(talk|recovery|silence):/.test(key) || key === 'panel-offline') return 'warning';
-  if (key.startsWith('deployment:')) return item.error ? 'error' : 'deploy';
   if (key === 'panel-update') return 'update';
   return item.error ? 'error' : 'success';
 }
@@ -125,7 +124,6 @@ export class NotificationCenter {
       else this.seen.delete('recovery:'+bot.name);
       if(bot.talkBlocked)this.add(bot.nickname+': TeamSpeak talk permission is blocked. Required talk power: '+bot.talkBlocked.needed+'; bot talk power: '+bot.talkBlocked.have+'. Assign a permanent server or channel group with enough talk power.',true,undefined,undefined,'talk:'+bot.name+':'+bot.talkBlocked.needed+':'+bot.talkBlocked.have);
     }
-    if(state.deployment)this.add('Deployment: '+state.deployment.message,state.deployment.status==='failed',undefined,undefined,'deployment:'+state.deployment.id+':'+state.deployment.status);
     this.render();
   }
   entries(){return [...this.jobs.map(job=>({id:'import:'+job.id,signature:job.status+':'+(job.hasMore?'more':'')+':'+job.added,job,at:job.createdAt})),...this.items].sort((a,b)=>new Date(b.at).getTime()-new Date(a.at).getTime());}
@@ -170,7 +168,7 @@ export class NotificationCenter {
       const day=dayOf(item.at),heading=day!==group?'<div class="nc-group">'+day+'</div>':'';group=day;
       return heading+(item.job?this.#job(item,isUnread(item)):this.#message(item,isUnread(item)));
     }).join('');
-    const emptyText=this.filter==='unread'?['No unread notifications','You’ve seen everything new.']:this.filter==='alerts'?['No alerts','Playback, TeamSpeak and import problems show up here.']:['You’re all caught up','Playback alerts, imports and deployments show up here.'];
+    const emptyText=this.filter==='unread'?['No unread notifications','You’ve seen everything new.']:this.filter==='alerts'?['No alerts','Playback, TeamSpeak and import problems show up here.']:['You’re all caught up','Playback alerts, imports and your actions show up here.'];
     this.panel.innerHTML='<header class="nc-head"><div><h2>Notifications</h2><span class="nc-sub">'+(unread?unread+' unread':'All caught up')+'</span></div><button type="button" class="text-button'+(unread?'':' is-done')+'" data-action="notifications-read">'+icon('check')+'Mark all read</button></header>'+
       '<div class="nc-tabs" aria-label="Filter notifications">'+tab('all','All',entries.length)+tab('unread','Unread',unread)+tab('alerts','Alerts',alerts.length)+'</div>'+
       '<div class="notification-list">'+(list||'<div class="nc-empty"><span class="nc-empty-icon">'+icon('bell')+'</span><h3>'+emptyText[0]+'</h3><p>'+emptyText[1]+'</p></div>')+'</div>';

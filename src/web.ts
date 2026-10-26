@@ -15,7 +15,7 @@ import { owner, settingsFrom, type Viewer, type Role, type PlaylistSchedule } fr
 import { createAccount } from "./accounts.ts";
 import { sourceRevision } from "./build-info.ts";
 import { trackKey } from "./track-key.ts";
-import { Operations, validateDeploymentPolicy } from "./operations.ts";
+import { Operations } from "./operations.ts";
 
 const summaries = new WeakMap<SavedPlaylist, { key: string; value: object }>();
 function summary(p: SavedPlaylist) {
@@ -46,7 +46,6 @@ function stateFor(app: App) {
     favorites: app.playlists.favorites.map(trackJson), commandPrefix: app.config.commandPrefix,
     playlists: app.playlists.all.map(summary), imports: imports(app).all.map(job=>({ ...job, errors: job.errors.slice(0,20), failedIndices: undefined, input: undefined })),
     system: stateForSystem(),
-    deployment: app.operations?.status.deployment,
   };
 }
 function stateForSystem() { return { pid: process.pid, uptime: process.uptime(), memoryMB: Math.round(process.memoryUsage().rss / 1048576), media: mediaStats() }; }
@@ -297,29 +296,23 @@ export async function route(app: App, req: IncomingMessage, url: URL, signal?: A
   const method = req.method ?? "GET";
   const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
   const store = app.playlists;
-  if (["transfer","operations","audit"].includes(parts[1] ?? "")) {
+  if (["transfer","audit"].includes(parts[1] ?? "")) {
     if(viewer.role!=="admin")throw new HttpError(403,"Administrator access required");
     if(parts[1]==="audit" && method==="GET")return app.operations?.entries(Math.max(0,Number(url.searchParams.get("offset"))||0));
-    if(parts[1]==="operations") {
-      if(method==="POST") { const body=await readJson(req); if(body.cancel===true)app.operations!.cancel();else app.operations!.setPolicy(body.policy as Parameters<Operations["setPolicy"]>[0]); }
-      return app.operations!.status;
-    }
     if(parts[1]==="transfer") {
-      if(method==="GET")return {...store.exportLibrary(),deploymentPolicy:app.operations!.status.policy,players:Object.fromEntries(app.bots.map(b=>[b.name,{volume:b.player.volume,normalization:b.player.normalization,loop:b.player.loop,shuffle:b.player.shuffleEnabled,prebuffer:b.player.health.prebufferEnabled}]))};
+      if(method==="GET")return {...store.exportLibrary(),players:Object.fromEntries(app.bots.map(b=>[b.name,{volume:b.player.volume,normalization:b.player.normalization,loop:b.player.loop,shuffle:b.player.shuffleEnabled,prebuffer:b.player.health.prebufferEnabled}]))};
       if(method==="POST") {
         const body=await readJson(req,16*1024*1024);
-        const archive=body.archive as {players?:Record<string,{volume:number;normalization:boolean;loop:LoopMode;shuffle:boolean;prebuffer:boolean}>;deploymentPolicy?:Parameters<Operations["setPolicy"]>[0]};
+        const archive=body.archive as {players?:Record<string,{volume:number;normalization:boolean;loop:LoopMode;shuffle:boolean;prebuffer:boolean}>};
         if(body.applySettings===true && archive?.players!==undefined) {
           if(!archive.players || typeof archive.players!=="object" || Array.isArray(archive.players))throw new HttpError(400,"Invalid player preferences");
           for(const settings of Object.values(archive.players))if(!settings || !Number.isInteger(settings.volume) || settings.volume<0 || settings.volume>100 || !["off","all","one"].includes(settings.loop) || ![settings.normalization,settings.shuffle,settings.prebuffer].every(v=>typeof v==="boolean"))throw new HttpError(400,"Invalid player preferences");
         }
-        if(body.applySettings===true && archive?.deploymentPolicy)validateDeploymentPolicy(archive.deploymentPolicy);
         if(imports(app).active)throw new HttpError(409,"Wait for active playlist imports to finish before importing settings");
         const result=store.importLibrary(body.archive,body.applySettings===true,app.bots.map(b=>b.name),body.preview===true);
         if(body.preview!==true) {
           syncDefaults(app);
           if(body.applySettings===true) {
-            if(archive.deploymentPolicy)app.operations!.setPolicy(archive.deploymentPolicy);
             for(const bot of app.bots) {
               const nickname=store.nicknameFor(bot.name);if(nickname && nickname!==bot.nickname)void bot.setNickname(nickname).catch(()=>{});
               const settings=archive.players?.[bot.name];
@@ -607,10 +600,6 @@ export function startWebServer(app: App) {
         json({ ok: true, ready, sourceRevision, uiVersion, bots: app.bots.length, activeImports: imports(app).active }); return;
       }
       const api = url.pathname.startsWith("/api/");
-      if(url.pathname==="/api/deployments" && req.method==="POST") {
-        if(!app.operations!.authorized(req.headers.authorization))throw new HttpError(401,"Deployment token required");
-        readJson(req).then(async body=>{const status=app.operations!.queue(str(body.revision),str(body.webhook),body.force===true);await app.operations!.flush();json(status);}).catch(respondError);return;
-      }
       if (url.pathname === "/login" && req.method === "GET") {
         if (!auth.authorized(req, false)) {
           res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY" }).end(loginPage);

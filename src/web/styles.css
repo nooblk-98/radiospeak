@@ -80,7 +80,7 @@
 .nc-icon svg{width:16px;height:16px}
 .kind-error .nc-icon{background:#ff9b9514;color:var(--danger);border-color:#ff9b9528}
 .kind-warning .nc-icon{background:#e2bc6514;color:#e2bc65;border-color:#e2bc6528}
-.kind-deploy .nc-icon,.kind-update .nc-icon{background:#8fb8ff12;color:#a9c6ff;border-color:#8fb8ff24}
+.kind-update .nc-icon{background:#8fb8ff12;color:#a9c6ff;border-color:#8fb8ff24}
 .kind-progress .nc-icon svg{animation:nc-bob 1.4s ease-in-out infinite}
 .nc-body{flex:1;min-width:0}
 .nc-item.unread .nc-body{padding-right:14px}
@@ -91,7 +91,7 @@
 .nc-kind{font-weight:600;color:#a9b49f}
 .kind-error .nc-kind{color:#f2a9a3}
 .kind-warning .nc-kind{color:#e2bc65}
-.kind-deploy .nc-kind,.kind-update .nc-kind{color:#a9c6ff}
+.kind-update .nc-kind{color:#a9c6ff}
 .nc-meta time::before{content:"·";margin-right:7px;color:#5d6658}
 .nc-dot{position:absolute;top:17px;right:12px;width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px #c3f36b1c}
 .kind-error .nc-dot{background:var(--danger);box-shadow:0 0 0 3px #ff9b951c}

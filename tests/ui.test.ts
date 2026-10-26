@@ -235,8 +235,7 @@ test("UI navigation, creation, import, idle selection, search, save, queue edits
     const historyQueue=f.app.bots[0]!.player.queue.length;click(historySelector);
     await until(()=>f.app.bots[0]!.player.queue.length===historyQueue+1&&get('#toast').textContent?.startsWith('Queued')===true,"request a track from playback history");
     dom.window.location.hash='settings';await until(()=>!!document.querySelector('#transfer-form'),"manual export/import controls");
-    await until(()=>!!document.querySelector('#deployment-policy-form'),"deployment policy loaded");
-    fill('#deployment-policy-form [name="mode"]','window');submit('#deployment-policy-form');await until(()=>f.app.operations?.status.policy.mode==='window',"save deployment policy");
+    assert.equal(document.querySelector('#deployment-policy-form'),null,"deployments are never held for songs");
     const archive=(await f.api('/api/transfer')).data,beforeImport=f.app.playlists.all.length;
     Object.defineProperty(get('#transfer-form [name="archive"]'),'files',{configurable:true,value:[{size:JSON.stringify(archive).length,text:async()=>JSON.stringify(archive)}]});submit('#transfer-form');
     await until(()=>get('#modal-title').textContent==='Import settings & playlists'&&get('#modal').hasAttribute('open'),"portable import preview");assert.equal(f.app.playlists.all.length,beforeImport);

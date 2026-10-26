@@ -12,11 +12,11 @@ const notifications = new NotificationCenter();
 let state, botName = localStorage.getItem('radiospeak.bot') || '', activeView = '', libraryFilter = 'all', playlistId = null;
 let panelNeedsReload = false;
 let accessData = null, accessPending = false;
-let managementData=null,auditData=null,managementPending=false;
+let auditData=null,managementPending=false;
 async function loadManagement(offset=0) {
   if(managementPending || state?.viewer?.role!=='admin')return;
   managementPending=true;
-  try { const [status,audit]=await Promise.all([request('/api/operations'),request('/api/audit?offset='+offset)]);managementData=status;auditData={...audit,offset};renderedView='';render(); }
+  try { const audit=await request('/api/audit?offset='+offset);auditData={...audit,offset};renderedView='';render(); }
   catch(error){toast(error.message,true);}finally{managementPending=false;}
 }
 const playlistFilters=new Map(),playlistSelections=new Map();
@@ -353,7 +353,7 @@ function renderBackground() {
 }
 function settings(b) {
   ensureAccess();
-  if(!managementData)void loadManagement();
+  if(!auditData)void loadManagement();
   return heading('Keep your channel in tune.', 'Manage your bots, choose their channels, and dial in the sound.') + instancesCard(b) +
     '<section class="card import-card"><h3>Bot name</h3><p>This fixed name is shown in TeamSpeak. It stays the same when songs change.</p><form id="nickname-form" class="inline-form"><label class="field-label" for="bot-nickname" style="align-self:center;margin:0">TeamSpeak name</label><input class="field" id="bot-nickname" name="nickname" required maxlength="30" value="' + e(b.nickname || 'radiospeak') + '" placeholder="radiospeak"><button class="button primary" type="submit">' + icon('check') + 'Save name</button></form></section>' +
     healthCard(b) + '<div class="settings-grid">' + botCard(b) + '<section class="card card-padding"><div class="card-title"><h2>Playback & output</h2>' + icon('headphones') + '</div><div class="setting-line"><div>Shuffle queue<p>Randomize queued and newly added tracks</p></div><button class="switch" role="switch" aria-label="Shuffle queue" aria-checked="' + b.shuffle + '" data-action="shuffle"></button></div><div class="setting-line"><div>Repeat mode<p>Applies to tracks requested by users</p></div><select data-control="repeat" aria-label="Repeat mode">' + ['off','all','one'].map(m => '<option value="' + m + '" ' + (b.loop===m?'selected':'') + '>' + ({off:'Off',all:'Repeat all',one:'Repeat one'}[m]) + '</option>').join('') + '</select></div><div class="setting-line"><div>Default idle playlist<p>Used when the queue is empty and radio is off</p></div><select data-control="default" aria-label="Default idle playlist"><option value="">None</option>' + state.playlists.map(p => '<option value="' + e(p.id) + '" ' + (state.defaults[b.name]===p.id?'selected':'') + (!trackCount(p)?' disabled':'') + '>' + e(p.name) + '</option>').join('') + '</select></div><dl class="detail-list"><dt>Output</dt><dd>TeamSpeak · Opus Music</dd><dt>Bot gain</dt><dd>' + b.volume + '%</dd><dt>Listener auto-pause</dt><dd>' + (b.autoPaused?'Paused · empty channel':'Ready') + '</dd><dt>Radio fallback</dt><dd>' + e(b.radio?.name || 'Off') + '</dd></dl>' + (b.radio ? button('Turn radio off','stop','radio-off','','secondary') : '') + '</section>' + commands(state.commandPrefix) + '<section class="card card-padding"><h3>Your listeners</h3><p class="small subtle">People in the current channel who can hear the bot.</p>' + (b.listeners.length ? b.listeners.map(n => '<div class="listeners-row"><span>' + e(n) + '</span><span class="tag green">Listening</span></div>').join('') : '<p class="small subtle">No listeners in this channel yet.</p>') + '</section></div>';
@@ -458,7 +458,7 @@ function render(force = false) {
       viewTracks.set(id,sparse);viewVersions.set(id,detail.version);
     }
     $('#view').innerHTML =
-      ({dashboard,queue:b=>heading('Good things are up next.', 'Your channel’s requests, in the order you want to hear them.', '<a href="#search" class="button primary">' + icon('plus') + 'Add tracks</a>') + hero(b) + '<div style="margin-top:28px">' + queueSection(b,true) + '</div>',library,search:searchView,radio:radioView,history:historyView,settings:b=>settings(b)+operationsMarkup(state,b)+(state.viewer?.role==='admin'?managementMarkup(managementData,auditData)+accessMarkup(accessData):'')}[activeView] || dashboard)(b);
+      ({dashboard,queue:b=>heading('Good things are up next.', 'Your channel’s requests, in the order you want to hear them.', '<a href="#search" class="button primary">' + icon('plus') + 'Add tracks</a>') + hero(b) + '<div style="margin-top:28px">' + queueSection(b,true) + '</div>',library,search:searchView,radio:radioView,history:historyView,settings:b=>settings(b)+operationsMarkup(state,b)+(state.viewer?.role==='admin'?managementMarkup(auditData)+accessMarkup(accessData):'')}[activeView] || dashboard)(b);
     if (focusId && document.getElementById(focusId)) {
       document.getElementById(focusId).focus({preventScroll:true});
       if (selection) document.getElementById(focusId).setSelectionRange(...selection);
@@ -598,7 +598,6 @@ document.addEventListener('click', async event => {
       }
       case 'refresh-audit': await loadManagement();return;
       case 'audit-page': await loadManagement(Number(el.dataset.offset));return;
-      case 'cancel-deployment': await mutate('/api/operations',{cancel:true});await loadManagement();return;
       case 'select-page': {const list=playlist();if(list){const selected=selectionFor(list);selected.allMatching=false;selected.indices=[...new Set([...selected.indices,...list.positions])];render(true);}return;}
       case 'select-matches': {const list=playlist();if(list){selectionFor(list).allMatching=true;selectionFor(list).excluded=[];render(true);}return;}
       case 'clear-selection': playlistSelections.delete(playlistId);render(true);return;
@@ -742,9 +741,7 @@ document.addEventListener('submit',async event=>{
   if(!submit) return;
   submit.disabled=true;
   try {
-    if(form.id==='deployment-policy-form') {
-      await mutate('/api/operations',{policy:{mode:data.get('mode'),start:data.get('start'),end:data.get('end'),timezone:data.get('timezone'),maxWaitMinutes:Number(data.get('maxWaitMinutes'))}});await loadManagement();
-    } else if(form.id==='transfer-form') {
+    if(form.id==='transfer-form') {
       const file=form.querySelector('[name=archive]').files[0];
       if(!file||file.size>16*1024*1024)throw new Error('Choose an export smaller than 16 MB');
       const archive=JSON.parse(await file.text()),applySettings=data.get('applySettings')==='on';
