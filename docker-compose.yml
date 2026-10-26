@@ -7,12 +7,9 @@ services:
       FMBOT_SERVER: "150.230.134.243:9987"
       FMBOT_SERVER_PASSWORD: ""
       FMBOT_NICKNAME: "radiospeak"
-      # The bot needs talk power >= the channel's requirement (75 here) or nobody hears it.
-      FMBOT_CHANNEL: "٠•●۞ Music Portal 03 ۞●•٠"
-      FMBOT_CHANNEL_PASSWORD: ""
+      # Each bot's channel, idle playlist and radio stations are set in the web panel and kept in /data.
+      # The bot needs talk power >= its channel's requirement or nobody hears it.
       FMBOT_VOLUME: "50"
-      # Played whenever nobody has requested anything (a playlist link, or a song link from inside one).
-      FMBOT_DEFAULT_PLAYLIST: "https://www.youtube.com/watch?v=R96p0qPSUTY&list=PL_D0g1ys7yh_R8ZS5EKQLX4ml0lzNaJ32"
       # Admin commands (!pl delete): client unique IDs and/or server group IDs, comma-separated.
       # Leave both empty to let everyone use them.
       FMBOT_ADMINS: ""

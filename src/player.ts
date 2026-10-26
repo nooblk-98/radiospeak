@@ -317,7 +317,9 @@ export class Player {
     this.#radio = stream;
     if (stream) this.#stopped = false;
     this.#radioDelayMs = 2000;
-    if (!this.#track) {
+    // A station takes over from the idle playlist at once; user requests still finish first.
+    if (stream && this.#track?.auto) this.#finishTrack(undefined, true, true);
+    else if (!this.#track) {
       if (!stream && !this.#stopped) this.#advance();
       else this.#restart();
     }
@@ -371,10 +373,13 @@ export class Player {
     return true;
   }
 
-  playNow(tracks: Track[]): void {
+  /** Plays `tracks` at once; `replaceQueue` drops what was queued first (a playlist's "Play now"). */
+  playNow(tracks: Track[], replaceQueue = false): void {
     if (!tracks.length) return;
     this.#stopped = false;
+    if (replaceQueue) this.#queue = [];
     this.#queue.unshift(...tracks);
+    if (replaceQueue && this.#shuffleEnabled) this.shuffle();
     this.#userPaused = false;
     if (this.#track) this.#finishTrack(undefined, false, true);
     this.#advance();

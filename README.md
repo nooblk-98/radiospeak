@@ -1,247 +1,136 @@
+<div align="center">
+
+<img src="docs/logo.svg" alt="radiospeak logo" width="96" height="96">
+
 # radiospeak
 
-A TeamSpeak 3 / TeamSpeak 6 music bot: YouTube and SoundCloud songs and playlists, saved playlists,
-a default playlist for when nobody has requested anything, live radio links and a web control panel.
+**Your channel. Your soundtrack.**<br>
+A self-hosted music bot for TeamSpeak 3 and TeamSpeak 6, with a web control panel.
 
-- **Node.js 22.18+** (runs the TypeScript directly, no build step)
-- **[@honeybbq/teamspeak](https://github.com/HoneyBBQ/teamspeak-js)**: pure-TypeScript TeamSpeak voice client
-- **yt-dlp**: finds and streams songs (YouTube needs a JavaScript runtime: Deno, or Node via `--js-runtimes node`)
-- **ffmpeg**: decodes the audio and encodes Opus
+[![Node.js](https://img.shields.io/badge/Node.js-22.18%2B-5fa04e?logo=node.js&logoColor=white)](https://nodejs.org)
+[![TypeScript](https://img.shields.io/badge/TypeScript-no%20build%20step-3178c6?logo=typescript&logoColor=white)](tsconfig.json)
+[![Docker](https://img.shields.io/badge/Docker-ready-2496ed?logo=docker&logoColor=white)](docker-compose.yml)
+[![TeamSpeak](https://img.shields.io/badge/TeamSpeak-3%20%7C%206-2580c3?logo=teamspeak&logoColor=white)](https://teamspeak.com)
+
+[Features](#features) • [Quick start](#quick-start) • [Configuration](#configuration) • [Chat commands](#chat-commands) • [How it works](#how-it-works) • [Development](#development)
+
+![radiospeak web panel: now playing](docs/screenshots/now-playing.jpg)
+
+</div>
+
+radiospeak joins your TeamSpeak server as a regular voice client and streams music from YouTube, SoundCloud, live radio and anything else [yt-dlp](https://github.com/yt-dlp/yt-dlp) supports. Listeners control it from channel chat. Admins use a web panel to manage the queue, saved playlists, radio stations and several bots. Everything runs in one Node.js process without a native TeamSpeak client, thanks to [@honeybbq/teamspeak](https://github.com/HoneyBBQ/teamspeak-js).
 
 ## Features
 
-- **Songs and playlists** from YouTube, SoundCloud and other sites yt-dlp supports, by link or by search words
-- **Queue** with play-next, skip, remove, shuffle, loop (one / all), pause and resume (songs continue where they stopped)
-- **Default playlist** that plays whenever the queue is empty; a request interrupts it and it picks up again afterwards
-- **Saved playlists** built from chat or the web panel (`playlists.json`)
-- **Radio**: any live stream link plays while the queue is empty
-- **Fixed bot nickname**, defaulting to `radiospeak`, customizable in Bot & TeamSpeak settings; current song in the description
-- **Auto-pause** while nobody is listening in the channel
-- **`!join`** moves the bot to your channel
-- **Several bots** in one process, e.g. one per channel
-- **Web control panel** for phone or desktop
+- **Play almost anything**: songs and playlists from YouTube, SoundCloud and other sites yt-dlp supports, by link or search words.
+- **Real queue**: play next, drag to reorder, remove with Undo, shuffle, repeat one or all, and pause/resume where the song stopped.
+- **Saved library**: playlists, collections and favorites. Import public YouTube playlists in the background with duplicate detection.
+- **Never silent**: an idle playlist or live radio station takes over whenever the queue is empty. Requests always come first.
+- **Radio stations**: save Icecast, SHOUTcast or plain HTTP streams and tune in with one click. The current song title appears in the panel.
+- **Multi-bot**: run several bots in one process, for example one per channel. Each has its own channel, name, volume and idle playlist, all set from the panel.
+- **Listener-aware**: pauses when nobody is listening and resumes when someone joins.
+- **Resilient playback**: checkpoints survive restarts, reconnects keep the queue, and failed streams retry from the same position.
+- **Live web panel**: dark, responsive and mobile-friendly. Updates arrive over server-sent events, and there is no frontend build step.
 
-## Setup
+<table>
+  <tr>
+    <td><img src="docs/screenshots/queue.jpg" alt="Up next queue"></td>
+    <td><img src="docs/screenshots/library.jpg" alt="Collections and playlists"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Up next: reorder, play next, undo removals</sub></td>
+    <td align="center"><sub>Collections, playlists and favorites</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/search.jpg" alt="Search and import"></td>
+    <td><img src="docs/screenshots/playlist.jpg" alt="Playlist detail"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Search YouTube and SoundCloud</sub></td>
+    <td align="center"><sub>Playlist detail with idle playlist</sub></td>
+  </tr>
+</table>
+
+## Quick start
+
+### With Docker (recommended)
+
+The image includes Node.js, FFmpeg and yt-dlp.
+
+1. Edit the `FMBOT_*` variables in [docker-compose.yml](docker-compose.yml). You need at least `FMBOT_SERVER` and `FMBOT_WEB_PASSWORD`.
+2. Start it:
+
+   ```bash
+   docker compose up -d --build
+   docker compose logs -f
+   ```
+
+3. Open the panel at `http://<server>:48080`. Use any user name and the password you set.
+4. Under **Bot & TeamSpeak**, pick the bot's channel. It rejoins that channel after every reconnect and restart.
+5. Create or import a playlist and click **Set as idle playlist**, or tune in to a station under **Radio stations**.
+
+> [!NOTE]
+> The channel, idle playlist, nickname and radio stations are set per bot in the panel and stored on the `radiospeak-data` volume, so the compose file needs no per-bot defaults. Keep that volume when you upgrade: it also holds each bot's TeamSpeak identity.
+
+> [!TIP]
+> YouTube changes often. Rebuild now and then to pick up a fresh yt-dlp: `docker compose build --pull && docker compose up -d`.
+
+### From source
+
+Requires **Node.js 22.18+**, **FFmpeg** and **yt-dlp**. For YouTube, yt-dlp also needs a JavaScript runtime: Deno, or Node via `--js-runtimes node`.
 
 ```bash
-npm install
-```
-
-```bash
-copy config.example.json config.json
-```
-
-Install ffmpeg and yt-dlp. On Windows (yt-dlp brings Deno along):
-
-```bash
+# Windows example; yt-dlp brings Deno along
 winget install Gyan.FFmpeg yt-dlp.yt-dlp
-```
 
-Edit `config.json`:
-
-| Key | Meaning |
-| --- | --- |
-| `server` | `host:port` of your TeamSpeak server (port is usually 9987) |
-| `serverPassword` | Server password, empty if none |
-| `nickname`, `channel`, `channelPassword` | Bot name and channel to join (`"Music"` or `"Lounge/Music"`) |
-| `volume` | Starting volume, 0-100 |
-| `defaultPlaylist` | YouTube playlist link (or a song link from inside one) to play when idle |
-| `maxPlaylistItems` | Most songs taken from one playlist link |
-| `bots` | List of bots; each can override `name`, `nickname`, `channel`, `channelPassword`, `volume`, `defaultPlaylist`, `identityFile` |
-| `admins`, `adminGroups` | Unique IDs / server group IDs allowed to delete saved playlists. Both empty = everyone |
-| `pauseWhenEmpty`, `emptyGraceSeconds` | Pause after the channel has been empty this long |
-| `songInDescription` | Show the current song in the TeamSpeak description; the nickname always stays fixed |
-| `web` | `enabled`, `host`, `port`, `password` for the control panel |
-| `ffmpegPath`, `ytdlpPath`, `bitrateKbps` | Tools and Opus bitrate |
-
-Each bot saves its identity on first run (`identity.txt` for the first bot). Keep these files so the
-bots keep the same unique IDs and any server groups you give them.
-
-## Run
-
-```bash
+npm install
+cp config.example.json config.json   # then edit server and web settings
 npm start
 ```
 
-Test the audio pipeline without a TeamSpeak server (should report ~50 fps and 0 underruns):
+Test the audio pipeline without a TeamSpeak server. It should report ~50 fps and 0 underruns:
 
 ```bash
 npm run test:audio -- "song name or link"
 ```
 
-## Docker
+## Configuration
 
-Edit the `FMBOT_*` settings in `docker-compose.yml` (server, password, channel, default playlist and
-**web panel password**), then:
+Settings come from `config.json` (path set by `FMBOT_CONFIG`). Any `FMBOT_*` environment variable overrides the file.
 
-```bash
-docker compose up -d --build
-```
+| `config.json` key | Environment variable | Description |
+| --- | --- | --- |
+| `server` | `FMBOT_SERVER` | `host:port` of the TeamSpeak server (usually port 9987) |
+| `serverPassword` | `FMBOT_SERVER_PASSWORD` | Server password, empty if none |
+| `nickname` | `FMBOT_NICKNAME` | Initial bot name (default `radiospeak`). A name saved in the panel takes precedence |
+| `channel`, `channelPassword` | `FMBOT_CHANNEL`, `FMBOT_CHANNEL_PASSWORD` | Optional first channel (`"Music"` or `"Lounge/Music"`). A channel chosen in the panel replaces it |
+| `volume` | `FMBOT_VOLUME` | Starting volume, 0–100 |
+| `defaultPlaylist` | `FMBOT_DEFAULT_PLAYLIST` | Optional YouTube playlist link for idle play. Usually left empty in favor of the panel's idle playlist |
+| `maxPlaylistItems` | `FMBOT_MAX_PLAYLIST_ITEMS` | Most songs taken from one playlist link (default 300) |
+| `bitrateKbps` | `FMBOT_BITRATE` | Opus bitrate (default 96) |
+| `admins`, `adminGroups` | `FMBOT_ADMINS`, `FMBOT_ADMIN_GROUPS` | Unique IDs / server group IDs allowed to delete saved playlists. Both empty means everyone |
+| `pauseWhenEmpty`, `emptyGraceSeconds` | `FMBOT_PAUSE_WHEN_EMPTY` | Pause after the channel has been empty this long (default 15 s) |
+| `songInDescription` | `FMBOT_SONG_IN_DESCRIPTION` | Show the current song in the bot's description. The nickname never changes |
+| `web.enabled`, `web.host`, `web.port`, `web.password` | `FMBOT_WEB_ENABLED`, `FMBOT_WEB_HOST`, `FMBOT_WEB_PORT`, `FMBOT_WEB_PASSWORD` | Web panel (Basic auth: any user name plus this password) |
+| `bots` | `FMBOT_BOTS` (JSON) | Several bots. Each can override `name`, `nickname`, `channel`, `channelPassword`, `volume`, `defaultPlaylist`, `identityFile` |
+| `ffmpegPath`, `ytdlpPath`, `identityLevel`, `commandPrefix` | | Tool paths, identity security level (default 8), chat prefix (default `!`) |
 
-```bash
-docker compose logs -f
-```
+The bot keeps its state in its working directory (`/data` in Docker):
 
-The compose file publishes the web panel at `http://<server>:48080` (any user name, the password you set).
-The fixed Docker volume `radiospeak-data` keeps identity files, playlists, playback checkpoints and optional
-`config.json`. `FMBOT_*` variables override that configuration. Keep this volume when upgrading.
+| File | Contents |
+| --- | --- |
+| `identity.txt`, `identity-<name>.txt` | Each bot's TeamSpeak identity. Keep these so server groups stick to the bots |
+| `playlists.json` (`FMBOT_PLAYLISTS`) | Library: playlists, collections, favorites, radio stations, and per-bot channels, nicknames and idle playlists |
+| `playback.json` (`FMBOT_PLAYBACK`) | Playback checkpoints: track, position, queue, radio, volume and modes |
 
-**Existing installs using `./data`: migrate before the first deployment with the new compose file.**
-On the Docker host, disable scheduled Portainer redeployments for radiospeak while migrating, then run:
-
-```bash
-sh scripts/migrate-data.sh radiospeak
-docker compose up -d --build
-```
-
-The script stops the old container, backs up its actual `/data` directory (including the identity), copies
-it to the fixed volume and verifies every file before leaving the bot stopped for deployment. It refuses
-to overwrite an existing populated volume and restarts the original container if migration fails. The old
-data and the printed backup path remain available. Do not deploy into an empty volume before migrating.
-In Portainer, deploy the updated Git stack after running the script on its Docker host.
-
-Portainer Git checkouts can change directories with every commit, so relative `./data` binds can generate
-a new TeamSpeak identity after updates. The fixed volume avoids that. If a container is repeatedly replaced
-with exit code 0 and `RestartCount=0`, inspect Portainer's GitOps polling/deployment history and Docker events.
-Disable polling for that source while investigating; manual Git redeploy remains available.
-
-For moderated TeamSpeak channels, assign the preserved bot identity a permanent server/channel group with
-`i_client_talk_power` at least the channel's `i_channel_needed_talk_power` (75 for the example channel).
-A temporary “Grant talk power” can expire when the bot reconnects. Showing the song in its description
-also requires `b_client_modify_own_description`.
-
-YouTube changes often: rebuild now and then to get a fresh yt-dlp:
-
-```bash
-docker compose build --pull
-```
-
-## Web control panel
-
-Set `web.enabled` to `true` in your configuration (or `FMBOT_WEB_ENABLED=true`),
-then open `http://localhost:8080`. The panel uses modular vanilla HTML, CSS and
-JavaScript with no frontend build step. Its dark layout adapts to desktop and
-mobile, and the player dock remains available while switching screens.
-
-- **Now playing:** playback, live progress, TeamSpeak channel and listener status.
-- **Up next:** drag tracks into order or click a track number to choose a position
-  with a keyboard or touch device. Play next, move to top, remove, clear, or save
-  the queue. Removed tracks offer Undo for 60 seconds, provided playback and the
-  queue have not changed. Estimated wait times account for preceding track lengths;
-  paused playback and repeat-one are labelled. Stop clears user requests; Pause keeps them.
-- **Collections & playlists:** create, rename, move and delete playlists; group
-  them in collections; import public YouTube playlists; reorder or enqueue saved
-  tracks. Track tables show 50 rows per page; reordering works across pages.
-  Deleting a collection keeps its playlists as standalone lists.
-- **Idle playlists:** select one per bot. Requests take priority and the idle
-  playlist resumes when they finish. An enabled radio stream takes priority over
-  the idle playlist. Deleting an assigned playlist disables that fallback.
-- **Search & import:** debounced YouTube/SoundCloud search, result artwork,
-  durations and artists, play now, enqueue, and save to a playlist. Live stream
-  URLs and radio presets are also available. Search and imports need `yt-dlp`.
-  Search metadata is cached for 60 seconds (up to 100 searches). Media lookups
-  share two process slots with a bounded waiting list; cancelling a browser search
-  aborts its lookup. Imports run as background jobs with progress, cancellation,
-  unavailable-entry reports, and an optional skip-duplicates checkbox. Alternate
-  YouTube links to the same video count as duplicates.
-- **Bot & TeamSpeak:** customize the fixed bot name, move between available channels, see
-  listeners, toggle FFmpeg loudness normalization, shuffle, and repeat. Bot health
-  shows process uptime/memory, reconnects, buffer underruns, checkpoint status,
-  media lookup load, and the latest disconnect/audio error.
-
-The heart stores favorites in the shared library. Bot volume is the actual
-TeamSpeak output gain (0–100%), not browser playback volume. Audio always plays
-through the bot. The volume slider sends live updates while dragging, with ordered,
-coalesced requests so older values cannot override the final setting. Gain is
-applied just before encoding with at most 25 audio frames (0.5 seconds) of lead;
-mute stops outgoing music immediately while the track continues. Volume changes
-do not restart the decoder or reconnect TeamSpeak. Seeking restarts the decoder and may take time on remote media;
-live streams cannot be scrubbed. Normalization changes restart the audio pipeline
-at its current position. Listener auto-pause resumes when a listener joins.
-
-The default TeamSpeak nickname is `radiospeak`. Change it under **Bot & TeamSpeak →
-Bot name → Save name** (1–30 characters). The name applies to the connected bot and
-is saved per bot in the library for subsequent connections and restarts, overriding
-`nickname` / `FMBOT_NICKNAME`. If the bot is offline, it uses the saved name on its
-next connection. Song changes only update the description; legacy
-`showSongInNickname` / `FMBOT_SONG_IN_NICKNAME` settings are ignored.
-
-The panel receives authenticated server-sent events from `/api/events`. Structural
-changes push a compact state; elapsed time and health use separate progress events
-every second. If SSE is unavailable, polling falls back to 1.5 seconds (5 seconds
-while hidden). `StateConnection` emits `track_changed`, `queue_updated`, and
-`playback_progress`. Late REST responses cannot overwrite newer pushed state.
-`/api/state` contains playlist summaries; tracks load on demand through
-`/api/playlists/:id?offset=0&limit=50` (maximum 100 per response). Playlist version
-tokens prevent stale edits without posting the entire track order back.
-
-Library data is written atomically to `playlists.json` (or `FMBOT_PLAYLISTS`).
-Existing playlist arrays load automatically; the next write upgrades them to a
-versioned object containing playlists, stable IDs, collections, favorites, and
-per-bot idle selections. Back up that file before downgrading to an older release.
-Idle selections survive restarts and override configured remote defaults. Playback,
-shuffle, volume, and normalization controls apply to the running bot.
-
-Playback recovery is saved separately in `playback.json` (override with
-`FMBOT_PLAYBACK`). Checkpoints are queued on player changes and every 10 seconds,
-including the current track, elapsed time, queue, idle playlist cursor, radio,
-volume, shuffle, repeat, normalization, and user pause/stop state. A clean shutdown
-saves before stopping the decoder. Writes are asynchronous, coalesced over 50 ms,
-serialized, and atomically renamed. Shutdown waits for pending saves. After an unexpected process restart, playback
-resumes from the last checkpoint once TeamSpeak finishes connecting; up to 10
-seconds can be replayed. The existing Docker `/data` mount preserves this file.
-
-Temporary TeamSpeak disconnects pause the audio pipeline and hold the current
-track/queue until the server's channel list is ready again. Reconnecting does not
-reload the default playlist. Startup logs include the process ID, and restored
-checkpoints and disconnect reasons are logged, so process restarts can be
-distinguished from transport reconnects. An external restart such as a Docker
-out-of-memory kill still needs server/container logs to diagnose.
-
-Interrupted audio retries from its current position up to twice, with 1- and
-2-second backoff. A stream that supplies no buffered audio for 30 seconds also
-enters recovery. Missing tools and known permanent media errors skip immediately;
-the queue remains intact during retries. Health and the player page show recovery.
-
-**Prepare the next track** in Bot & TeamSpeak settings is optional and off by
-default. During the last 15 seconds of a known-length track, one upcoming track
-is decoded into a bounded buffer. The prepared pipeline is promoted at the next
-transition; its audio is never sent early. Queue changes, seeks, normalization
-changes, disabling prebuffering, and Stop discard stale preparation. Preparing
-another track can temporarily double audio process usage; enable it only when
-the server has spare CPU and memory. The setting is included in playback checkpoints.
-
-Playlist names can contain spaces. Use their 1-based number from `!pl` in chat
-commands when a name contains spaces, for example `!pl add 2 <link>`.
-
-### Development checks
-
-```bash
-npm ci
-npm run check
-npm test
-```
-
-Tests cover library migration/persistence, player controls, authenticated HTTP
-routes, stale queue/playlist edits, input validation, and a DOM workflow through
-the actual panel and local API. The DOM test supplies deterministic media results;
-it does not require TeamSpeak, FFmpeg, or a network media provider.
-Additional tests cover asynchronous checkpoint bursts, SSE authentication and
-client merging, lookup caching/cancellation/concurrency, import progress and
-duplicates, paged edits, Undo, stalled streams, bounded retries, and prebuffer
-promotion/cancellation using controlled child-process streams.
-
-To additionally verify live gain against real FFmpeg/Opus output, set `FFMPEG_PATH`
-to your FFmpeg executable and run `npm test`. These optional local tests synthesize
-a tone, change gain during playback with normalization on and off, then decode the
-captured Opus packets and compare their measured amplitudes. They require no
-TeamSpeak connection or external media service.
+> [!WARNING]
+> If the panel has no password, set `web.host` to `127.0.0.1`. With a password, the panel is still plain HTTP, so put it behind a reverse proxy with TLS before exposing it to the internet.
 
 ## Chat commands
 
 Send these in the bot's channel or as a private message to the bot:
 
-| Command | |
+| Command | Description |
 | --- | --- |
 | `!play <link or search>` | Add a song or playlist to the queue (`!play` alone starts/resumes) |
 | `!playall <link>` | Queue the whole playlist from a song-in-a-playlist link |
@@ -250,20 +139,93 @@ Send these in the bot's channel or as a private message to the bot:
 | `!pause`, `!resume`, `!skip [n]`, `!stop` | Playback |
 | `!queue [page]`, `!remove <n>`, `!clear`, `!shuffle`, `!loop [off\|one\|all]` | Queue |
 | `!np`, `!vol [0-100]` | Now playing, volume |
-| `!pl` | List saved playlists |
-| `!pl new <name>` | Create one |
-| `!pl add <name> [link or search]` | Add songs (no link = the current song; a playlist link adds all of it) |
-| `!pl save <name>` | Save the current queue |
-| `!pl show <name> [page]`, `!pl remove <name> <n>` | View / edit |
-| `!pl play <name> [shuffle]` | Queue a saved playlist |
-| `!pl delete <name>` | Delete (admin) |
-| `!radio <stream link\|off>` | Live radio while the queue is empty |
-| `!join`, `!bots`, `!help` | Other |
+| `!pl`, `!pl new <name>`, `!pl show <name> [page]` | List, create and view saved playlists |
+| `!pl add <name> [link or search]` | Add songs (no link adds the current song; a playlist link adds all of it) |
+| `!pl save <name>`, `!pl play <name> [shuffle]` | Save the queue / queue a saved playlist |
+| `!pl remove <name> <n>`, `!pl delete <name>` | Edit / delete (delete is admin only) |
+| `!radio <station\|stream link\|off>`, `!radio list` | Live radio while the queue is empty (saved station name or number) |
+| `!join`, `!bots`, `!help` | Move the bot to your channel, list bots, help |
 
-## Notes
+Playlist names can contain spaces. In commands, use the playlist's number from `!pl` instead, for example `!pl add 2 <link>`.
 
-- For best quality, set the bot's channel codec to **Opus Music**.
-- If the log shows **buffer underruns**, the machine or its network can't keep up; audio will sound choppy.
-- Setting its own description needs the `b_client_modify_own_description` permission (granted by default).
-- If TeamSpeak disconnects, the bot reconnects; after a clone or flood ban it waits at least 60 s before retrying.
+## TeamSpeak setup
+
+> [!IMPORTANT]
+> In moderated channels, give the bot's identity a **permanent** server or channel group whose `i_client_talk_power` is at least the channel's `i_channel_needed_talk_power`. A temporary "Grant talk power" is lost when the bot reconnects. When the bot can't be heard, it says so in chat and in the panel.
+
+- Set the bot's channel codec to **Opus Music** for the best quality.
+- Showing the song in the description needs `b_client_modify_own_description` (granted by default).
 - With several bots in one channel, only the first one answers channel chat.
+- After a clone or flood ban, the bot waits at least 60 seconds before reconnecting.
+- **Buffer underruns** in the log mean the machine or its network can't keep up, and audio will sound choppy.
+
+## How it works
+
+<details>
+<summary><strong>Playback order</strong></summary>
+
+1. User requests (queue) always play first. A request interrupts an idle-playlist song immediately.
+2. When the queue is empty, the bot's **radio station** plays if one is set.
+3. Otherwise the bot's **idle playlist** plays on repeat and keeps its place between requests.
+
+**Play now** on a playlist clears the queue and starts that playlist at once, shuffled when shuffle is on. **Add to queue** appends it instead. **Stop** clears requests and holds silence until something is played again.
+
+</details>
+
+<details>
+<summary><strong>Reliability and recovery</strong></summary>
+
+- Checkpoints are saved on every player change and every 10 seconds, with atomic, coalesced writes. After an unexpected restart, playback resumes from the last checkpoint once TeamSpeak reconnects. Up to 10 seconds may replay.
+- A TeamSpeak disconnect pauses the audio pipeline and holds the track and queue until the channel list is ready again.
+- Interrupted audio retries from its current position up to twice. A stream that delivers nothing for 30 seconds also enters recovery. Permanent media errors skip immediately.
+- **Prepare the next track** (optional, off by default) decodes the upcoming song during the last 15 seconds of the current one. It uses extra CPU and memory.
+- Bot volume is the real TeamSpeak output gain, applied just before encoding with at most 0.5 s of lead. Changing it never restarts the decoder.
+
+</details>
+
+<details>
+<summary><strong>Web panel internals</strong></summary>
+
+- The panel is modular vanilla HTML, CSS and JavaScript in [src/web](src/web), served by the bot itself.
+- Live updates use authenticated server-sent events from `/api/events`. Structural changes push compact state, and elapsed time and health use lightweight progress events. If SSE is unavailable, the panel falls back to polling.
+- `/api/state` contains playlist summaries. Tracks load on demand from `/api/playlists/:id?offset=0&limit=50`. Version tokens reject stale edits.
+- Search results are cached for 60 seconds. Media lookups share two process slots, and cancelling a search aborts its lookup.
+
+</details>
+
+## Upgrading existing Docker installs
+
+Older versions bind-mounted `./data`. Portainer Git checkouts can change that path with every commit, which creates a new TeamSpeak identity. The fixed `radiospeak-data` volume avoids this. Migrate once before deploying the new compose file:
+
+```bash
+sh scripts/migrate-data.sh radiospeak
+docker compose up -d --build
+```
+
+The script stops the old container, backs up its `/data` (including identities), copies it to the volume and verifies every file. It refuses to overwrite a populated volume and restarts the original container if anything fails.
+
+> [!CAUTION]
+> Don't deploy into an empty volume before migrating, or the bot starts with a new identity and an empty library. Pause scheduled Portainer redeployments while migrating.
+
+## Development
+
+```bash
+npm ci
+npm run check   # TypeScript type check
+npm test        # unit, HTTP and DOM tests (no TeamSpeak, FFmpeg or network needed)
+```
+
+The tests cover library persistence and migration, player controls, the authenticated HTTP API, stale-edit protection, SSE, imports, retries and prebuffering, plus a jsdom workflow through the real panel. To also check live gain against real FFmpeg/Opus output, set `FFMPEG_PATH` to your FFmpeg executable before running `npm test`.
+
+```text
+src/
+├── index.ts         # entry point: loads config, starts bots and the web panel
+├── bot.ts           # TeamSpeak connection, presence, listeners, talk power
+├── player.ts        # queue, idle playlist, radio, FFmpeg/Opus pipeline
+├── commands.ts      # chat commands
+├── web.ts           # HTTP API, SSE and static panel
+├── store.ts         # library (playlists.json)
+├── playback-store.ts# checkpoints (playback.json)
+├── ytdlp.ts         # search, resolution and lookup pool
+└── web/             # panel: index.html, app.js, components.js, styles.css
+```

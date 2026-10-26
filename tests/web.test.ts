@@ -135,3 +135,47 @@ test("custom bot names validate, persist per bot, and stay fixed through track c
     await bot.shutdown();
   } finally {await f.close();}
 });
+
+test("radio stations persist and tune in; playlist Play now replaces the queue; panel channel is remembered",async()=>{
+  const f=await fixture(), p=f.app.bots[0]!.player, botPath="/api/bots/Test%20bot/";
+  try {
+    const names=()=>f.app.playlists.radioStations.map(r=>r.name);
+    assert.deepEqual((await f.api("/api/state")).data.radioStations.map((r:{name:string})=>r.name),["Groove Salad","Drone Zone"]);
+    assert.equal((await f.api("/api/radio-stations",{name:"Bad",url:"file:///etc/passwd"})).status,400);
+    assert.equal((await f.api("/api/radio-stations",{name:"groove salad",url:"https://example.com/a"})).status,400);
+    const station=(await f.api("/api/radio-stations",{name:"Jazz",url:"https://radio.example.com/jazz"})).data.station;
+    assert.equal((await f.api("/api/radio-stations/"+station.id,{name:"Late jazz",url:"https://radio.example.com/late"},"PATCH")).status,200);
+    assert.equal((await f.api(botPath+"radio",{stationId:"missing"})).status,404);
+
+    p.stop();p.setDefaultPlaylist([tracks[0]!],"Idle");p.playIfIdle();
+    assert.equal(p.track?.auto,true);
+    assert.equal((await f.api(botPath+"radio",{stationId:station.id})).status,200);
+    assert.equal(p.track,undefined,"a station replaces the idle playlist at once");
+    assert.deepEqual(p.radio,{name:"Late jazz",url:"https://radio.example.com/late"});
+    p.enqueue([tracks[1]!]);
+    assert.equal((await f.api(botPath+"radio",{stationId:f.app.playlists.radioStations[0]!.id})).status,200);
+    assert.equal(p.track?.url,tracks[1]!.url,"a user request keeps playing");
+    assert.equal(p.radio?.name,"Groove Salad");
+
+    const list=(await f.api("/api/playlists",{name:"Party"})).data.playlist;
+    assert.equal((await f.api("/api/playlists/"+list.id+"/play-now",{bot:"Test bot"})).status,400);
+    await f.api("/api/playlists/"+list.id+"/add",{tracks:tracks.slice(2)});
+    p.enqueue([tracks[0]!,tracks[1]!]);
+    assert.equal((await f.api("/api/playlists/"+list.id+"/play-now",{bot:"Test bot"})).status,200);
+    assert.equal(p.track?.url,tracks[2]!.url);
+    assert.equal(p.track?.requestedBy,"web");
+    assert.deepEqual(p.queue.map(t=>t.url),[tracks[3]!.url],"the old queue is replaced");
+
+    assert.equal((await f.api("/api/radio-stations/"+station.id,{},"DELETE")).status,200);
+    assert.equal((await f.api("/api/radio-stations/"+f.app.playlists.radioStations[1]!.id,{},"DELETE")).status,200);
+    assert.deepEqual(new PlaylistStore(join(f.dir,"library.json")).radioStations.map(r=>r.name),["Groove Salad"]);
+    assert.deepEqual(names(),["Groove Salad"]);
+    await f.api("/api/radio-stations/"+f.app.playlists.radioStations[0]!.id,{},"DELETE");
+    assert.equal(new PlaylistStore(join(f.dir,"library.json")).radioStations.length,0,"starter stations are not re-added");
+
+    assert.equal((await f.api("/api/state")).data.bots[0].homeChannel,null);
+    f.app.playlists.setChannel("Test bot","Lounge/Music");
+    assert.equal((await f.api("/api/state")).data.bots[0].homeChannel,"Lounge/Music");
+    assert.equal(new PlaylistStore(join(f.dir,"library.json")).channelFor("Test bot"),"Lounge/Music");
+  } finally {await f.close();}
+});

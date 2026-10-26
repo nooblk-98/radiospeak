@@ -31,6 +31,7 @@ function stateFor(app: App) {
   return {
     uiVersion,
     bots: app.bots.map(botState), collections: app.playlists.collections, defaults: app.playlists.defaults,
+    radioStations: app.playlists.radioStations,
     favorites: app.playlists.favorites.map(trackJson), commandPrefix: app.config.commandPrefix,
     playlists: app.playlists.all.map(summary), imports: imports(app).all.map(job=>({ ...job, errors: job.errors.slice(0,20) })),
     system: stateForSystem(),
@@ -70,13 +71,18 @@ const httpUrl = (s: unknown): string | undefined => {
     return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password ? url.href : undefined;
   } catch { return undefined; }
 };
-const trackJson = (t: Track) => ({ ...t, duration: t.duration ?? null, requestedBy: t.requestedBy ?? null, auto: !!t.auto });
+const streamUrl = (s: unknown): string => {
+  const url = httpUrl(s);
+  if (!url) throw new HttpError(400, "Enter a valid HTTP or HTTPS stream URL");
+  return url;
+};
+const trackJson =(t: Track) => ({ ...t, duration: t.duration ?? null, requestedBy: t.requestedBy ?? null, auto: !!t.auto });
 
 function botState(bot: MusicBot) {
   const pl = bot.player;
   return {
     name: bot.name, nickname: bot.nickname, connected: bot.connected,
-    channel: bot.channelName ?? null, channelId: bot.channelID?.toString() ?? null,
+    channel: bot.channelName ?? null, channelId: bot.channelID?.toString() ?? null, homeChannel: bot.homeChannel || null,
     channels: bot.connected ? [...(bot.client?.view.channels.values() ?? [])].map((c) => ({ id: c.id.toString(), name: c.name })) : [],
     talkBlocked: bot.talkBlocked ?? null,
     track: pl.track ? trackJson(pl.track) : null, elapsed: pl.elapsed,
@@ -221,8 +227,8 @@ async function botAction(app: App, bot: MusicBot, action: string, body: Record<s
       if (!bot.connected) throw new HttpError(400, "Connect the bot before switching channels");
       const channel = [...(bot.client?.view.channels.values() ?? [])].find((c) => c.id.toString() === str(body.channelId));
       if (!channel) throw new HttpError(404, "Channel not found");
-      await bot.moveTo(asChannelID(channel.id));
-      return "Moved to " + channel.name;
+      await bot.moveTo(asChannelID(channel.id), true);
+      return "Moved to " + channel.name + ". The bot returns here after reconnecting.";
     }
     case "default": {
       const list = body.playlistId === null ? null : app.playlists.find(str(body.playlistId));
@@ -232,6 +238,11 @@ async function botAction(app: App, bot: MusicBot, action: string, body: Record<s
       return list ? list.name + " is now the default idle playlist." : "Idle playlist disabled.";
     }
     case "radio": {
+      if (body.stationId !== undefined) {
+        const station = app.playlists.radioStations.find((r) => r.id === str(body.stationId));
+        if (!station) throw new HttpError(404, "Radio station not found");
+        return bot.playRadio(station.url, station.name);
+      }
       const url = str(body.url);
       if (url && !httpUrl(url)) throw new HttpError(400, "Enter a valid HTTP or HTTPS stream URL");
       return bot.playRadio(url || undefined);
@@ -284,6 +295,22 @@ export async function route(app: App, req: IncomingMessage, url: URL, signal?: A
     if (parts[2] && method === "DELETE") {
       store.deleteCollection(parts[2]);
       return { message: "Collection deleted. Its playlists are now standalone." };
+    }
+  }
+  if (parts[0] === "api" && parts[1] === "radio-stations") {
+    if (method === "POST" && parts.length === 2) {
+      const body = await readJson(req);
+      const station = store.createStation(str(body.name), streamUrl(body.url));
+      return { message: station.name + " added to your stations.", station };
+    }
+    if (parts[2] && method === "PATCH") {
+      const body = await readJson(req);
+      store.updateStation(parts[2], str(body.name), streamUrl(body.url));
+      return { message: "Radio station updated." };
+    }
+    if (parts[2] && method === "DELETE") {
+      store.deleteStation(parts[2]);
+      return { message: "Radio station deleted." };
     }
   }
   if (url.pathname === "/api/playlists" && method === "POST") {
@@ -342,6 +369,10 @@ export async function route(app: App, req: IncomingMessage, url: URL, signal?: A
         case "play":
           if (!list.tracks.length) throw new HttpError(400, "Playlist is empty");
           return { message: plain(bot.enqueue([...list.tracks], { requestedBy: "web", playlistName: list.name })) };
+        case "play-now":
+          if (!list.tracks.length) throw new HttpError(400, "Playlist is empty");
+          bot.player.playNow(list.tracks.map((t) => ({ ...t, requestedBy: "web" })), true);
+          return { message: "Playing " + list.name + " now. It replaced the queue." };
         case "save": {
           const tracks = [...(bot.player.track && !bot.player.track.auto ? [bot.player.track] : []), ...bot.player.queue];
           if (!tracks.length) throw new HttpError(400, "The queue is empty");

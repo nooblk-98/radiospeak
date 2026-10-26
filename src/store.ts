@@ -12,6 +12,7 @@ export interface SavedPlaylist {
   version: string;
 }
 export interface Collection { id: string; name: string }
+export interface RadioStation { id: string; name: string; url: string }
 interface Library {
   version: 2;
   playlists: SavedPlaylist[];
@@ -19,7 +20,16 @@ interface Library {
   defaults: Record<string, string | null>;
   favorites: Track[];
   botNicknames: Record<string, string>;
+  /** Channel path ("Parent/Child") each bot joins on connect, chosen in the web panel. */
+  botChannels: Record<string, string>;
+  radioStations: RadioStation[];
 }
+
+/** Offered until the library has its own station list. */
+const starterStations: Omit<RadioStation, "id">[] = [
+  { name: "Groove Salad", url: "https://ice5.somafm.com/groovesalad-128-mp3" },
+  { name: "Drone Zone", url: "https://ice5.somafm.com/dronezone-128-mp3" },
+];
 
 /** Accepts legacy playlist arrays; writes the versioned library atomically. */
 export class PlaylistStore {
@@ -39,16 +49,26 @@ export class PlaylistStore {
       defaults: raw.defaults ?? {},
       favorites: Array.isArray(raw.favorites) ? raw.favorites : [],
       botNicknames: raw.botNicknames ?? {},
+      botChannels: raw.botChannels ?? {},
+      radioStations: Array.isArray(raw.radioStations)
+        ? raw.radioStations.filter((r: RadioStation) => r && r.id && r.name && r.url)
+        : starterStations.map((r) => ({ id: randomUUID(), ...r })),
     };
   }
 
   get all(): readonly SavedPlaylist[] { return this.#data.playlists; }
   get collections(): readonly Collection[] { return this.#data.collections; }
   get favorites(): readonly Track[] { return this.#data.favorites; }
+  get radioStations(): readonly RadioStation[] { return this.#data.radioStations; }
   get defaults(): Readonly<Record<string, string | null>> { return this.#data.defaults; }
   nicknameFor(bot: string): string | undefined { return this.#data.botNicknames[bot]; }
   setNickname(bot: string, nickname: string): void {
     this.#data.botNicknames[bot] = validateNickname(nickname);
+    this.#save();
+  }
+  channelFor(bot: string): string | undefined { return this.#data.botChannels[bot]; }
+  setChannel(bot: string, path: string): void {
+    this.#data.botChannels[bot] = path;
     this.#save();
   }
   hasDefault(bot: string): boolean { return Object.hasOwn(this.#data.defaults, bot); }
@@ -111,6 +131,35 @@ export class PlaylistStore {
 
   #checkCollection(id: string | null): void {
     if (id !== null && !this.collections.some((c) => c.id === id)) throw new Error("Collection not found");
+  }
+
+  /** By stable ID, list number (1-based), or case-insensitive name. */
+  findStation(query: string): RadioStation | undefined {
+    const q = query.trim().toLowerCase();
+    const n = Number(q);
+    return this.radioStations.find((r) => r.id === query || r.name.toLowerCase() === q)
+      ?? (Number.isInteger(n) && n >= 1 ? this.radioStations[n - 1] : undefined);
+  }
+
+  createStation(name: string, url: string): RadioStation {
+    const station = { id: randomUUID(), name: this.#name(name, this.radioStations), url };
+    this.#data.radioStations.push(station);
+    this.#save();
+    return station;
+  }
+
+  updateStation(id: string, name: string, url: string): void {
+    const station = this.#data.radioStations.find((r) => r.id === id);
+    if (!station) throw new Error("Radio station not found");
+    station.name = this.#name(name, this.radioStations, station);
+    station.url = url;
+    this.#save();
+  }
+
+  deleteStation(id: string): void {
+    if (!this.radioStations.some((r) => r.id === id)) throw new Error("Radio station not found");
+    this.#data.radioStations = this.#data.radioStations.filter((r) => r.id !== id);
+    this.#save();
   }
 
   setDefault(bot: string, list: SavedPlaylist | null): void {
