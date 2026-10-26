@@ -237,6 +237,13 @@ export class MusicBot {
       this.log("warn", `Could not return to "${saved}": ${err instanceof Error ? err.message : String(err)}`));
   }
 
+  /** "Parent/Child" path of a channel this bot can see, by its ID as the web panel lists it. */
+  channelPathById(id: string): string | undefined {
+    const c = this.client;
+    const channel = c && this.#connected ? [...c.view.channels.values()].find((ch) => ch.id.toString() === id) : undefined;
+    return c && channel ? channelPath(c, channel.id) : undefined;
+  }
+
   /** The channel saved in the web panel, else the configured one. */
   get homeChannel(): string {
     return this.#app.playlists.channelFor(this.name) ?? this.cfg.channel;

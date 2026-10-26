@@ -208,3 +208,32 @@ test("radio stations persist and tune in; playlist Play now replaces the queue; 
     assert.equal(new PlaylistStore(join(f.dir,"library.json")).channelFor("Test bot"),"Lounge/Music");
   } finally {await f.close();}
 });
+
+test("bot instances can be added, switched independently, persisted and removed from the panel",async t=>{
+  t.mock.method(MusicBot.prototype,"start",async()=>{});
+  const f=await fixture();
+  try {
+    assert.equal((await f.api("/api/bots",{name:"bad name"})).status,400);
+    assert.equal((await f.api("/api/bots",{name:"lobby",channelId:"999"})).status,404,"channels resolve through a connected bot");
+    const created=await f.api("/api/bots",{name:"lobby",nickname:"Lobby Radio"});
+    assert.equal(created.status,200);
+    assert.equal(created.data.bot,"lobby");
+    assert.equal((await f.api("/api/bots",{name:"LOBBY"})).status,409);
+    const state=(await f.api("/api/state")).data;
+    assert.deepEqual(state.bots.map((b:{name:string;removable:boolean})=>[b.name,b.removable]),[["Test bot",false],["lobby",true]]);
+    assert.equal(state.bots[1].nickname,"Lobby Radio");
+    assert.equal((await f.api("/api/bots/lobby/volume",{volume:30})).status,200);
+    assert.equal(f.app.bots[1]!.player.volume,30);
+    assert.equal(f.app.bots[0]!.player.volume,50,"instances keep separate players");
+    const restarted=new PlaylistStore(join(f.dir,"library.json"));
+    assert.deepEqual(restarted.panelBots,["lobby"]);
+    assert.equal(restarted.nicknameFor("lobby"),"Lobby Radio");
+    assert.equal((await f.api("/api/bots/Test%20bot",{},"DELETE")).status,400,"configured bots are not removable");
+    const removed=await f.api("/api/bots/lobby",{},"DELETE");
+    assert.equal(removed.status,200);
+    assert.equal(removed.data.message,"Lobby Radio was removed.");
+    assert.deepEqual(f.app.bots.map(b=>b.name),["Test bot"]);
+    assert.deepEqual(new PlaylistStore(join(f.dir,"library.json")).panelBots,[]);
+    assert.equal(f.app.playlists.nicknameFor("lobby"),undefined);
+  } finally {await f.close();}
+});

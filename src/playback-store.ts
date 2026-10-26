@@ -30,6 +30,12 @@ export class PlaybackStore {
 
   get(bot: string): PlaybackSnapshot | undefined { return this.#bots[bot]; }
 
+  delete(bot: string): void {
+    delete this.#bots[bot];
+    this.#pending = true;
+    this.#timer ??= setTimeout(() => { this.#timer = undefined; void this.flush(); }, 50).unref();
+  }
+
   set(bot: string, snapshot: PlaybackSnapshot): void {
     this.#bots[bot] = snapshot;
     this.#pending = true;

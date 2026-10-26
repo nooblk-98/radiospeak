@@ -70,6 +70,18 @@ export function validateNickname(value: string): string {
   return nickname;
 }
 
+/** Instance names become file names (identity-<name>.txt), so panel-created ones stay simple. */
+export function validateBotName(value: string): string {
+  const name = value.trim();
+  if (!/^[A-Za-z0-9][\w-]{0,23}$/.test(name)) throw new Error("Instance ID must be 1–24 letters, numbers, - or _");
+  return name;
+}
+
+/** A bot added in the web panel: the first bot's connection settings, its own identity, and no configured channel or playlist. */
+export function instanceConfig(template: BotConfig, name: string): BotConfig {
+  return { ...template, name, channel: "", channelPassword: "", defaultPlaylist: "", identityFile: `identity-${name}.txt` };
+}
+
 function bool(v: string | undefined): boolean | undefined {
   if (v === undefined || v === "") return undefined;
   return /^(1|true|yes|on)$/i.test(v);

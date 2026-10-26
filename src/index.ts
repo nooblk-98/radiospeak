@@ -1,5 +1,5 @@
 import { MusicBot, log, type App } from "./bot.ts";
-import { loadConfig } from "./config.ts";
+import { instanceConfig, loadConfig } from "./config.ts";
 import { PlaylistStore } from "./store.ts";
 import { PlaybackStore } from "./playback-store.ts";
 import { startWebServer } from "./web.ts";
@@ -12,7 +12,11 @@ const app: App = {
   bots: [],
   searchResults: new Map(),
 };
-app.bots = config.bots.map((cfg, i) => new MusicBot(app, cfg, i));
+// Instances added in the web panel run alongside the configured bots.
+const configured = new Set(config.bots.map((b) => b.name.toLowerCase()));
+const panelBots = app.playlists.panelBots.filter((name) => !configured.has(name.toLowerCase()))
+  .map((name) => instanceConfig(config.bots[0]!, name));
+app.bots = [...config.bots, ...panelBots].map((cfg, i) => new MusicBot(app, cfg, i));
 // Saved defaults also follow edits made through TeamSpeak chat commands.
 app.playlists.onChange = () => {
   for (const bot of app.bots) {

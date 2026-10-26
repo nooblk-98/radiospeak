@@ -27,7 +27,7 @@ radiospeak joins your TeamSpeak server as a regular voice client and streams mus
 - **Saved library**: playlists, collections and favorites. Import public YouTube playlists in the background with duplicate detection.
 - **Never silent**: an idle playlist or live radio station takes over whenever the queue is empty. Requests always come first.
 - **Radio stations**: save Icecast, SHOUTcast or plain HTTP streams and tune in with one click. The current song title appears in the panel.
-- **Multi-bot**: run several bots in one process, for example one per channel. Each has its own channel, name, volume and idle playlist, all set from the panel.
+- **Multi-instance**: add and remove bot instances from the panel and switch between them from the top bar. Each is its own TeamSpeak client with a separate channel, name, queue, volume and idle playlist.
 - **Listener-aware**: pauses when nobody is listening and resumes when someone joins.
 - **Resilient playback**: checkpoints survive restarts, reconnects keep the queue, and failed streams retry from the same position.
 - **Live web panel**: dark, responsive and mobile-friendly. Updates arrive over server-sent events, and there is no frontend build step.
@@ -203,6 +203,10 @@ Playlist names can contain spaces. In commands, use the playlist's number from `
 - Search results are cached for 60 seconds. Media lookups share two process slots, and cancelling a search aborts its lookup.
 
 </details>
+
+### Auto-deploy from GitHub
+
+[.github/workflows/deploy.yml](.github/workflows/deploy.yml) tests every push to `main` and then calls a Portainer stack webhook to redeploy. Add the webhook URL as the `PORTAINER_WEBHOOK_URL` repository secret (**Settings → Secrets and variables → Actions**). Keep it secret: anyone with the URL can redeploy the stack.
 
 ## Upgrading existing Docker installs
 

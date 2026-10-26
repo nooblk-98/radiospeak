@@ -4,8 +4,8 @@ import { monitorEventLoopDelay } from "node:perf_hooks";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import { asChannelID } from "@honeybbq/teamspeak";
-import { log, type App, type MusicBot } from "./bot.ts";
-import { clampVolume } from "./config.ts";
+import { log, MusicBot, type App } from "./bot.ts";
+import { clampVolume, instanceConfig, validateBotName, validateNickname } from "./config.ts";
 import type { LoopMode, Track } from "./player.ts";
 import { resolve, mediaStats } from "./ytdlp.ts";
 import { ImportManager } from "./imports.ts";
@@ -26,11 +26,13 @@ function summary(p: SavedPlaylist) {
 function imports(app: App) {
   return app.imports ??= new ImportManager(app.playlists, app.config.ytdlpPath, app.config.maxPlaylistItems);
 }
+/** Each instance runs its own audio pipeline, so panel-created ones are capped. */
+const MAX_INSTANCES = 10;
 const undo = new WeakMap<MusicBot, { token: string; track: Track; position: number; expires: number; order: string; current: string | undefined }>();
 function stateFor(app: App) {
   return {
     uiVersion, authEnabled: app.config.web.password !== "",
-    bots: app.bots.map(botState), collections: app.playlists.collections, defaults: app.playlists.defaults,
+    bots: app.bots.map((b) => ({ ...botState(b), removable: app.playlists.panelBots.includes(b.name) })), maxInstances: MAX_INSTANCES, collections: app.playlists.collections, defaults: app.playlists.defaults,
     radioStations: app.playlists.radioStations,
     favorites: app.playlists.favorites.map(trackJson), commandPrefix: app.config.commandPrefix,
     playlists: app.playlists.all.map(summary), imports: imports(app).all.map(job=>({ ...job, errors: job.errors.slice(0,20) })),
@@ -269,6 +271,33 @@ export async function route(app: App, req: IncomingMessage, url: URL, signal?: A
     const [track] = tracksFrom([(await readJson(req)).track]);
     if (!track) throw new HttpError(400, "No track to save");
     return { message: store.toggleFavorite(track) ? "Saved to favorites." : "Removed from favorites." };
+  }
+  if (url.pathname === "/api/bots" && method === "POST") {
+    const body = await readJson(req);
+    const name = validateBotName(str(body.name));
+    if (app.bots.some((b) => b.name.toLowerCase() === name.toLowerCase())) throw new HttpError(409, "An instance with that ID already exists");
+    if (app.bots.length >= MAX_INSTANCES) throw new HttpError(400, `This server runs at most ${MAX_INSTANCES} instances`);
+    const nickname = validateNickname(str(body.nickname) || name);
+    // Every bot is on the same server, so a connected one can name the chosen channel.
+    const channelId = str(body.channelId);
+    const channel = channelId ? app.bots.map((b) => b.channelPathById(channelId)).find(Boolean) : undefined;
+    if (channelId && !channel) throw new HttpError(404, "Channel not found");
+    app.playlists.addPanelBot(name, nickname, channel);
+    const bot = new MusicBot(app, instanceConfig(app.config.bots[0]!, name), app.bots.length);
+    app.bots.push(bot);
+    bot.start().catch((err: unknown) => bot.log("error", `Bot failed: ${err instanceof Error ? err.message : String(err)}`));
+    return { message: nickname + " is starting and joins TeamSpeak in a few seconds.", bot: name };
+  }
+  if (parts[0] === "api" && parts[1] === "bots" && parts[2] && parts.length === 3 && method === "DELETE") {
+    const bot = selectedBot(app, parts[2]);
+    if (!app.playlists.panelBots.includes(bot.name)) throw new HttpError(400, "This instance comes from the server configuration. Remove it there.");
+    await readJson(req);
+    const nickname = bot.nickname;
+    await bot.shutdown();
+    app.bots.splice(app.bots.indexOf(bot), 1);
+    app.playlists.removePanelBot(bot.name);
+    app.playback?.delete(bot.name);
+    return { message: nickname + " was removed." };
   }
   if (parts[0] === "api" && parts[1] === "bots" && parts[2] && parts[3] && method === "POST") {
     const result = await botAction(app, selectedBot(app, parts[2]), parts[3], await readJson(req));

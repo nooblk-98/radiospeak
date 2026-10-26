@@ -23,6 +23,8 @@ interface Library {
   /** Channel path ("Parent/Child") each bot joins on connect, chosen in the web panel. */
   botChannels: Record<string, string>;
   radioStations: RadioStation[];
+  /** Bot instances added in the web panel, started alongside the configured ones. */
+  panelBots: string[];
 }
 
 /** Offered until the library has its own station list. */
@@ -53,6 +55,7 @@ export class PlaylistStore {
       radioStations: Array.isArray(raw.radioStations)
         ? raw.radioStations.filter((r: RadioStation) => r && r.id && r.name && r.url)
         : starterStations.map((r) => ({ id: randomUUID(), ...r })),
+      panelBots: Array.isArray(raw.panelBots) ? raw.panelBots.filter((n: unknown) => typeof n === "string" && n) : [],
     };
   }
 
@@ -60,6 +63,24 @@ export class PlaylistStore {
   get collections(): readonly Collection[] { return this.#data.collections; }
   get favorites(): readonly Track[] { return this.#data.favorites; }
   get radioStations(): readonly RadioStation[] { return this.#data.radioStations; }
+  get panelBots(): readonly string[] { return this.#data.panelBots; }
+
+  /** Records a new panel instance with its name and optional home channel in one write. */
+  addPanelBot(bot: string, nickname: string, channel?: string): void {
+    this.#data.panelBots.push(bot);
+    this.#data.botNicknames[bot] = validateNickname(nickname);
+    if (channel) this.#data.botChannels[bot] = channel;
+    this.#save();
+  }
+
+  /** Forgets a panel instance and its per-bot settings; its identity file is kept for reuse. */
+  removePanelBot(bot: string): void {
+    this.#data.panelBots = this.#data.panelBots.filter((n) => n !== bot);
+    delete this.#data.botNicknames[bot];
+    delete this.#data.botChannels[bot];
+    delete this.#data.defaults[bot];
+    this.#save();
+  }
   get defaults(): Readonly<Record<string, string | null>> { return this.#data.defaults; }
   nicknameFor(bot: string): string | undefined { return this.#data.botNicknames[bot]; }
   setNickname(bot: string, nickname: string): void {
