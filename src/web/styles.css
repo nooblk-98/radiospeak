@@ -57,3 +57,11 @@
 @keyframes toast-out{to{opacity:0;transform:translateX(16px)}}
 @keyframes bell-ring{20%{transform:rotate(14deg)}40%{transform:rotate(-12deg)}60%{transform:rotate(7deg)}80%{transform:rotate(-4deg)}}
 @media(max-width:800px){.notification-toasts{top:70px}}
+.search-toggles{display:flex;flex-wrap:wrap;gap:8px 18px;margin-bottom:18px}
+.search-toggles .source-toggle{margin-bottom:0}
+.search-toggles .source-toggle+.source-toggle{padding-left:18px;border-left:1px solid #ffffff12}
+.search-more{display:flex;justify-content:center;margin:-6px 0 28px}
+.search-more .button{min-width:200px}
+.playlist-result .result-duration{display:inline-flex;align-items:center;gap:4px}
+.playlist-result .result-duration svg{width:11px;height:11px}
+@media(max-width:520px){.search-toggles .source-toggle+.source-toggle{padding-left:0;border-left:0}}

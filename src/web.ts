@@ -7,7 +7,7 @@ import { asChannelID } from "@honeybbq/teamspeak";
 import { log, MusicBot, type App } from "./bot.ts";
 import { clampVolume, instanceConfig, validateBotName, validateNickname } from "./config.ts";
 import type { LoopMode, Track } from "./player.ts";
-import { resolve, mediaStats } from "./ytdlp.ts";
+import { resolve, mediaStats, playlistId } from "./ytdlp.ts";
 import { ImportManager } from "./imports.ts";
 import type { SavedPlaylist } from "./store.ts";
 import { AuthError, WebAuth } from "./web-auth.ts";
@@ -33,6 +33,9 @@ function imports(app: App) {
 }
 /** Each instance runs its own audio pipeline, so panel-created ones are capped. */
 const MAX_INSTANCES = 10;
+/** Search results come in pages of 10, up to 50 in total. */
+const SEARCH_PAGE_SIZE = 10;
+const SEARCH_PAGES = 5;
 const undo = new WeakMap<MusicBot, { token: string; track: Track; position: number; expires: number; order: string; current: string | undefined }>();
 function stateFor(app: App) {
   return {
@@ -356,7 +359,24 @@ export async function route(app: App, req: IncomingMessage, url: URL, signal?: A
     const q = url.searchParams.get("q")?.trim() ?? "";
     if (!q || q.length > 1000) throw new HttpError(400, "Enter a search or public media URL (up to 1,000 characters)");
     const source = url.searchParams.get("source") === "soundcloud" ? "soundcloud" : "youtube";
-    return (await resolve(app.config.ytdlpPath, q, { maxItems: 10, results: 10, source, signal })).tracks.map(trackJson);
+    // Pages of SEARCH_PAGE_SIZE; later pages may simply come back empty.
+    const page = Math.min(SEARCH_PAGES, Math.max(1, Math.floor(Number(url.searchParams.get("page")) || 1)));
+    const startIndex = (page - 1) * SEARCH_PAGE_SIZE + 1;
+    if (url.searchParams.get("type") === "playlists") {
+      if (source !== "youtube") throw new HttpError(400, "Playlist search is available for YouTube only");
+      // YouTube's own results page, filtered to playlists (sp=EgIQAw==).
+      const results = new URL("https://www.youtube.com/results");
+      results.searchParams.set("search_query", q);
+      results.searchParams.set("sp", "EgIQAw==");
+      try {
+        const found = await resolve(app.config.ytdlpPath, results.href, { maxItems: SEARCH_PAGE_SIZE, startIndex, partial: true, signal });
+        return found.tracks.filter((t) => playlistId(t.url) && !new URL(t.url).searchParams.has("v")).map(trackJson);
+      } catch (err) {
+        if (err instanceof Error && /^Nothing playable/.test(err.message)) return [];
+        throw err;
+      }
+    }
+    return (await resolve(app.config.ytdlpPath, q, { maxItems: SEARCH_PAGE_SIZE, results: page * SEARCH_PAGE_SIZE, startIndex, partial: page > 1, source, signal })).tracks.map(trackJson);
   }
   if (url.pathname === "/api/imports/preview" && method === "POST") return imports(app).preview(str((await readJson(req)).input),signal);
   if (url.pathname === "/api/imports" && method === "POST") {

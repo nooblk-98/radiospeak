@@ -85,3 +85,44 @@ test("partial imports stream actual progress and retain readable errors for unav
     assert.match(result.skipped![0]!,/Private video/);
   } finally {t.mock.restoreAll();syncBuiltinESMExports();}
 });
+
+test("search pages through results and finds YouTube playlists",async t=>{
+  const calls:string[][]=[];
+  t.mock.method(childProcess,"execFile",(_path:string,args:string[],_options:any,callback:Function)=>{
+    calls.push(args);
+    const child=Object.assign(new EventEmitter(),{stdout:new PassThrough()});
+    const target=args.at(-1)!;
+    const entries=target.startsWith("https://www.youtube.com/results")
+      ? (target.includes("nothing+here") ? [] : [
+        {url:"https://www.youtube.com/playlist?list=PLfirst000000",title:"Sinhala hits",uploader:"Hits channel"},
+        {url:"https://www.youtube.com/watch?v=abcdefghijk&list=PLmixed",title:"A video inside a list"},
+        {url:"https://www.youtube.com/@somechannel",title:"A channel"},
+        {url:"https://www.youtube.com/playlist?list=PLsecond00000",title:"Chill mix"},
+      ])
+      : Array.from({length:10},(_,i)=>({webpage_url:"https://www.youtube.com/watch?v=page"+args[args.indexOf("--playlist-start")+1]+"x"+i,title:"Song "+i}));
+    setImmediate(()=>{
+      const output=entries.map(e=>"T\t"+JSON.stringify(e)).join("\n")+"\n";
+      child.stdout.write(output);callback(null,output,"");
+    });
+    return child;
+  });
+  syncBuiltinESMExports();
+  const { fixture } = await import("./helpers.ts");
+  const f=await fixture();
+  try {
+    const second=await f.api("/api/search?q=paging+query&page=2");
+    assert.equal(second.status,200);
+    assert.equal(second.data.length,10);
+    const args=calls.at(-1)!;
+    assert.equal(args.at(-1),"ytsearch20:paging query","page 2 asks for the top 20");
+    assert.deepEqual([args[args.indexOf("--playlist-start")+1],args[args.indexOf("--playlist-end")+1]],["11","20"],"and keeps only results 11–20");
+    const lists=await f.api("/api/search?q=sinhala+songs&type=playlists");
+    assert.equal(lists.status,200);
+    assert.deepEqual(lists.data.map((p:{title:string})=>p.title),["Sinhala hits","Chill mix"],"only real playlists are returned");
+    const url=new URL(calls.at(-1)!.at(-1)!);
+    assert.equal(url.searchParams.get("search_query"),"sinhala songs");
+    assert.equal(url.searchParams.get("sp"),"EgIQAw==","YouTube's playlist filter");
+    assert.deepEqual((await f.api("/api/search?q=nothing+here&type=playlists")).data,[],"no playlists is an empty list, not an error");
+    assert.equal((await f.api("/api/search?q=x&type=playlists&source=soundcloud")).status,400);
+  } finally {t.mock.restoreAll();syncBuiltinESMExports();await f.close();}
+});

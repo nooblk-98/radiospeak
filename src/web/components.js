@@ -92,6 +92,10 @@ export function trackTable(tracks, scope, { editable = true, queue = false, offs
     '</div></td></tr>';
   }).join('') + '</tbody></table></div>';
 }
+export function playlistResultCard(p, i) {
+  const attrs = 'data-scope="search" data-index="' + i + '"';
+  return '<article class="card result-card playlist-result">' + art(p, 'result-cover', i, '<span class="result-duration">' + icon('library') + 'Playlist</span>') + '<div class="result-body"><h3 title="' + escape(p.title) + '">' + escape(p.title) + '</h3><p>' + escape(p.artist || 'YouTube playlist') + '</p><div class="result-actions">' + button('Queue all', 'plus', 'search-playlist-queue', attrs) + button('Import', 'download', 'search-playlist-import', attrs, 'secondary') + '</div></div></article>';
+}
 export function resultCard(t, i) {
   const attrs = 'data-scope="search" data-index="' + i + '"';
   return '<article class="card result-card">' + art(t, 'result-cover', i, '<span class="result-duration">' + duration(t.duration) + '</span>') + '<div class="result-body"><h3 title="' + escape(t.title) + '">' + escape(t.title) + '</h3><p>' + escape(t.artist || source(t)) + '</p><div class="result-actions">' + button('Play now', 'play', 'play-track', attrs) + button('Enqueue', 'plus', 'enqueue-track', attrs, 'secondary') + iconButton('library', 'Save to playlist', 'save-track', attrs) + '</div></div></article>';

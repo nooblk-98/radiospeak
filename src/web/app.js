@@ -3,7 +3,7 @@ import { VolumeControl } from './volume.js';
 import { NotificationCenter } from './notifications.js';
 import { EnqueueControl } from './enqueue.js';
 import { playlistTools, managementMarkup } from './management.js';
-import { escape as e, icon, iconButton as ib, button, art, heading, empty, channelSelect, botCard, commands, playlistCard, trackTable, resultCard, time, duration, source } from './components.js';
+import { escape as e, icon, iconButton as ib, button, art, heading, empty, channelSelect, botCard, commands, playlistCard, trackTable, resultCard, playlistResultCard, time, duration, source } from './components.js';
 
 import { operationsMarkup, accessMarkup, historyMarkup, scheduleFields, scheduleData } from './operations.js';
 const $ = selector => document.querySelector(selector);
@@ -49,7 +49,7 @@ function enforcePermissions() {
   document.querySelectorAll('[data-min-role]').forEach(el=>{el.hidden=rank[role]<rank[el.dataset.minRole];});
   if(role==='admin')return;
   const adminActions=new Set(['new-instance','remove-instance','delete-instance','delete-account']);
-  const listenerActions=new Set(['menu','close-modal','reload-panel','logout','sign-out','collection','filter','favorites','library-back','open-playlist','page','search-source','enqueue-track','queue-playlist','history-enqueue','skip','undo','switch-bot','toggle-switcher','switcher','notifications-read']);
+  const listenerActions=new Set(['menu','close-modal','reload-panel','logout','sign-out','collection','filter','favorites','library-back','open-playlist','page','search-source','search-type','search-more','search-playlist-queue','enqueue-track','queue-playlist','history-enqueue','skip','undo','switch-bot','toggle-switcher','switcher','notifications-read']);
   document.querySelectorAll('[data-action]').forEach(el=>{
     const action=el.dataset.action;
     let allowed=role==='dj'?!adminActions.has(action):listenerActions.has(action);
@@ -60,6 +60,9 @@ function enforcePermissions() {
   if(role==='listener') document.querySelectorAll('#view form:not(#search-form):not(#playlist-filter) input,#view form:not(#search-form):not(#playlist-filter) select,#view form:not(#search-form):not(#playlist-filter) textarea,#view form:not(#search-form):not(#playlist-filter) button,#volume,#seek,#modal-submit').forEach(el=>{el.disabled=true;});
 }
 let query = '', searchSource = 'youtube', searchResults = [], searchStatus = 'idle', searchError = '', searchController, searchTimer;
+// Songs or playlists, fetched SEARCH_PAGE results at a time, up to SEARCH_PAGES pages.
+let searchType = 'tracks', searchPage = 1, searchHasMore = false, searchMoreLoading = false;
+const SEARCH_PAGE = 10, SEARCH_PAGES = 5;
 let dragging = null, sliderActive = false, modalSubmit, renderedView = '', renderedDock = '', renderedChrome = '';
 let receivedAt = 0, lastRenderBot = '';
 const lastVolumes = new Map();
@@ -293,7 +296,7 @@ function playlistDetail(b,list) {
 }
 function searchView() {
   return heading('Find your next favorite.', 'Search a little. Discover a lot. Set the mood for your channel.') +
-    '<section class="card search-panel"><div class="source-toggle" aria-label="Search source">' + ['youtube','soundcloud'].map(s => '<button data-action="search-source" data-id="' + s + '" class="' + (searchSource===s?'active':'') + '" aria-pressed="' + (searchSource===s) + '">' + icon(s) + (s==='youtube'?'YouTube':'SoundCloud') + '</button>').join('') + '</div><form id="search-form"><div class="search-input-wrap">' + icon('search') + '<input id="search-input" type="search" name="query" autocomplete="off" maxlength="1000" placeholder="Search for a track, artist, or paste a link…" aria-label="Search music" value="' + e(query) + '"><button class="button primary" type="submit">Search</button></div></form><p class="search-hint">Your next great find is a search away. Public YouTube and SoundCloud links work too.</p></section><div id="search-results">' + searchResultsMarkup() + '</div>';
+    '<section class="card search-panel"><div class="search-toggles"><div class="source-toggle" aria-label="Search source">' + ['youtube','soundcloud'].map(s => '<button data-action="search-source" data-id="' + s + '" class="' + (searchSource===s?'active':'') + '" aria-pressed="' + (searchSource===s) + '">' + icon(s) + (s==='youtube'?'YouTube':'SoundCloud') + '</button>').join('') + '</div><div class="source-toggle" aria-label="Search for">' + [['tracks','music','Songs'],['playlists','library','Playlists']].map(([type,ic,label]) => '<button data-action="search-type" data-id="' + type + '" class="' + (searchType===type?'active':'') + '" aria-pressed="' + (searchType===type) + '"' + (type==='playlists'&&searchSource!=='youtube'?' disabled title="Playlist search is available for YouTube"':'') + '>' + icon(ic) + label + '</button>').join('') + '</div></div><form id="search-form"><div class="search-input-wrap">' + icon('search') + '<input id="search-input" type="search" name="query" autocomplete="off" maxlength="1000" placeholder="Search for a track, artist, or paste a link…" aria-label="Search music" value="' + e(query) + '"><button class="button primary" type="submit">Search</button></div></form><p class="search-hint">Your next great find is a search away. Public YouTube and SoundCloud links work too.</p></section><div id="search-results">' + searchResultsMarkup() + '</div>';
 }
 function radioView(b) {
   const onAir = b.radio && !b.track && !paused(b);
@@ -313,8 +316,10 @@ function searchResultsMarkup() {
   if (searchStatus === 'loading') return '<div class="loading" aria-live="polite">Searching ' + (searchSource==='youtube'?'YouTube':'SoundCloud') + '…</div>';
   if (searchStatus === 'error') return '<div class="notice" role="alert">' + e(searchError) + '</div>';
   if (searchStatus === 'idle') return empty('There’s a whole world of music out there', 'Search by track, artist, or the song you can’t get out of your head.');
-  if (!searchResults.length) return empty('No tracks found', 'Try another artist, title, or a public media link.');
-  return '<div class="section-heading"><h2>Search results <span class="count-badge">' + searchResults.length + '</span></h2></div><div class="results-grid">' + searchResults.map(resultCard).join('') + '</div>';
+  const playlists = searchType === 'playlists';
+  if (!searchResults.length) return playlists ? empty('No playlists found', 'Try other words, or paste a public playlist link.') : empty('No tracks found', 'Try another artist, title, or a public media link.');
+  return '<div class="section-heading"><h2>' + (playlists ? 'Playlists' : 'Search results') + ' <span class="count-badge">' + searchResults.length + '</span></h2></div><div class="results-grid">' + searchResults.map(playlists ? playlistResultCard : resultCard).join('') + '</div>' +
+    (searchHasMore ? '<div class="search-more">' + button(searchMoreLoading ? 'Loading more…' : 'Show more results', searchMoreLoading ? 'clock' : 'plus', 'search-more', searchMoreLoading ? 'disabled aria-busy="true"' : '', 'secondary') + '</div>' : '');
 }
 function healthCard(b) {
   return '<section class="card card-padding health-card"><div class="card-title"><h2>Bot health</h2><span class="tag green">Live</span></div><label for="audio-level" class="field-label">Output level (dBFS)</label><meter id="audio-level" class="audio-meter" min="-60" max="0" low="-48" high="-6" optimum="-18" value="-60">-60 dB</meter><div id="health-values"></div><div class="setting-line"><div>Prepare the next track<p>Prebuffer one upcoming song during the last 15 seconds. Uses extra CPU and memory.</p></div><button class="switch" data-action="prebuffer" role="switch" aria-label="Prepare next track" aria-checked="' + !!b.health?.prebufferEnabled + '"></button></div><div id="prebuffer-status" class="small subtle"></div></section>';
@@ -437,7 +442,7 @@ function render(force = false) {
   if (!['all','standalone','favorites'].includes(libraryFilter) && !state.collections.some(c=>c.id===libraryFilter)) libraryFilter = 'all';
   const bWithoutProgress = {...b}; delete bWithoutProgress.elapsed;
   delete bWithoutProgress.health;
-  const signature = JSON.stringify([activeView,playlistId,libraryFilter,[...pages],bWithoutProgress,state.playlists,state.collections,state.defaults,state.favorites,state.radioStations,state.schedules,state.viewer?.role,instanceSummaries(),searchSource]);
+  const signature = JSON.stringify([activeView,playlistId,libraryFilter,[...pages],bWithoutProgress,state.playlists,state.collections,state.defaults,state.favorites,state.radioStations,state.schedules,state.viewer?.role,instanceSummaries(),searchSource,searchType]);
   const active = document.activeElement;
   const editing = $('#view').contains(active) && /INPUT|SELECT|TEXTAREA/.test(active.tagName);
   if ((force || signature !== renderedView) && !dragging && (!editing || force)) {
@@ -514,6 +519,37 @@ function navigate() {
   render(true);
 }
 
+const searchUrl = page => '/api/search?q=' + encodeURIComponent(query.trim()) + '&source=' + searchSource + '&type=' + searchType + '&page=' + page;
+/** Appends the next page of results, skipping any already shown. */
+async function loadMoreResults() {
+  if (searchMoreLoading || !searchHasMore) return;
+  const controller = searchController;
+  searchMoreLoading = true; if ($('#search-results')) $('#search-results').innerHTML = searchResultsMarkup();
+  try {
+    const results = await request(searchUrl(searchPage + 1), undefined, 'GET', controller?.signal);
+    if (searchController !== controller) return;
+    const shown = new Set(searchResults.map(t => t.url));
+    searchResults = [...searchResults, ...results.filter(t => !shown.has(t.url))];
+    searchPage++;
+    searchHasMore = results.length >= SEARCH_PAGE && searchPage < SEARCH_PAGES;
+  } catch (error) {
+    if (searchController === controller && error.name !== 'AbortError') toast(error.message, true);
+  } finally {
+    searchMoreLoading = false;
+    if (searchController === controller && $('#search-results')) { $('#search-results').innerHTML = searchResultsMarkup(); paintEnqueueButtons(); enforcePermissions(); }
+  }
+}
+/** Previews a public playlist, then imports it into a new library playlist. */
+async function importPlaylist(url) {
+  const preview=await request('/api/imports/preview',{input:url});
+  let importedId=null;
+  showModal('Import a public playlist','<p>'+e(preview.total?preview.total+' entries found.':'Preview loaded; the provider has not reported the total.')+' Imports run in batches of up to '+preview.batchLimit+' entries. Continue larger playlists from Notifications (the bell at the top right).</p><details><summary>Preview '+preview.tracks.length+' tracks</summary><ol>'+preview.tracks.map(t=>'<li>'+e(t.title)+'</li>').join('')+'</ol></details><label class="field-label" for="import-name">Playlist name</label><input class="field" id="import-name" name="name" required maxlength="80" value="'+e(preview.name)+'" placeholder="e.g. Weekend rotation"><label class="check-label"><input type="checkbox" name="skipDuplicates" checked> Skip duplicate tracks</label>',async d=>{
+    if(!importedId) importedId=(await mutate('/api/playlists',{name:d.get('name'),collectionId:state.collections.some(c=>c.id===libraryFilter)?libraryFilter:null})).playlist.id;
+    // Keep the created playlist selected even if the provider rejects the import.
+    playlistId=importedId;render(true);
+    await mutate('/api/imports',{playlistId,input:url,skipDuplicates:d.get('skipDuplicates')==='on'});
+  },'Import playlist');
+}
 async function search() {
   clearTimeout(searchTimer);
   searchController?.abort();
@@ -522,9 +558,9 @@ async function search() {
   const timeout = setTimeout(()=>controller.abort(new Error('Search timed out. Please try again.')),95000);
   searchStatus='loading'; if($('#search-results')) $('#search-results').innerHTML=searchResultsMarkup();
   try {
-    const results = await request('/api/search?q=' + encodeURIComponent(query.trim()) + '&source=' + searchSource,undefined,'GET',controller.signal);
+    const results = await request(searchUrl(1),undefined,'GET',controller.signal);
     if (searchController!==controller) return;
-    searchResults = results;searchStatus='done';
+    searchResults = results;searchStatus='done';searchPage=1;searchHasMore=results.length>=SEARCH_PAGE;
   } catch(error) {
     if (searchController!==controller || error.name==='AbortError') return;
     searchError=error.message;searchStatus='error';
@@ -653,7 +689,17 @@ document.addEventListener('click', async event => {
           const result=await mutate('/api/playlists',{name:data.get('name')});
           await mutate(listPath(result.playlist.id)+'/save',{bot:b.name});
         },'Save queue');
-      case 'search-source': searchSource=id;render(true);if(query.trim()) void search();return;
+      case 'search-source': searchSource=id;if(id!=='youtube')searchType='tracks';render(true);if(query.trim()) void search();return;
+      case 'search-type': searchType=id;render(true);if(query.trim()) void search();return;
+      case 'search-more': await loadMoreResults();return;
+      case 'search-playlist-queue': {
+        const list=searchResults[index];if(!list) throw new Error('This playlist is no longer available');
+        await action('play',{input:list.url,all:true});return;
+      }
+      case 'search-playlist-import': {
+        const list=searchResults[index];if(!list) throw new Error('This playlist is no longer available');
+        await importPlaylist(list.url);return;
+      }
       case 'new-station': return stationEditor();
       case 'edit-station': return stationEditor(state.radioStations.find(r=>r.id===id));
       case 'delete-station': return confirmAction('Delete station?', 'It is removed from your saved stations. A bot playing it keeps playing until you turn the radio off.',()=>mutate('/api/radio-stations/'+encodeURIComponent(id),{},'DELETE'));
@@ -706,15 +752,7 @@ document.addEventListener('submit',async event=>{
     } else if(form.id==='playlist-import') {
       await mutate('/api/imports',{playlistId,input:data.get('input'),skipDuplicates:data.get('skipDuplicates')==='on'});form.reset();
     } else if(form.id==='quick-import') {
-      const url=String(data.get('url'));
-      const preview=await request('/api/imports/preview',{input:url});
-      let importedId=null;
-      showModal('Import a public playlist','<p>'+e(preview.total?preview.total+' entries found.':'Preview loaded; the provider has not reported the total.')+' Imports run in batches of up to '+preview.batchLimit+' entries. Continue larger playlists from Notifications (the bell at the top right).</p><details><summary>Preview '+preview.tracks.length+' tracks</summary><ol>'+preview.tracks.map(t=>'<li>'+e(t.title)+'</li>').join('')+'</ol></details><label class="field-label" for="import-name">Playlist name</label><input class="field" id="import-name" name="name" required maxlength="80" value="'+e(preview.name)+'" placeholder="e.g. Weekend rotation"><label class="check-label"><input type="checkbox" name="skipDuplicates" checked> Skip duplicate tracks</label>',async d=>{
-        if(!importedId) importedId=(await mutate('/api/playlists',{name:d.get('name'),collectionId:state.collections.some(c=>c.id===libraryFilter)?libraryFilter:null})).playlist.id;
-        // Keep the created playlist selected even if the provider rejects the import.
-        playlistId=importedId;render(true);
-        await mutate('/api/imports',{playlistId,input:url,skipDuplicates:d.get('skipDuplicates')==='on'});
-      },'Import playlist');
+      await importPlaylist(String(data.get('url')));
     }
     renderedView='';render();
   } catch(error) {toast(error.message,true);}
@@ -731,7 +769,7 @@ document.addEventListener('input',event=>{
     clearTimeout(searchTimer);
     searchController?.abort();searchController=null;
     if(query.trim().length>=2) searchTimer=setTimeout(search,650);
-    else {searchStatus='idle';searchResults=[];if($('#search-results')) $('#search-results').innerHTML=searchResultsMarkup();}
+    else {searchStatus='idle';searchResults=[];searchHasMore=false;if($('#search-results')) $('#search-results').innerHTML=searchResultsMarkup();}
   }
   if(el.type==='range') {
     el.style.setProperty('--fill',(Number(el.value)/Number(el.max)*100)+'%');
