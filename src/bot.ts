@@ -210,6 +210,11 @@ export class MusicBot {
 
   /** Loads (or reloads) the configured default playlist. */
   async loadDefaultPlaylist(): Promise<void> {
+    if (this.#app.playlists.hasDefault(this.name)) {
+      const list = this.#app.playlists.defaultFor(this.name);
+      this.player.setDefaultPlaylist(list?.tracks ?? [], list?.name);
+      return;
+    }
     const link = this.cfg.defaultPlaylist;
     if (!link) return;
     try {
@@ -217,6 +222,8 @@ export class MusicBot {
         maxItems: this.#app.config.maxPlaylistItems,
         wholePlaylist: true,
       });
+      // A web selection made while the remote lookup was running takes precedence.
+      if (this.#app.playlists.hasDefault(this.name)) return this.loadDefaultPlaylist();
       this.player.setDefaultPlaylist(found.tracks, found.playlist);
       this.log("info", `Default playlist: ${found.playlist ?? link} (${found.tracks.length} songs)`);
     } catch (err) {

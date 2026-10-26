@@ -76,7 +76,8 @@ async function playlistCommand(app: App, bot: MusicBot, msg: TextMessageEvent, a
     case "new":
     case "create": {
       const created = store.create([name, ...rest].join(" "));
-      return `Created playlist [b]${created.name}[/b]. Add songs with ${p}pl add ${created.name} <link or search>`;
+      const reference = /\s/.test(created.name) ? String(store.all.indexOf(created) + 1) : created.name;
+      return `Created playlist [b]${created.name}[/b]. Add songs with ${p}pl add ${reference} <link or search>`;
     }
 
     case "add": {

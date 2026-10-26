@@ -1,283 +1,44 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>radiospeak</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎵</text></svg>">
-<style>
-  :root {
-    --bg: #f5f6f8; --panel: #ffffff; --text: #1b1f24; --muted: #667085; --line: #e3e6ea;
-    --accent: #e5484d; --accent-text: #fff; --ok: #1a9b5b; --warn: #c27c0e; --bad: #d14343;
-    --chip: #f0f1f4; --radius: 12px;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg: #0f1115; --panel: #171a20; --text: #e6e9ee; --muted: #8b95a5; --line: #262b33;
-      --accent: #f2555a; --chip: #1f232b; }
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text);
-    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-  header { display: flex; align-items: center; gap: 10px; padding: 16px; max-width: 1100px; margin: 0 auto; }
-  header h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
-  header select { margin-left: auto; }
-  main { max-width: 1100px; margin: 0 auto; padding: 0 16px 40px; display: grid; gap: 16px;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 440px), 1fr)); }
-  section { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; min-width: 0; }
-  h2 { font-size: 15px; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
-  h2 .right { margin-left: auto; display: flex; gap: 6px; }
-  .muted { color: var(--muted); } .small { font-size: 13px; }
-  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--bad); display: inline-block; flex: none; }
-  .dot.on { background: var(--ok); } .dot.paused { background: var(--warn); }
-  .now { font-size: 18px; font-weight: 600; margin: 4px 0 2px; overflow-wrap: anywhere; }
-  .now a { color: inherit; text-decoration: none; } .now a:hover { text-decoration: underline; }
-  .sub { color: var(--muted); overflow-wrap: anywhere; }
-  .bar { height: 4px; background: var(--chip); border-radius: 2px; margin: 12px 0 4px; overflow: hidden; }
-  .bar > div { height: 100%; background: var(--accent); width: 0; }
-  .times { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
-  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .controls { margin: 12px 0; }
-  button { font: inherit; border: 1px solid var(--line); background: var(--chip); color: var(--text);
-    border-radius: 8px; padding: 7px 12px; cursor: pointer; min-height: 36px; }
-  button:hover { border-color: var(--accent); }
-  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
-  button.on { border-color: var(--accent); color: var(--accent); }
-  button.icon { padding: 4px 9px; min-height: 32px; }
-  button.danger:hover { border-color: var(--bad); color: var(--bad); }
-  button:disabled { opacity: .5; cursor: default; }
-  input, select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
-    border-radius: 8px; padding: 7px 10px; min-height: 36px; min-width: 0; }
-  input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-  input[type=range] { flex: 1; padding: 0; accent-color: var(--accent); }
-  ul { list-style: none; margin: 0; padding: 0; }
-  li { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-top: 1px solid var(--line); }
-  li:first-child { border-top: none; }
-  li .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  li .dur { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
-  form { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
-  form input.grow { flex: 1 1 200px; }
-  .scroll { max-height: 420px; overflow: auto; }
-  details { border-top: 1px solid var(--line); padding: 8px 0; }
-  details:first-child { border-top: none; }
-  summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; }
-  summary::-webkit-details-marker { display: none; }
-  summary .name { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  details ul { margin: 6px 0 0 4px; }
-  #toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--text); color: var(--bg);
-    padding: 10px 16px; border-radius: 10px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: calc(100% - 32px); }
-  #toast.show { opacity: 1; }
-  .empty { color: var(--muted); padding: 6px 0; }
-  .warn { background: color-mix(in srgb, var(--warn) 15%, transparent); border: 1px solid var(--warn);
-    border-radius: 8px; padding: 8px 10px; margin: 0 0 10px; font-size: 14px; }
-</style>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="dark"><meta name="theme-color" content="#111312">
+<title>radiospeak — Your channel. Your soundtrack.</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='12' fill='%23c3f36b'/%3E%3Cpath d='M10 17v6m7-12v18m7-14v10m7-7v4' stroke='%23111312' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/styles.css"><script type="module" src="/app.js"></script>
 </head>
 <body>
-<header>
-  <span style="font-size:22px">🎵</span><h1>radiospeak</h1>
-  <select id="botSelect" aria-label="Bot" hidden></select>
-</header>
-<main>
-  <section id="player"></section>
-
-  <section>
-    <h2>Up next <span class="muted small" id="qcount"></span>
-      <span class="right"><select id="saveTo" aria-label="Save queue to playlist"></select>
-      <button class="icon" id="saveQueue" title="Save queue to the chosen playlist">Save</button>
-      <button class="icon danger" id="clearQueue">Clear</button></span></h2>
-    <ul id="queue" class="scroll"></ul>
-  </section>
-
-  <section>
-    <h2>Search YouTube</h2>
-    <form id="searchForm" style="margin-top:0">
-      <input class="grow" name="q" placeholder="Song, artist…" required>
-      <button class="primary">Search</button>
-    </form>
-    <ul id="results" class="scroll" style="margin-top:8px"></ul>
-  </section>
-
-  <section>
-    <h2>Saved playlists</h2>
-    <div id="playlists" class="scroll"></div>
-    <form id="newPl">
-      <input class="grow" name="name" placeholder="New playlist name" required>
-      <button class="primary">Create</button>
-    </form>
-  </section>
-</main>
-<div id="toast" role="status"></div>
-
-<script>
-const $ = (s, el = document) => el.querySelector(s);
-const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const fmt = (s) => s == null ? "live" : (s >= 3600 ? Math.floor(s / 3600) + ":" + String(Math.floor(s % 3600 / 60)).padStart(2, "0") : Math.floor(s / 60)) + ":" + String(Math.floor(s % 60)).padStart(2, "0");
-let state = null, selected = "", results = [], dragging = false, fetchedAt = 0;
-const open = new Set();
-try { selected = localStorage.getItem("bot") || ""; } catch {}
-
-function toast(msg) {
-  const t = $("#toast"); t.textContent = msg; t.classList.add("show");
-  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 2800);
-}
-async function api(path, opts = {}) {
-  const res = await fetch(path, { method: opts.method || "GET",
-    headers: opts.body !== undefined ? { "Content-Type": "application/json" } : {},
-    body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || res.statusText);
-  return data;
-}
-async function act(path, body = {}, method = "POST") {
-  try { const r = await api(path, { method, body }); if (r.message) toast(r.message); await refresh(); return true; }
-  catch (e) { toast("⚠ " + e.message); return false; }
-}
-const bot = () => state.bots.find((b) => b.name === selected) || state.bots[0];
-const botPath = (a) => `/api/bots/${encodeURIComponent(bot().name)}/${a}`;
-const plPath = (name, a = "") => `/api/playlists/${encodeURIComponent(name)}${a ? "/" + a : ""}`;
-
-function renderPlayer() {
-  const b = bot(), paused = b.userPaused || b.autoPaused;
-  const dot = !b.connected ? "" : paused ? "paused" : "on";
-  const where = !b.connected ? "Offline" : `#${esc(b.channel || "?")} · ` +
-    (b.autoPaused ? "paused, nobody listening" : b.userPaused ? "paused" : `${b.listeners.length} listening`);
-  let now = "Nothing playing", sub = "Add a song below", bar = "";
-  if (b.track) {
-    now = `<a href="${esc(b.track.url)}" target="_blank" rel="noopener">${esc(b.track.title)}</a>`;
-    sub = b.track.auto ? `Default playlist${b.defaultPlaylist.name ? " · " + esc(b.defaultPlaylist.name) : ""}` : b.track.requestedBy ? "Requested by " + esc(b.track.requestedBy) : "";
-    bar = `<div class="bar"><div id="prog"></div></div><div class="times"><span id="el"></span><span>${fmt(b.track.duration)}</span></div>`;
-  } else if (b.radio) { now = "📻 " + esc(b.radio.name); sub = b.radioTitle ? "♪ " + esc(b.radioTitle) : "Live radio"; }
-  const warn = b.talkBlocked ? `<div class="warn">⚠ Nobody can hear the bot in #${esc(b.channel || "?")}: the channel needs talk power ${b.talkBlocked.needed}, the bot has ${b.talkBlocked.have}. Grant it talk power in TeamSpeak, give its server group more, or move it to another channel.</div>` : "";
-  $("#player").innerHTML = `
-    <h2><span class="dot ${dot}"></span>${esc(b.name)} <span class="muted small">${where}</span></h2>${warn}
-    <div class="now">${now}</div><div class="sub">${sub}</div>${bar}
-    <div class="row controls">
-      <button data-a="${b.userPaused ? "resume" : b.track || b.radio ? "pause" : "start"}" title="Play / pause">${b.userPaused || !(b.track || b.radio) ? "▶" : "⏸"}</button>
-      <button data-a="skip" title="Skip">⏭</button>
-      <button data-a="stop" title="Stop">⏹</button>
-      <button data-a="shuffle" title="Shuffle queue">🔀</button>
-      <button id="loop" class="${b.loop !== "off" ? "on" : ""}" title="Loop: ${b.loop}">${b.loop === "one" ? "🔂" : "🔁"} ${b.loop}</button>
-      ${b.track ? '<button id="addCur" title="Add this song to a saved playlist">＋ Save song</button>' : ""}
-    </div>
-    <div class="row"><span title="Volume">🔊</span>
-      <input type="range" id="vol" min="0" max="100" value="${b.volume}" aria-label="Volume">
-      <span id="volVal" style="width:2.5em;text-align:right">${b.volume}</span></div>
-    <form id="addForm">
-      <input class="grow" name="input" placeholder="YouTube / SoundCloud link, playlist or search" required>
-      <button class="primary" name="mode" value="play">Play</button>
-      <button name="mode" value="next" title="Play after the current song">Next</button>
-      <button name="mode" value="all" title="Whole playlist from a song link">Playlist</button>
-    </form>
-    <form id="radioForm">
-      <input class="grow" name="url" type="url" placeholder="Radio stream link (plays when the queue is empty)" value="${esc(b.radio?.url || "")}">
-      <button>${b.radio ? "Change" : "Set radio"}</button>${b.radio ? '<button type="button" id="radioOff">Off</button>' : ""}
-    </form>`;
-  $("#player").querySelectorAll("[data-a]").forEach((el) => (el.onclick = () => act(botPath(el.dataset.a))));
-  $("#loop").onclick = () => act(botPath("loop"), { mode: { off: "one", one: "all", all: "off" }[b.loop] });
-  if ($("#addCur")) $("#addCur").onclick = () => {
-    const name = state.playlists.length ? prompt("Add to which playlist?\n" + state.playlists.map((p) => p.name).join(", "), state.playlists[0].name) : null;
-    if (name) act(plPath(name, "add"), { current: true, bot: b.name }); else if (!state.playlists.length) toast("Create a playlist first");
-  };
-  const vol = $("#vol"); let t;
-  vol.oninput = () => { dragging = true; $("#volVal").textContent = vol.value; clearTimeout(t);
-    t = setTimeout(() => api(botPath("volume"), { method: "POST", body: { volume: +vol.value } }).catch((e) => toast("⚠ " + e.message)), 150); };
-  vol.onchange = () => setTimeout(() => (dragging = false), 600);
-  $("#addForm").onsubmit = async (e) => {
-    e.preventDefault(); const mode = e.submitter?.value || "play", input = e.target.input.value;
-    toast("Looking it up…");
-    if (await act(botPath("play"), { input, next: mode === "next", all: mode === "all" })) e.target.reset();
-  };
-  $("#radioForm").onsubmit = (e) => { e.preventDefault(); act(botPath("radio"), { url: e.target.url.value }); };
-  if ($("#radioOff")) $("#radioOff").onclick = () => act(botPath("radio"), { url: "" });
-  tickProgress();
-}
-
-function tickProgress() {
-  const b = state && bot(); const p = $("#prog");
-  if (!b?.track || !p) return;
-  const el = b.elapsed + (b.userPaused || b.autoPaused ? 0 : (Date.now() - fetchedAt) / 1000);
-  $("#el").textContent = fmt(Math.min(el, b.track.duration ?? el));
-  p.style.width = b.track.duration ? Math.min(100, (el / b.track.duration) * 100) + "%" : "100%";
-}
-
-function renderQueue() {
-  const b = bot();
-  $("#qcount").textContent = b.queue.length ? `(${b.queue.length})` : "";
-  $("#queue").innerHTML = b.queue.length ? b.queue.map((t, i) => `
-    <li><span class="name" title="${esc(t.url)}">${i + 1}. ${esc(t.title)}</span><span class="dur">${fmt(t.duration)}</span>
-      <button class="icon danger" data-rm="${i + 1}" title="Remove">✕</button></li>`).join("")
-    : `<li class="empty">${b.defaultPlaylist.size ? `Empty — the default playlist${b.defaultPlaylist.name ? " (" + esc(b.defaultPlaylist.name) + ")" : ""} plays meanwhile.` : "Empty."}</li>`;
-  $("#queue").querySelectorAll("[data-rm]").forEach((el) => (el.onclick = () => act(botPath("remove"), { position: +el.dataset.rm })));
-  const sel = $("#saveTo"), keep = sel.value;
-  sel.innerHTML = state.playlists.map((p) => `<option>${esc(p.name)}</option>`).join("") || "<option value=''>No playlists</option>";
-  if (keep) sel.value = keep;
-}
-
-function renderPlaylists() {
-  const lists = state.playlists;
-  $("#playlists").innerHTML = lists.length ? lists.map((p, i) => `
-    <details data-name="${esc(p.name)}" ${open.has(p.name) ? "open" : ""}>
-      <summary><span class="name">${esc(p.name)}</span><span class="muted small">${p.tracks.length} songs</span>
-        <button class="icon" data-play="${i}" title="Play">▶</button><button class="icon" data-shuf="${i}" title="Shuffle play">🔀</button>
-        <button class="icon danger" data-del="${i}" title="Delete playlist">✕</button></summary>
-      <ul>${p.tracks.map((t, j) => `<li><span class="name" title="${esc(t.url)}">${j + 1}. ${esc(t.title)}</span><span class="dur">${fmt(t.duration)}</span>
-        <button class="icon danger" data-pl="${i}" data-rmt="${j + 1}" title="Remove song">✕</button></li>`).join("") || '<li class="empty">Empty.</li>'}</ul>
-      <form data-add="${i}"><input class="grow" name="input" placeholder="Add a link, playlist or search" required><button>Add</button></form>
-    </details>`).join("") : '<p class="empty">No playlists yet.</p>';
-  const P = $("#playlists");
-  P.querySelectorAll("details").forEach((d) => (d.ontoggle = () => (d.open ? open.add(d.dataset.name) : open.delete(d.dataset.name))));
-  const name = (i) => lists[+i].name;
-  P.querySelectorAll("[data-play]").forEach((el) => (el.onclick = (e) => { e.preventDefault(); act(plPath(name(el.dataset.play), "play"), { bot: bot().name }); }));
-  P.querySelectorAll("[data-shuf]").forEach((el) => (el.onclick = (e) => { e.preventDefault(); act(plPath(name(el.dataset.shuf), "play"), { bot: bot().name, shuffle: true }); }));
-  P.querySelectorAll("[data-del]").forEach((el) => (el.onclick = (e) => { e.preventDefault();
-    if (confirm(`Delete playlist "${name(el.dataset.del)}"?`)) act(plPath(name(el.dataset.del)), undefined, "DELETE"); }));
-  P.querySelectorAll("[data-rmt]").forEach((el) => (el.onclick = () => act(plPath(name(el.dataset.pl), "tracks/" + el.dataset.rmt), undefined, "DELETE")));
-  P.querySelectorAll("form[data-add]").forEach((f) => (f.onsubmit = async (e) => { e.preventDefault(); toast("Looking it up…");
-    if (await act(plPath(name(f.dataset.add), "add"), { input: f.input.value })) f.reset(); }));
-}
-
-function renderBots() {
-  const sel = $("#botSelect");
-  sel.hidden = state.bots.length < 2;
-  if (!state.bots.some((b) => b.name === selected)) selected = state.bots[0]?.name || "";
-  sel.innerHTML = state.bots.map((b) => `<option ${b.name === selected ? "selected" : ""}>${esc(b.name)}</option>`).join("");
-}
-
-async function refresh() {
-  try { state = await api("/api/state"); fetchedAt = Date.now(); } catch (e) { toast("⚠ " + e.message); return; }
-  renderBots();
-  if (!dragging && !document.activeElement?.closest("#player form")) renderPlayer();
-  renderQueue();
-  if (!document.activeElement?.closest("#playlists form")) renderPlaylists();
-}
-
-$("#botSelect").onchange = (e) => { selected = e.target.value; try { localStorage.setItem("bot", selected); } catch {} refresh(); };
-$("#clearQueue").onclick = () => act(botPath("clear"));
-$("#saveQueue").onclick = () => { const n = $("#saveTo").value; if (n) act(plPath(n, "save"), { bot: bot().name }); else toast("Create a playlist first"); };
-$("#newPl").onsubmit = async (e) => { e.preventDefault(); if (await act("/api/playlists", { name: e.target.name.value })) e.target.reset(); };
-
-$("#searchForm").onsubmit = async (e) => {
-  e.preventDefault();
-  $("#results").innerHTML = '<li class="empty">Searching…</li>';
-  try {
-    results = await api("/api/search?q=" + encodeURIComponent(e.target.q.value));
-    $("#results").innerHTML = results.map((t, i) => `
-      <li><button class="icon" data-q="${i}" title="Add to queue">▶</button>
-        <span class="name" title="${esc(t.url)}">${esc(t.title)}</span><span class="dur">${fmt(t.duration)}</span>
-        <button class="icon" data-n="${i}" title="Play next">⤴</button><button class="icon" data-s="${i}" title="Add to a saved playlist">＋</button></li>`).join("");
-    const R = $("#results");
-    R.querySelectorAll("[data-q]").forEach((el) => (el.onclick = () => act(botPath("enqueue"), { tracks: [results[+el.dataset.q]] })));
-    R.querySelectorAll("[data-n]").forEach((el) => (el.onclick = () => act(botPath("enqueue"), { tracks: [results[+el.dataset.n]], next: true })));
-    R.querySelectorAll("[data-s]").forEach((el) => (el.onclick = () => {
-      if (!state.playlists.length) return toast("Create a playlist first");
-      const name = prompt("Add to which playlist?\n" + state.playlists.map((p) => p.name).join(", "), state.playlists[0].name);
-      if (name) act(plPath(name, "add"), { tracks: [results[+el.dataset.s]] });
-    }));
-  } catch (err) { $("#results").innerHTML = `<li class="empty">⚠ ${esc(err.message)}</li>`; }
-};
-
-refresh();
-setInterval(refresh, 4000);
-setInterval(tickProgress, 1000);
-</script>
+<a class="skip-link" href="#main">Skip to content</a>
+<aside class="sidebar" id="sidebar">
+  <a class="brand" href="#dashboard" aria-label="radiospeak home"><span class="brand-symbol" aria-hidden="true"><i></i><i></i><i></i><i></i></span>radiospeak<span class="brand-period">.</span></a>
+  <div class="workspace-label">YOUR MUSIC, TOGETHER</div>
+  <div class="connection-pill" id="connection"><span class="status-dot"></span>Connecting to panel…</div>
+  <div class="nav-label">WORKSPACE</div>
+  <nav aria-label="Main navigation" id="navigation">
+    <a href="#dashboard" data-view="dashboard"><span data-icon="dashboard"></span>Now playing</a>
+    <a href="#queue" data-view="queue"><span data-icon="queue"></span>Up next<span class="nav-badge" id="queue-badge">0</span></a>
+    <a href="#library" data-view="library"><span data-icon="library"></span>Collections & playlists</a>
+    <a href="#search" data-view="search"><span data-icon="search"></span>Search & import</a>
+    <a href="#settings" data-view="settings"><span data-icon="settings"></span>Bot & TeamSpeak</a>
+  </nav>
+  <div class="sidebar-library">
+    <div class="section-label">YOUR COLLECTIONS<button class="icon-button" data-action="new-collection" aria-label="Create collection"><span data-icon="plus"></span></button></div>
+    <div id="sidebar-collections"><p class="subtle small">A home for every mood.</p></div>
+    <button class="favorites-link" data-action="favorites"><span data-icon="heart"></span>Favorite tracks<span id="favorite-count">0</span></button>
+  </div>
+  <div class="sidebar-bottom"><div class="bot-avatar"><span data-icon="radio"></span></div><div><strong id="sidebar-bot">Music bot</strong><span class="small subtle" id="sidebar-channel">Waiting for connection</span></div><span class="status-dot" id="sidebar-dot"></span></div>
+</aside>
+<div class="app-shell">
+  <header class="topbar">
+    <button class="icon-button menu-button" data-action="menu" aria-label="Toggle navigation" aria-expanded="false" aria-controls="sidebar"><span data-icon="menu"></span></button>
+    <div class="breadcrumb"><span>Workspace</span><span class="separator">/</span><strong id="breadcrumb">Now playing</strong></div>
+    <div class="topbar-right"><span class="live-label"><span class="status-dot"></span>TEAM AUDIO, IN SYNC</span><select id="bot-select" aria-label="Active music bot"></select><div class="profile" title="Web controls">RS</div></div>
+  </header>
+  <main id="main" tabindex="-1"><div id="offline-banner" class="notice" role="status" hidden>Panel connection lost. Reconnecting automatically…</div><div id="view"><div class="loading">Connecting to radiospeak…</div></div></main>
+  <div class="statusbar" id="statusbar" aria-label="TeamSpeak status"></div>
+</div>
+<footer class="player-dock" id="player-dock" aria-label="Audio player"></footer>
+<div id="toast" role="status" aria-live="polite"></div>
+<dialog id="modal" aria-labelledby="modal-title"><form id="modal-form"><div class="modal-header"><h2 id="modal-title"></h2><button type="button" class="icon-button" data-action="close-modal" aria-label="Close dialog"><span data-icon="close"></span></button></div><div id="modal-body"></div><div id="modal-error" class="form-error" role="alert"></div><div class="modal-footer"><button type="button" class="button secondary" data-action="close-modal">Cancel</button><button type="submit" class="button primary" id="modal-submit">Save</button></div></form></dialog>
+<noscript><p class="notice">Enable JavaScript to use the radiospeak control panel.</p></noscript>
 </body>
 </html>

@@ -61,14 +61,14 @@ export function playlistId(url: string): string | undefined {
 export async function resolve(
   ytdlpPath: string,
   input: string,
-  options: { maxItems: number; results?: number; wholePlaylist?: boolean },
+  options: { maxItems: number; results?: number; wholePlaylist?: boolean; source?: "youtube" | "soundcloud" },
 ): Promise<Resolved> {
   let text = input.trim();
   if (!text) throw new Error("Nothing to look up");
   const url = isUrl(text);
   const list = url ? playlistId(text) : undefined;
   if (options.wholePlaylist && list) text = `https://www.youtube.com/playlist?list=${list}`;
-  const target = url ? text : `ytsearch${options.results ?? 1}:${text}`;
+  const target = url ? text : `${options.source === "soundcloud" ? "scsearch" : "ytsearch"}${options.results ?? 1}:${text}`;
   const args = [
     "--flat-playlist",
     // Needed: a "playlist:" --print would otherwise turn simulation off and download the video.
@@ -76,10 +76,10 @@ export async function resolve(
     "--no-warnings",
     "--encoding", "utf-8",
     "--playlist-end", String(options.maxItems),
-    "--print", "T\t%(webpage_url|)s\t%(url|)s\t%(duration|)s\t%(title|)s",
+    "--print", "T\t%()j",
     "--print", "playlist:P\t%(title|)s",
     ...(url && isSingleVideo(text) ? ["--no-playlist"] : []),
-    target,
+    "--", target,
   ];
   const out = await run(ytdlpPath, args, 90_000);
 
@@ -89,12 +89,15 @@ export async function resolve(
     const [kind, ...f] = line.split("\t");
     if (kind === "P") playlist = f.join("\t").trim() || undefined;
     if (kind !== "T") continue;
-    const [pageUrl = "", mediaUrl = "", duration = "", ...titleParts] = f;
-    const title = titleParts.join("\t").trim();
-    const link = pageUrl || mediaUrl;
+    const entry = JSON.parse(f.join("\t"));
+    const title = String(entry.title ?? "").trim();
+    const link = entry.webpage_url || entry.url;
     if (!link || /^\[(private|deleted) video\]$/i.test(title)) continue;
-    const seconds = Number(duration);
-    tracks.push({ url: link, title: title || link, ...(seconds > 0 ? { duration: Math.round(seconds) } : {}) });
+    const seconds = Number(entry.duration);
+    const thumbnail = entry.thumbnail ?? entry.thumbnails?.at(-1)?.url;
+    const artist = entry.artist || entry.uploader || entry.channel;
+    tracks.push({ url: link, title: title || link, ...(seconds > 0 ? { duration: Math.round(seconds) } : {}),
+      ...(artist ? { artist } : {}), ...(thumbnail ? { thumbnail } : {}) });
   }
   if (tracks.length === 0) throw new Error(url ? "Nothing playable at that link" : `Nothing found for "${text}"`);
   // A search reports its query as the "playlist"; only real playlists keep a name.

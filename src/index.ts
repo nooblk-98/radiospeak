@@ -11,6 +11,14 @@ const app: App = {
   searchResults: new Map(),
 };
 app.bots = config.bots.map((cfg, i) => new MusicBot(app, cfg, i));
+// Saved defaults also follow edits made through TeamSpeak chat commands.
+app.playlists.onChange = () => {
+  for (const bot of app.bots) {
+    if (!app.playlists.hasDefault(bot.name)) continue;
+    const list = app.playlists.defaultFor(bot.name);
+    bot.player.setDefaultPlaylist(list?.tracks ?? [], list?.name);
+  }
+};
 
 let shuttingDown = false;
 async function shutdown(): Promise<void> {

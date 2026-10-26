@@ -90,6 +90,63 @@ YouTube changes often: rebuild now and then to get a fresh yt-dlp:
 docker compose build --pull
 ```
 
+## Web control panel
+
+Set `web.enabled` to `true` in your configuration (or `FMBOT_WEB_ENABLED=true`),
+then open `http://localhost:8080`. The panel uses modular vanilla HTML, CSS and
+JavaScript with no frontend build step. Its dark layout adapts to desktop and
+mobile, and the player dock remains available while switching screens.
+
+- **Now playing:** playback, live progress, TeamSpeak channel and listener status.
+- **Up next:** drag tracks into order or click a track number to choose a position
+  with a keyboard or touch device. Play next, move to top, remove, clear, or save
+  the queue. Stop also clears user requests; Pause keeps them.
+- **Collections & playlists:** create, rename, move and delete playlists; group
+  them in collections; import public YouTube playlists; reorder or enqueue saved
+  tracks. Deleting a collection keeps its playlists as standalone lists.
+- **Idle playlists:** select one per bot. Requests take priority and the idle
+  playlist resumes when they finish. An enabled radio stream takes priority over
+  the idle playlist. Deleting an assigned playlist disables that fallback.
+- **Search & import:** debounced YouTube/SoundCloud search, result artwork,
+  durations and artists, play now, enqueue, and save to a playlist. Live stream
+  URLs and radio presets are also available. Search and imports need `yt-dlp`.
+- **Bot & TeamSpeak:** move the connected bot between available channels, see
+  listeners, toggle FFmpeg loudness normalization, shuffle, and repeat.
+
+The heart stores favorites in the shared library. Bot volume is the actual
+TeamSpeak output gain (0–100%), not browser playback volume. Audio always plays
+through the bot. Seeking restarts the decoder and may take time on remote media;
+live streams cannot be scrubbed. Normalization changes restart the audio pipeline
+at its current position. Listener auto-pause resumes when a listener joins.
+
+The panel polls `/api/state` every 1.5 seconds (5 seconds while hidden). The
+`StateConnection` module emits `track_changed`, `queue_updated`, and
+`playback_progress` events. Requests never overlap, edits validate the displayed
+track order, and failed polling shows a reconnect banner while retaining state.
+
+Library data is written atomically to `playlists.json` (or `FMBOT_PLAYLISTS`).
+Existing playlist arrays load automatically; the next write upgrades them to a
+versioned object containing playlists, stable IDs, collections, favorites, and
+per-bot idle selections. Back up that file before downgrading to an older release.
+Idle selections survive restarts and override configured remote defaults. Playback,
+shuffle, volume, and normalization controls apply to the running bot.
+
+Playlist names can contain spaces. Use their 1-based number from `!pl` in chat
+commands when a name contains spaces, for example `!pl add 2 <link>`.
+
+### Development checks
+
+```bash
+npm ci
+npm run check
+npm test
+```
+
+Tests cover library migration/persistence, player controls, authenticated HTTP
+routes, stale queue/playlist edits, input validation, and a DOM workflow through
+the actual panel and local API. The DOM test supplies deterministic media results;
+it does not require TeamSpeak, FFmpeg, or a network media provider.
+
 ## Chat commands
 
 Send these in the bot's channel or as a private message to the bot:

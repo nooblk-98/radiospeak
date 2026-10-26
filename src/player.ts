@@ -26,6 +26,8 @@ export interface Track {
   title: string;
   /** Seconds, when known. */
   duration?: number;
+  artist?: string;
+  thumbnail?: string;
   requestedBy?: string;
   /** From the default playlist, played only while nobody has requested anything. */
   auto?: boolean;
@@ -98,6 +100,7 @@ interface Pipeline {
   procs: ChildProcess[];
   encoderOut: Readable;
   startedAt: number;
+  initialTrackFrames: number;
   /** The encoder finished: everything left is in the frame queue. */
   ended: boolean;
   /** The decoder or yt-dlp failed; the reason, for reporting. */
@@ -119,8 +122,12 @@ export class Player {
   #defaultIndex = 0;
   #loop: LoopMode = "off";
   #volume: number;
+  #normalization = false;
+  #shuffleEnabled = false;
+  #history: Track[] = [];
   #userPaused = false;
   #autoPaused = false;
+  #stopped = false;
 
   #pipe: Pipeline | undefined;
   #generation = 0;
@@ -160,6 +167,9 @@ export class Player {
   get volume(): number {
     return this.#volume;
   }
+  get normalization(): boolean { return this.#normalization; }
+  get shuffleEnabled(): boolean { return this.#shuffleEnabled; }
+  get canGoBack(): boolean { return this.#history.length > 0 || !!this.#track; }
   /** Paused by a user command. */
   get userPaused(): boolean {
     return this.#userPaused;
@@ -197,13 +207,15 @@ export class Player {
     this.#defaultList = tracks.map((t) => ({ ...t, auto: true }));
     this.#defaultName = name;
     this.#defaultIndex = samePlace ? this.#defaultIndex % tracks.length : 0;
-    if (!this.#track && !this.#radio) this.#advance();
+    if (!this.#track && !this.#radio && !this.#stopped) this.#advance();
     else this.#emit({ type: "change" });
   }
 
   /** Starts the queue / radio / default playlist if nothing is playing. */
   playIfIdle(): boolean {
     if (this.#track) return false;
+    this.#stopped = false;
+    this.#userPaused = false;
     this.#failStreak = 0;
     this.#advance();
     return this.#track !== undefined || this.#radio !== undefined;
@@ -212,8 +224,10 @@ export class Player {
   /** Adds songs to the end (or the front with `next`); starts playing if idle. Returns the first one's queue position, 0 if it started now. */
   enqueue(tracks: Track[], next = false): number {
     if (tracks.length === 0) return -1;
+    this.#stopped = false;
     if (next) this.#queue.unshift(...tracks);
     else this.#queue.push(...tracks);
+    if (this.#shuffleEnabled && !next) this.shuffle();
     this.#failStreak = 0;
     const position = next ? 1 : this.#queue.length - tracks.length + 1;
     // A request replaces a default-playlist song at once; that list picks up again when the queue is empty.
@@ -239,14 +253,20 @@ export class Player {
 
   playRadio(stream: RadioStream | undefined): void {
     this.#radio = stream;
+    if (stream) this.#stopped = false;
     this.#radioDelayMs = 2000;
-    if (!this.#track) this.#restart();
+    if (!this.#track) {
+      if (!stream && !this.#stopped) this.#advance();
+      else this.#restart();
+    }
     this.#emit({ type: "change" });
   }
 
   stop(): void {
+    this.#stopped = true;
     this.#queue = [];
     this.#track = undefined;
+    this.#trackFrames = 0;
     this.#radio = undefined;
     this.#userPaused = false;
     this.#teardown();
@@ -259,6 +279,7 @@ export class Player {
   }
 
   removeAt(position: number): Track | undefined {
+    if (!Number.isInteger(position) || position < 1 || position > this.#queue.length) return undefined;
     const [removed] = this.#queue.splice(position - 1, 1);
     if (removed) this.#emit({ type: "change" });
     return removed;
@@ -270,6 +291,62 @@ export class Player {
       const j = Math.floor(Math.random() * (i + 1));
       [q[i], q[j]] = [q[j]!, q[i]!];
     }
+    this.#emit({ type: "change" });
+  }
+
+  setShuffle(enabled: boolean): void {
+    this.#shuffleEnabled = enabled;
+    if (enabled) this.shuffle();
+    else this.#emit({ type: "change" });
+  }
+
+  moveAt(from: number, to: number): boolean {
+    if (![from, to].every((n) => Number.isInteger(n) && n >= 1 && n <= this.#queue.length)) return false;
+    this.#queue.splice(to - 1, 0, this.#queue.splice(from - 1, 1)[0]!);
+    this.#emit({ type: "change" });
+    return true;
+  }
+
+  playNow(tracks: Track[]): void {
+    if (!tracks.length) return;
+    this.#stopped = false;
+    this.#queue.unshift(...tracks);
+    this.#userPaused = false;
+    if (this.#track) this.#finishTrack(undefined, false, true);
+    this.#advance();
+  }
+
+  previous(): boolean {
+    if (this.#track && (this.elapsed > 3 || !this.#history.length)) {
+      this.#trackFrames = 0;
+      this.#restart();
+      this.#emit({ type: "change" });
+      return true;
+    }
+    const previous = this.#history.pop();
+    if (!previous) return this.#track ? this.seek(0) : false;
+    this.#stopped = false;
+    if (this.#track) this.#queue.unshift(this.#track);
+    this.#track = previous;
+    this.#trackFrames = 0;
+    this.#failStreak = 0;
+    this.#restart();
+    this.#emit({ type: "trackStart", track: previous });
+    this.#emit({ type: "change" });
+    return true;
+  }
+
+  seek(seconds: number): boolean {
+    if (!this.#track?.duration || !Number.isFinite(seconds)) return false;
+    this.#trackFrames = Math.floor(Math.max(0, Math.min(seconds, this.#track.duration - 1)) * 1000 / FRAME_MS);
+    this.#restart();
+    this.#emit({ type: "change" });
+    return true;
+  }
+
+  setNormalization(enabled: boolean): void {
+    this.#normalization = enabled;
+    if (this.isActive) this.#restart();
     this.#emit({ type: "change" });
   }
 
@@ -342,6 +419,8 @@ export class Player {
   #finishTrack(error: string | undefined, advance: boolean, skipped = false): void {
     const track = this.#track;
     if (!track) return;
+    this.#history.push({ ...track });
+    if (this.#history.length > 50) this.#history.shift();
     this.#emit({ type: "trackEnd", track, ...(error ? { error } : {}) });
     if (!track.auto && !error && !skipped && this.#loop === "one") this.#queue.unshift(track);
     else if (!track.auto && !error && this.#loop === "all") this.#queue.push(track);
@@ -384,7 +463,7 @@ export class Player {
 
     const procs: ChildProcess[] = [];
     const quiet = ["-hide_banner", "-loglevel", "error", "-nostdin"];
-    const pcmOut = ["-vn", "-ac", String(CHANNELS), "-ar", String(SAMPLE_RATE), "-f", "s16le", "pipe:1"];
+    const pcmOut = ["-vn", ...(this.#normalization ? ["-af", "loudnorm=I=-16:TP=-1.5:LRA=11"] : []), "-ac", String(CHANNELS), "-ar", String(SAMPLE_RATE), "-f", "s16le", "pipe:1"];
     let decoder: ChildProcess;
     if (kind === "track") {
       // yt-dlp handles the site's headers and signatures; ffmpeg just decodes its output.
@@ -393,7 +472,7 @@ export class Player {
         ["-f", "bestaudio/best", "--no-playlist", "--quiet", "--no-warnings", "-o", "-", url],
         { stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
       );
-      decoder = spawn(ffmpegPath, [...quiet, "-i", "pipe:0", ...pcmOut], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+      decoder = spawn(ffmpegPath, [...quiet, "-i", "pipe:0", ...(this.elapsed > 0 ? ["-ss", String(this.elapsed)] : []), ...pcmOut], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
       ytdlp.stdout!.pipe(decoder.stdin!);
       procs.push(ytdlp);
     } else {
@@ -418,7 +497,7 @@ export class Player {
     decoder.stdout!.pipe(new VolumeTransform(() => this.#volume / 100)).pipe(encoder.stdin!);
     for (const p of procs) p.stdin?.on("error", () => {}); // EPIPE when a process is killed first
 
-    const pipe: Pipeline = { kind, procs, encoderOut: encoder.stdout!, startedAt: Date.now(), ended: false, failure: undefined };
+    const pipe: Pipeline = { kind, procs, encoderOut: encoder.stdout!, startedAt: Date.now(), initialTrackFrames: this.#trackFrames, ended: false, failure: undefined };
     this.#pipe = pipe;
     this.#frames = [];
     this.#reader.reset();
@@ -548,7 +627,7 @@ export class Player {
   /** The song's audio has all been sent. Under a second of it means it never really played. */
   #songDone(pipe: Pipeline): void {
     this.#kill();
-    const failed = pipe.failure && this.#trackFrames < 50;
+    const failed = pipe.failure && this.#trackFrames - pipe.initialTrackFrames < 50;
     this.#finishTrack(failed ? pipe.failure : undefined, true);
   }
 
