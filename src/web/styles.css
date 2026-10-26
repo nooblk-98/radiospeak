@@ -138,3 +138,6 @@
 .selection-bar .button{min-height:34px;padding:7px 13px;font-size:11px}
 .selection-hint{margin:2px 0 14px}
 @media(max-width:520px){.selection-bar .bulk-count{flex-basis:100%}}
+.dock-delete svg{width:17px;height:17px}
+.dock-delete:disabled{opacity:.22}
+@media(max-width:800px){.dock-delete{width:26px}.dock-delete svg{width:16px;height:16px}}

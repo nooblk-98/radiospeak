@@ -392,6 +392,18 @@ export class PlaylistStore {
     return () => { this.#tracksAdded.delete(listener); };
   }
 
+  /** Removes every copy of a song (alternate YouTube links included) from a playlist; returns how many. */
+  removeSong(list: SavedPlaylist, url: string): number {
+    const key = trackKey(url), before = list.tracks.length;
+    list.tracks = list.tracks.filter((t) => trackKey(t.url) !== key);
+    const removed = before - list.tracks.length;
+    if (removed) {
+      list.version = randomUUID();
+      this.#save();
+    }
+    return removed;
+  }
+
   removeTrack(list: SavedPlaylist, position: number): Track | undefined {
     if (!Number.isInteger(position) || position < 1 || position > list.tracks.length) return undefined;
     const [removed] = list.tracks.splice(position - 1, 1);

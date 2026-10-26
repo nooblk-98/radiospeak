@@ -362,7 +362,8 @@ function settings(b) {
 function dock(b) {
   const t = currentTrack(), isPaused = paused(b), liked = state.favorites.some(f => f.url === t?.url), canStart = t || b.queue.length || b.defaultPlaylist.size;
   return '<div class="dock-track">' + art(t,'dock-art') + '<div class="dock-info"><div class="dock-title" title="' + e(t?.title || 'Nothing playing yet') + '"><span>' + e(t?.title || 'Nothing playing yet') + '</span></div><div class="dock-artist">' + e(t?.artist || (t ? source(t) : 'Your next track is waiting')) + '</div></div>' +
-    ib('heart', liked ? 'Remove from favorites' : 'Favorite current track', 'favorite-current', 'aria-pressed="' + liked + '" ' + (!t?'disabled':''),'dock-heart ' + (liked?'active':'')) + '</div><div class="dock-center"><div class="transport">' +
+    ib('heart', liked ? 'Remove from favorites' : 'Favorite current track', 'favorite-current', 'aria-pressed="' + liked + '" ' + (!t?'disabled':''),'dock-heart ' + (liked?'active':'')) +
+    ib('trash', b.currentPlaylist ? 'Delete this song from ' + b.currentPlaylist.name : b.track ? 'Only songs from a saved playlist can be deleted' : 'Nothing to delete', 'delete-current', !b.currentPlaylist ? 'disabled' : '', 'dock-delete danger') + '</div><div class="dock-center"><div class="transport">' +
     ib('shuffle','Shuffle queue','shuffle','aria-pressed="' + b.shuffle + '"','shuffle-button ' + (b.shuffle?'active':'')) +
     ib('previous','Previous track','previous',b.canGoBack?'':'disabled') +
     '<button class="dock-play" data-action="toggle-play" aria-label="' + (t && !isPaused?'Pause':'Play') + '" ' + (!canStart?'disabled':'') + '>' + icon(t && !isPaused?'pause':'play') + '</button>' +
@@ -466,7 +467,7 @@ function render(force = false) {
         ['action','id','scope','index'].every(key=>el.dataset[key]===focusData[key]))?.focus({preventScroll:true});
     }
   }
-  const dockSignature = JSON.stringify([b.name,b.track,b.radio,b.radioTitle,b.userPaused,b.autoPaused,b.loop,b.shuffle,b.canGoBack,b.volume,state.favorites.map(t=>t.url),b.defaultPlaylist,state.viewer?.role]);
+  const dockSignature = JSON.stringify([b.name,b.track,b.currentPlaylist,b.radio,b.radioTitle,b.userPaused,b.autoPaused,b.loop,b.shuffle,b.canGoBack,b.volume,state.favorites.map(t=>t.url),b.defaultPlaylist,state.viewer?.role]);
   if (dockSignature !== renderedDock && !sliderActive && !$('#player-dock').contains(document.activeElement)) {
     renderedDock = dockSignature;
     $('#player-dock').innerHTML = dock(b);
@@ -601,6 +602,11 @@ document.addEventListener('click', async event => {
       case 'select-page': {const list=playlist();if(list){const selected=selectionFor(list);selected.allMatching=false;selected.indices=[...new Set([...selected.indices,...list.positions])];render(true);}return;}
       case 'select-matches': {const list=playlist();if(list){selectionFor(list).allMatching=true;selectionFor(list).excluded=[];render(true);}return;}
       case 'clear-selection': playlistSelections.delete(playlistId);render(true);return;
+      case 'delete-current': {
+        const t=b.track,list=b.currentPlaylist;
+        if(!t||!list) throw new Error('Only songs from a saved playlist can be deleted.');
+        return confirmAction('Delete this song?','“'+t.title+'” is removed from '+list.name+' and the next song starts.',()=>action('delete-current',{url:t.url}),'Delete song');
+      }
       case 'delete-selected': {
         const list=playlist(),selection=selectionFor(list),count=selection.allMatching?list.total-selection.excluded.length:selection.indices.length;
         if(!count)throw new Error('Select tracks first.');

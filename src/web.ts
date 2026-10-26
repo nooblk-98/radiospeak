@@ -102,6 +102,7 @@ function botState(bot: MusicBot) {
     channel: bot.channelName ?? null, channelId: bot.channelID?.toString() ?? null, homeChannel: bot.homeChannel || null,
     channels: bot.connected ? [...(bot.client?.view.channels.values() ?? [])].map((c) => ({ id: c.id.toString(), name: c.name })) : [],
     talkBlocked: bot.talkBlocked ?? null,
+    currentPlaylist: ((list) => list ? { id: list.id, name: list.name } : null)(bot.playlistOf(pl.track)),
     track: pl.track ? trackJson(pl.track) : null, elapsed: pl.elapsed,
     queue: pl.queue.map(trackJson), radio: pl.radio ?? null, radioTitle: bot.radioTitle ?? null,
     defaultPlaylist: pl.defaultPlaylist, volume: pl.volume,
@@ -217,6 +218,23 @@ async function botAction(app: App, bot: MusicBot, action: string, body: Record<s
       return "Playback position updated.";
     case "normalization": pl.setNormalization(body.enabled === true); return "Audio normalization updated.";
     case "prebuffer": pl.setPrebuffer(body.enabled === true); return "Next-track prebuffering " + (body.enabled ? "enabled." : "disabled.");
+    case "delete-current": {
+      // The panel names the song it means, so a song that just changed is never deleted by mistake.
+      const track = pl.track;
+      if (!track || track.url !== str(body.url)) throw new HttpError(409, "The song changed. Please try again.");
+      const list = bot.playlistOf(track);
+      if (!list) throw new HttpError(400, "This song isn't from a saved playlist. Skip it instead.");
+      const removed = app.playlists.removeSong(list, track.url);
+      syncDefaults(app);
+      // Upcoming copies queued from the same playlist go too.
+      const key = trackKey(track.url);
+      for (let i = pl.queue.length; i >= 1; i--) {
+        const queued = pl.queue[i - 1]!;
+        if (queued.playlistId === list.id && trackKey(queued.url) === key) pl.removeAt(i);
+      }
+      pl.skip();
+      return "Deleted " + track.title + " from " + list.name + (removed > 1 ? " (" + removed + " copies)" : "") + ".";
+    }
     case "welcome":
       app.playlists.setWelcomes(bot.name, body.enabled === true);
       return body.enabled === true ? "New listeners get the command list in channel chat." : "Join greetings turned off.";

@@ -286,3 +286,30 @@ test("songs added to a playing saved playlist join the queue after its other son
     assert.equal(p.queue.length,0,"a finished playlist no longer pulls new songs in");
   } finally {await f.close();}
 });
+
+test("deleting the current song removes it from its playlist and plays the next one",async()=>{
+  const f=await fixture(), p=f.app.bots[0]!.player, botPath="/api/bots/Test%20bot/";
+  try {
+    const party=(await f.api("/api/playlists",{name:"Party"})).data.playlist;
+    const alternate={...tracks[0]!,url:"https://youtu.be/abcdefghijk"};
+    await f.api("/api/playlists/"+party.id+"/add",{tracks:[tracks[0],tracks[1],alternate,tracks[2]]});
+    await f.api("/api/playlists/"+party.id+"/play-now",{bot:"Test bot"});
+    assert.deepEqual((await f.api("/api/state")).data.bots[0].currentPlaylist,{id:party.id,name:"Party"});
+    assert.equal((await f.api(botPath+"delete-current",{url:tracks[1]!.url})).status,409,"a song that already changed is never deleted");
+    const deleted=await f.api(botPath+"delete-current",{url:tracks[0]!.url});
+    assert.equal(deleted.status,200);
+    assert.match(deleted.data.message,/Deleted Evening breeze from Party \(2 copies\)/);
+    assert.deepEqual(f.app.playlists.find(party.id)!.tracks.map(t=>t.url),[tracks[1]!.url,tracks[2]!.url],"every copy, alternate links included, is removed");
+    assert.equal(p.track?.url,tracks[1]!.url,"the next song starts");
+    assert.deepEqual(p.queue.map(t=>t.url),[tracks[2]!.url],"queued copies of the deleted song are dropped");
+    p.stop();p.enqueue([{...tracks[3]!,requestedBy:"someone"}]);
+    assert.equal((await f.api("/api/state")).data.bots[0].currentPlaylist,null);
+    assert.equal((await f.api(botPath+"delete-current",{url:tracks[3]!.url})).status,400,"one-off requests have no playlist to delete from");
+    p.stop();f.app.playlists.setDefault("Test bot",f.app.playlists.find(party.id)!);
+    p.setDefaultPlaylist(f.app.playlists.find(party.id)!.tracks,"Party");p.playIfIdle();
+    assert.equal(p.track?.auto,true);
+    const idleSong=p.track!.url;
+    assert.equal((await f.api(botPath+"delete-current",{url:idleSong})).status,200,"idle playlist songs can be deleted too");
+    assert.ok(!f.app.playlists.find(party.id)!.tracks.some(t=>t.url===idleSong));
+  } finally {await f.close();}
+});

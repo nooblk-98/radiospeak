@@ -195,6 +195,14 @@ export class MusicBot {
   get settings() { return this.#app.playlists.settingsFor(this.name); }
   get historyVersion() { const history=this.#app.playlists.historyFor(this.name); return history.length+":"+history[0]?.id+":"+history[0]?.endedAt; }
   get activeSchedule() { return activeSchedule(this.#app.playlists.schedules, this.name); }
+  /** The saved playlist a song plays from: the one it was queued from, or the idle (or scheduled) playlist. */
+  playlistOf(track: Track | undefined): SavedPlaylist | undefined {
+    const store = this.#app.playlists;
+    if (track?.playlistId) return store.all.find((p) => p.id === track.playlistId);
+    if (!track?.auto) return undefined;
+    const schedule = activeSchedule(store.schedules, this.name);
+    return schedule ? store.find(schedule.playlistId) : store.defaultFor(this.name);
+  }
   syncLibrary(now = new Date()): void {
     const store = this.#app.playlists;
     const settings = store.settingsFor(this.name);
