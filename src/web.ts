@@ -14,6 +14,7 @@ import { AuthError, WebAuth } from "./web-auth.ts";
 import { owner, settingsFrom, type Viewer, type Role, type PlaylistSchedule } from "./policies.ts";
 import { createAccount } from "./accounts.ts";
 import { sourceRevision } from "./build-info.ts";
+import { Operations, validateDeploymentPolicy } from "./operations.ts";
 
 const summaries = new WeakMap<SavedPlaylist, { key: string; value: object }>();
 function summary(p: SavedPlaylist) {
@@ -41,6 +42,7 @@ function stateFor(app: App) {
     favorites: app.playlists.favorites.map(trackJson), commandPrefix: app.config.commandPrefix,
     playlists: app.playlists.all.map(summary), imports: imports(app).all.map(job=>({ ...job, errors: job.errors.slice(0,20), failedIndices: undefined, input: undefined })),
     system: stateForSystem(),
+    deployment: app.operations?.status.deployment,
   };
 }
 function stateForSystem() { return { pid: process.pid, uptime: process.uptime(), memoryMB: Math.round(process.memoryUsage().rss / 1048576), media: mediaStats() }; }
@@ -54,6 +56,8 @@ const assets = new Map([
   ["/volume.js", ["volume.js", "text/javascript"]],
   ["/components.js", ["components.js", "text/javascript"]],
   ["/operations.js", ["operations.js", "text/javascript"]],
+  ["/notifications.js", ["notifications.js", "text/javascript"]],
+  ["/management.js", ["management.js", "text/javascript"]],
 ].map(([path, [file, type]]) => [path, { body: readFileSync(join(import.meta.dirname, "web", file!)), type }]));
 const loginPage = readFileSync(join(import.meta.dirname, "web", "login.html"));
 // Give HTML and every imported module the same revision, including through caches.
@@ -106,13 +110,13 @@ function botState(bot: MusicBot) {
   };
 }
 
-async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
+async function readJson(req: IncomingMessage, maxBytes = 256 * 1024): Promise<Record<string, unknown>> {
   if (!req.headers["content-type"]?.includes("application/json")) throw new HttpError(415, "Expected application/json");
   let size = 0;
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
     size += (chunk as Buffer).length;
-    if (size > 256 * 1024) throw new HttpError(413, "Body too large");
+    if (size > maxBytes) throw new HttpError(413, "Body too large");
     chunks.push(chunk as Buffer);
   }
   if (!size) return {};
@@ -264,6 +268,42 @@ export async function route(app: App, req: IncomingMessage, url: URL, signal?: A
   const method = req.method ?? "GET";
   const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
   const store = app.playlists;
+  if (["transfer","operations","audit"].includes(parts[1] ?? "")) {
+    if(viewer.role!=="admin")throw new HttpError(403,"Administrator access required");
+    if(parts[1]==="audit" && method==="GET")return app.operations?.entries(Math.max(0,Number(url.searchParams.get("offset"))||0));
+    if(parts[1]==="operations") {
+      if(method==="POST") { const body=await readJson(req); if(body.cancel===true)app.operations!.cancel();else app.operations!.setPolicy(body.policy as Parameters<Operations["setPolicy"]>[0]); }
+      return app.operations!.status;
+    }
+    if(parts[1]==="transfer") {
+      if(method==="GET")return {...store.exportLibrary(),deploymentPolicy:app.operations!.status.policy,players:Object.fromEntries(app.bots.map(b=>[b.name,{volume:b.player.volume,normalization:b.player.normalization,loop:b.player.loop,shuffle:b.player.shuffleEnabled,prebuffer:b.player.health.prebufferEnabled}]))};
+      if(method==="POST") {
+        const body=await readJson(req,16*1024*1024);
+        const archive=body.archive as {players?:Record<string,{volume:number;normalization:boolean;loop:LoopMode;shuffle:boolean;prebuffer:boolean}>;deploymentPolicy?:Parameters<Operations["setPolicy"]>[0]};
+        if(body.applySettings===true && archive?.players!==undefined) {
+          if(!archive.players || typeof archive.players!=="object" || Array.isArray(archive.players))throw new HttpError(400,"Invalid player preferences");
+          for(const settings of Object.values(archive.players))if(!settings || !Number.isInteger(settings.volume) || settings.volume<0 || settings.volume>100 || !["off","all","one"].includes(settings.loop) || ![settings.normalization,settings.shuffle,settings.prebuffer].every(v=>typeof v==="boolean"))throw new HttpError(400,"Invalid player preferences");
+        }
+        if(body.applySettings===true && archive?.deploymentPolicy)validateDeploymentPolicy(archive.deploymentPolicy);
+        if(imports(app).active)throw new HttpError(409,"Wait for active playlist imports to finish before importing settings");
+        const result=store.importLibrary(body.archive,body.applySettings===true,app.bots.map(b=>b.name),body.preview===true);
+        if(body.preview!==true) {
+          syncDefaults(app);
+          if(body.applySettings===true) {
+            if(archive.deploymentPolicy)app.operations!.setPolicy(archive.deploymentPolicy);
+            for(const bot of app.bots) {
+              const nickname=store.nicknameFor(bot.name);if(nickname && nickname!==bot.nickname)void bot.setNickname(nickname).catch(()=>{});
+              const settings=archive.players?.[bot.name];
+              if(settings){bot.player.setVolume(settings.volume);bot.player.setLoop(settings.loop);if(bot.player.shuffleEnabled!==settings.shuffle)bot.player.setShuffle(settings.shuffle);if(bot.player.normalization!==settings.normalization)bot.player.setNormalization(settings.normalization);bot.player.setPrebuffer(settings.prebuffer);}
+            }
+          }
+          await app.playback?.flush();
+        }
+        return {...result,message:body.preview===true?"Export validated. Review the counts before importing.":"Settings and playlists imported."};
+      }
+    }
+    throw new HttpError(405,"Unsupported operation");
+  }
   if (method !== "GET" && viewer.role !== "admin") {
     if (["access","accounts"].includes(parts[1] ?? "") || (parts[1] === "bots" && parts.length <= 3)) throw new HttpError(403,"An administrator manages accounts and instances");
     if (viewer.role === "listener") {
@@ -400,7 +440,8 @@ export async function route(app: App, req: IncomingMessage, url: URL, signal?: A
     if (method === "GET" && parts.length === 3) {
       const offset = Math.max(0, Math.floor(Number(url.searchParams.get("offset")) || 0));
       const limit = Math.min(100, Math.max(1, Math.floor(Number(url.searchParams.get("limit")) || 50)));
-      return { ...list, tracks: list.tracks.slice(offset, offset + limit).map(trackJson), offset, total: list.tracks.length };
+      const matching=store.matchTracks(list,url.searchParams.get("q") ?? "",url.searchParams.get("duplicates")==="true"),page=matching.slice(offset,offset+limit);
+      return { ...list, tracks: page.map(t=>trackJson(t.track)), positions:page.map(t=>t.index), offset, total: matching.length, trackCount:list.tracks.length };
     }
     if (method === "PATCH" && parts.length === 3) {
       const body = await readJson(req);
@@ -426,6 +467,11 @@ export async function route(app: App, req: IncomingMessage, url: URL, signal?: A
       if (body.expectedVersion !== undefined && body.expectedVersion !== list.version) throw new HttpError(409, "The playlist changed. Please try again.");
       const bot = selectedBot(app, body.bot);
       switch (parts[3]) {
+        case "bulk": {
+          if(body.expectedVersion!==list.version)throw new HttpError(409,"The playlist changed. Refresh and select the tracks again.");
+          const count=store.bulkTracks(list,body as Parameters<typeof store.bulkTracks>[1]);syncDefaults(app);
+          return {message:`Updated ${count} track(s).`};
+        }
         case "move":
           checkOrder(list.tracks, body);
           store.moveTrack(list, Number(body.from), Number(body.to));
@@ -462,6 +508,7 @@ export async function route(app: App, req: IncomingMessage, url: URL, signal?: A
 }
 
 export function startWebServer(app: App) {
+  app.operations ??= new Operations(app);
   const { host, port, password } = app.config.web;
   const lag = monitorEventLoopDelay({ resolution: 20 });
   lag.enable();
@@ -478,7 +525,7 @@ export function startWebServer(app: App) {
     eventLoopLagMs: Number.isFinite(lag.mean) ? Math.round(lag.mean / 1e6) : 0,
     eventLoopP99Ms: Math.round(lag.percentile(99) / 1e6) });
   const withHealth = () => ({ ...stateFor(app), system: system() });
-  const revision = () => [app.playlists.revision,imports(app).revision,...app.bots.map(b => b.name+":"+b.revision)].join("|");
+  const revision = () => [app.playlists.revision,imports(app).revision,app.operations?.revision,...app.bots.map(b => b.name+":"+b.revision)].join("|");
   const timer = setInterval(() => {
     if (!peers.size) return;
     for (const [peer,session] of sessions) {
@@ -514,6 +561,10 @@ export function startWebServer(app: App) {
         json({ ok: true, ready, sourceRevision, uiVersion, bots: app.bots.length, activeImports: imports(app).active }); return;
       }
       const api = url.pathname.startsWith("/api/");
+      if(url.pathname==="/api/deployments" && req.method==="POST") {
+        if(!app.operations!.authorized(req.headers.authorization))throw new HttpError(401,"Deployment token required");
+        readJson(req).then(async body=>{const status=app.operations!.queue(str(body.revision),str(body.webhook),body.force===true);await app.operations!.flush();json(status);}).catch(respondError);return;
+      }
       if (url.pathname === "/login" && req.method === "GET") {
         if (!auth.authorized(req, false)) {
           res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY" }).end(loginPage);
@@ -555,13 +606,17 @@ export function startWebServer(app: App) {
       const onClose = () => { if (!res.writableEnded) controller.abort(new Error("Request cancelled")); };
       res.on("close", onClose);
       route(app, req, url, controller.signal,auth.viewer(req,api)).then(async (data) => {
-        if (req.method !== "GET") await app.playlists.flush();
+        if (req.method !== "GET") {
+          await app.playlists.flush();
+          if(!["/api/search","/api/imports/preview"].includes(url.pathname))app.operations!.audit(auth.viewer(req,api)!.username,req.method ?? "POST",url.pathname);
+          await app.operations!.flush();
+        }
         if (!res.destroyed) json(data);
       }).catch(respondError).finally(() => res.off("close", onClose));
     } catch (err) { respondError(err); }
   });
   server.on("error", (err) => log("error", "Web panel failed: " + err.message));
-  server.on("close", () => { clearInterval(timer); lag.disable(); imports(app).close(); for (const peer of peers) peer.end(); peers.clear(); sessions.clear(); });
+  server.on("close", () => { clearInterval(timer); lag.disable(); imports(app).close(); app.operations?.close(); for (const peer of peers) peer.end(); peers.clear(); sessions.clear(); });
   server.listen(port, host, () => {
     log("info", "Web panel on http://" + (host === "0.0.0.0" ? "localhost" : host) + ":" + port);
     if (!password && !["127.0.0.1", "localhost", "::1"].includes(host)) log("warn", "Web panel has no password and is reachable from the network. Set web.password!");

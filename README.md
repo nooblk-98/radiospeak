@@ -229,7 +229,7 @@ Deployment first checks whether the expected source is already healthy. Otherwis
 
 **Playback history** retains 200 entries per bot across restarts, including requester, time and failures. Request a track again from that view; requester totals summarize those retained entries. TeamSpeak also supports `!history`.
 
-**Import recovery:** the public-playlist dialog previews up to ten entries and shows the configured batch limit. Imports save tracks in batches and persist their cursor in `imports.json`. Use **Continue next batch**, **Resume import** or **Retry unavailable entries** from the import card. Cancel keeps tracks already saved. Entry identifiers prevent duplicates after interruption even when URL deduplication is off. If the provider changes playlist order, start a new import with duplicate skipping enabled to refresh it.
+**Import recovery:** the public-playlist dialog previews up to ten entries and shows the configured batch limit. Imports save tracks in batches and persist their cursor in `imports.json`. Use **Continue next batch**, **Resume import** or **Retry unavailable entries** from the notification bell. Cancel keeps tracks already saved. Entry identifiers prevent duplicates after interruption even when URL deduplication is off. If the provider changes playlist order, start a new import with duplicate skipping enabled to refresh it.
 
 **Access & roles:** sign in as `owner` with the existing panel password to add named accounts. Passwords use salted scrypt hashes. Listeners can search, enqueue, remove their own requests and vote to skip. DJs manage playback, playlists, stations and schedules. Administrators also manage accounts and instances. Named account passwords need at least ten characters; changing or deleting an account invalidates its sessions. Scripts retain administrator Basic authentication using the panel password.
 
@@ -238,6 +238,28 @@ TeamSpeak chat role enforcement is opt-in to preserve existing command behavior.
 Compose defaults to four CPU cores, 4 GiB memory, 512 tasks and rotated logs. Override `FMBOT_CPU_LIMIT`, `FMBOT_MEMORY_LIMIT` and `FMBOT_PIDS_LIMIT` in the Compose environment for your host. These are ceilings, not reserved resources.
 
 Run the isolated synthetic benchmark with `npm run benchmark:audio` (`FFMPEG_PATH` overrides the executable). On the deployed Linux host, the ten-pipeline, High-quality/normalization-on test sustained 50 fps with zero underruns, 1,256 MiB combined RSS (about 1.23 GiB) and 1.15 CPU cores during a short steady-state window. It uses generated audio, not YouTube extraction, and does not measure long-term memory growth or music quality. Profile comparisons were noisy, so the default quality was retained.
+
+## Library management and notifications
+
+The top-right notification bell contains action results, Undo, import progress, retry/continue controls, recovery alerts and deployment updates. It keeps the workspace clear, remembers read state per panel account in this browser, and does not open automatically. Use **Mark all read** to clear the unread badge.
+
+Inside a playlist, filter by title/artist or show duplicate copies. Select tracks across pages, or select every matching track, then copy, move, remove, sort or deduplicate them. Bulk changes preserve original positions and reject stale source/destination versions. Duplicate removal retains the first occurrence of a normalized media URL.
+
+Administrators can **Export settings & playlists** under Bot & TeamSpeak. Import previews counts, validates the whole JSON file, assigns new IDs and unique names, then merges it into the library. The optional preferences checkbox applies settings only to matching bot instance IDs; imported schedules replace existing schedules for affected bots. Exports include media URLs, channels, names, audio preferences and deployment policy. They exclude TeamSpeak identities, server credentials, account password hashes, history and deployment secrets. There are no automatic backups. Export files are limited to 16 MiB / 100,000 tracks.
+
+The administrator audit log retains the latest 2,000 successful panel changes and state-changing TeamSpeak commands, including time, actor and resource. It excludes request bodies, command arguments, query strings and passwords.
+
+## Audio monitoring and deployment timing
+
+Bot health shows the output RMS level in dBFS. Optional silence monitoring measures decoded source audio before volume gain; mute and pause do not generate alerts. Configure a threshold and duration under Performance & requests. Optional radio failover switches to the next configured station after sustained silence; it is disabled by default.
+
+FFmpeg audio decoding, encoding and filter pools use one worker each to keep multiple bots within the container PID budget. Audio gain waits for encoder credit instead of polling. Opus sends use the next 20 ms frame deadline, wake on incoming buffered data, and retain the 30-second stall watchdog. Health includes mean/max frame lateness so deployments can be compared with the isolated benchmark.
+
+Deployment policy supports immediate updates, finishing current songs, or finishing songs within an IANA-time-zone maintenance window. Paused tracks, radio and tracks with unknown duration can be held immediately. Requests and checkpoints persist while draining. If draining exceeds the configured wait or the window closes, playback resumes. Deployment completion requires the expected source revision and connected bots; a lost webhook response is never retried automatically.
+
+For coordinated GitHub deployments, add repository secret `RADIOSPEAK_DEPLOY_TOKEN` using the private `/data/deployment-token.txt` generated by the server. Keep the existing `PORTAINER_WEBHOOK_URL` and `DEPLOY_HEALTH_URL` secrets. CI tests first, then queues one deployment; deferred runs report **queued**, while completion/failure appears in the panel bell. The pending webhook is encrypted on disk using the local deployment token. Keep the token with the persistent data volume; never put it in an export or repository. A manual workflow run with **force_redeploy** bypasses the timing policy. Without the new token, the legacy immediate webhook flow remains available for first-time upgrades.
+
+Run an isolated longer test with `npm run soak:audio -- --seconds 7200 --bots 3` and `FFMPEG_PATH` set as needed. It uses temporary data, generated audio, real FFmpeg/Opus pipelines, track transitions, queue requests, pause/resume, radio switches, durable synthetic imports and checkpoints. JSON output reports process counts, Node RSS, event-loop delay, frame timing and underruns; it never joins TeamSpeak or reads production data. Synthetic tests do not measure media-provider reliability or a real server's network jitter.
 
 ## Upgrading existing Docker installs
 

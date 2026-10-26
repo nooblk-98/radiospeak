@@ -154,6 +154,16 @@ async function playlistCommand(app: App, bot: MusicBot, msg: TextMessageEvent, a
 }
 
 export async function runCommand(app: App, bot: MusicBot, msg: TextMessageEvent): Promise<string | undefined> {
+  const before=app.playlists.revision, botBefore=bot.revision;
+  const result=await executeCommand(app,bot,msg);
+  if(app.operations && (before!==app.playlists.revision || botBefore!==bot.revision)) {
+    const command=msg.message.trim().slice(app.config.commandPrefix.length).split(/\s+/)[0]?.toLowerCase();
+    if(command && /^[a-z-]{1,24}$/.test(command)) { app.operations.audit("ts:"+msg.invokerUID,"TS","/bots/"+encodeURIComponent(bot.name)+"/"+command);await app.operations.flush(); }
+  }
+  return result;
+}
+
+async function executeCommand(app: App, bot: MusicBot, msg: TextMessageEvent): Promise<string | undefined> {
   const p = app.config.commandPrefix;
   const text = msg.message.trim();
   if (!text.startsWith(p)) return undefined;

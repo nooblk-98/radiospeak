@@ -41,7 +41,7 @@ async function run(count,profile,normalization){
     sampler=setInterval(()=>{peak=Math.max(peak,usage().rss);},200);
     await sleep(3500);
     const elapsed=(performance.now()-start)/1000,after=usage();
-    console.log(JSON.stringify({bots:count,profile,normalization,cpuPercent:Math.round((after.ticks-before.ticks)/hz/elapsed*1000)/10,peakRssMiB:Math.round(peak/1048576),minimumFps:Math.round(Math.min(...frames.map((n,i)=>(n-counts[i])/elapsed))*10)/10,underruns:players.reduce((sum,p)=>sum+p.health.underruns,0)}));
+    console.log(JSON.stringify({bots:count,profile,normalization,cpuPercent:Math.round((after.ticks-before.ticks)/hz/elapsed*1000)/10,peakRssMiB:Math.round(peak/1048576),minimumFps:Math.round(Math.min(...frames.map((n,i)=>(n-counts[i])/elapsed))*10)/10,underruns:players.reduce((sum,p)=>sum+p.health.underruns,0),frameTiming:players.map(p=>p.health.frameTiming)}));
   }finally{
     clearInterval(sampler);players.forEach(p=>p.stop());
     const until=Date.now()+3000;while(children.size&&Date.now()<until)await sleep(25);

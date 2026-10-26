@@ -1,13 +1,30 @@
 import { request, StateConnection } from './api.js';
 import { VolumeControl } from './volume.js';
+import { NotificationCenter } from './notifications.js';
+import { playlistTools, managementMarkup } from './management.js';
 import { escape as e, icon, iconButton as ib, button, art, heading, empty, channelSelect, botCard, commands, playlistCard, trackTable, resultCard, time, duration, source } from './components.js';
 
 import { operationsMarkup, accessMarkup, historyMarkup, scheduleFields, scheduleData } from './operations.js';
 const $ = selector => document.querySelector(selector);
 const connection = new StateConnection();
+const notifications = new NotificationCenter();
 let state, botName = localStorage.getItem('radiospeak.bot') || '', activeView = '', libraryFilter = 'all', playlistId = null;
 let panelNeedsReload = false;
 let accessData = null, accessPending = false;
+let managementData=null,auditData=null,managementPending=false;
+async function loadManagement(offset=0) {
+  if(managementPending || state?.viewer?.role!=='admin')return;
+  managementPending=true;
+  try { const [status,audit]=await Promise.all([request('/api/operations'),request('/api/audit?offset='+offset)]);managementData=status;auditData={...audit,offset};renderedView='';render(); }
+  catch(error){toast(error.message,true);}finally{managementPending=false;}
+}
+const playlistFilters=new Map(),playlistSelections=new Map();
+const filterFor=id=>playlistFilters.get(id)||{q:'',duplicates:false};
+function selectionFor(list) {
+  let selection=playlistSelections.get(list.id);
+  if(!selection||selection.version!==list.version){selection={version:list.version,indices:[],excluded:[],allMatching:false};playlistSelections.set(list.id,selection);}
+  return selection;
+}
 const historyCache = new Map();
 function ensureAccess() {
   if (accessData || accessPending || state?.viewer?.role !== 'admin') return;
@@ -31,7 +48,7 @@ function enforcePermissions() {
   document.querySelectorAll('[data-min-role]').forEach(el=>{el.hidden=rank[role]<rank[el.dataset.minRole];});
   if(role==='admin')return;
   const adminActions=new Set(['new-instance','remove-instance','delete-instance','delete-account']);
-  const listenerActions=new Set(['menu','close-modal','reload-panel','logout','sign-out','collection','filter','favorites','library-back','open-playlist','page','search-source','enqueue-track','queue-playlist','history-enqueue','skip','undo','switch-bot','toggle-switcher','switcher']);
+  const listenerActions=new Set(['menu','close-modal','reload-panel','logout','sign-out','collection','filter','favorites','library-back','open-playlist','page','search-source','enqueue-track','queue-playlist','history-enqueue','skip','undo','switch-bot','toggle-switcher','switcher','notifications-read']);
   document.querySelectorAll('[data-action]').forEach(el=>{
     const action=el.dataset.action;
     let allowed=role==='dj'?!adminActions.has(action):listenerActions.has(action);
@@ -39,10 +56,10 @@ function enforcePermissions() {
     if(!allowed)el.disabled=true;
     if(role==='listener'&&action==='skip'){el.setAttribute('aria-label','Vote to skip');el.title='Vote to skip';}
   });
-  if(role==='listener') document.querySelectorAll('#view form:not(#search-form) input,#view form:not(#search-form) select,#view form:not(#search-form) textarea,#view form:not(#search-form) button,#volume,#seek,#modal-submit').forEach(el=>{el.disabled=true;});
+  if(role==='listener') document.querySelectorAll('#view form:not(#search-form):not(#playlist-filter) input,#view form:not(#search-form):not(#playlist-filter) select,#view form:not(#search-form):not(#playlist-filter) textarea,#view form:not(#search-form):not(#playlist-filter) button,#volume,#seek,#modal-submit').forEach(el=>{el.disabled=true;});
 }
 let query = '', searchSource = 'youtube', searchResults = [], searchStatus = 'idle', searchError = '', searchController, searchTimer;
-let dragging = null, sliderActive = false, toastTimer, modalSubmit, renderedView = '', renderedDock = '', renderedChrome = '';
+let dragging = null, sliderActive = false, modalSubmit, renderedView = '', renderedDock = '', renderedChrome = '';
 let receivedAt = 0, lastRenderBot = '';
 const lastVolumes = new Map();
 const requestedVolumes = new Map();
@@ -68,7 +85,6 @@ function paintVolume(name, value) {
 let viewTracks = new Map();
 const playlistCache = new Map(), playlistRequests = new Map(), pages = new Map(), viewVersions = new Map();
 const PAGE_SIZE = 50;
-const dismissedImports = new Set();
 const playlistErrors = new Map();
 const views = { dashboard:'Now playing', queue:'Up next', library:'Collections & playlists', search:'Search & import', radio:'Radio stations', history:'Playback history', settings:'Bot & TeamSpeak' };
 const bot = () => state?.bots.find(b => b.name === botName) || state?.bots[0];
@@ -78,16 +94,7 @@ const listPath = id => '/api/playlists/' + encodeURIComponent(id);
 const currentTrack = () => bot()?.track || (bot()?.radio ? { url:bot().radio.url, title:bot().radioTitle || bot().radio.name, artist:'Live radio' } : null);
 const paused = b => b.userPaused || b.autoPaused || b.connectionPaused;
 function toast(message, error = false, undoToken, undoBot) {
-  clearTimeout(toastTimer);
-  $('#toast').textContent = message;
-  if (undoToken) {
-    const control = document.createElement('button');
-    control.type = 'button'; control.textContent = 'Undo'; control.dataset.action = 'undo';
-    control.dataset.token = undoToken; control.dataset.bot = undoBot || bot().name;
-    $('#toast').append(control);
-  }
-  $('#toast').className = 'show' + (error ? ' error' : '');
-  toastTimer = setTimeout(() => { $('#toast').className = ''; }, undoToken ? 10000 : error ? 6500 : 3500);
+  notifications.add(message,error,undoToken,undoBot || bot()?.name);
 }
 async function mutate(path, body = {}, method = 'POST') {
   if (panelNeedsReload) throw new Error('Reload the panel to use the updated controls.');
@@ -119,14 +126,16 @@ function orderData(scope) {
 async function ensurePlaylist(id) {
   const meta = state.playlists.find(p=>p.id===id);
   if (!meta) return;
-  const page = Math.min(pages.get(id)||0,Math.max(0,Math.ceil(trackCount(meta)/PAGE_SIZE)-1));
+  const filter=filterFor(id);
+  const page = Math.min(pages.get(id)||0,Math.max(0,Math.ceil((playlistCache.get(id)?.total ?? trackCount(meta))/PAGE_SIZE)-1));
   pages.set(id,page);
   const current = playlistCache.get(id);
-  if (current?.version === meta.version && current.offset === page * PAGE_SIZE) return;
-  const key = id + ':' + page + ':' + meta.version;
+  if (current?.version === meta.version && current.offset === page * PAGE_SIZE && current.filter===JSON.stringify(filter)) return;
+  const key = id + ':' + page + ':' + meta.version+':'+JSON.stringify(filter);
   if (playlistRequests.has(key)) return playlistRequests.get(key);
-  const promise = request(listPath(id) + '?offset=' + (page*PAGE_SIZE) + '&limit=' + PAGE_SIZE,undefined,'GET',AbortSignal.timeout(10000)).then(detail => {
-    if (state.playlists.find(p=>p.id===id)?.version !== detail.version || (pages.get(id)||0)!==page) return;
+  const promise = request(listPath(id) + '?offset=' + (page*PAGE_SIZE) + '&limit=' + PAGE_SIZE+'&q='+encodeURIComponent(filter.q)+'&duplicates='+filter.duplicates,undefined,'GET',AbortSignal.timeout(10000)).then(detail => {
+    if (state.playlists.find(p=>p.id===id)?.version !== detail.version || (pages.get(id)||0)!==page || JSON.stringify(filterFor(id))!==JSON.stringify(filter)) return;
+    detail.filter=JSON.stringify(filter);playlistErrors.delete(id);
     playlistCache.set(id,detail); renderedView=''; render();
   }).catch(error=>{ playlistErrors.set(id,error.message); renderedView='';render(); }).finally(()=>playlistRequests.delete(key));
   playlistRequests.set(key,promise);
@@ -233,7 +242,7 @@ function library(b) {
     if (playlistErrors.has(list.id)) return heading(list.name,'Could not load this page.') + '<div class="notice">'+e(playlistErrors.get(list.id))+'</div>'+button('Retry loading','repeat','retry-playlist','data-id="'+e(list.id)+'"');
     const meta=state.playlists.find(p=>p.id===list.id);
     pages.set(list.id,Math.min(pages.get(list.id)||0,Math.max(0,Math.ceil(trackCount(meta)/PAGE_SIZE)-1)));
-    if (list.version!==meta?.version || !playlistCache.has(list.id) || list.offset!==(pages.get(list.id)||0)*PAGE_SIZE) {
+    if (list.version!==meta?.version || !playlistCache.has(list.id) || list.offset!==(pages.get(list.id)||0)*PAGE_SIZE || list.filter!==JSON.stringify(filterFor(list.id))) {
       void ensurePlaylist(list.id);
       return heading(list.name,'Loading playlist tracks?') + '<div class="loading">Loading tracks?</div>';
     }
@@ -249,13 +258,14 @@ function library(b) {
 }
 function playlistDetail(b,list) {
   const isDefault = state.defaults[b.name] === list.id;
+  const selection=selectionFor(list), filter=filterFor(list.id);
   return '<button class="text-button" data-action="library-back" style="margin-bottom:22px">' + icon('back') + 'Back to your library</button><div class="playlist-header">' + art(list.tracks[0],'playlist-cover') + '<div><div class="intro-eyebrow">' + e(state.collections.find(c => c.id === list.collectionId)?.name || 'STANDALONE PLAYLIST') + '</div><h1>' + e(list.name) + '</h1><p class="small subtle">' + trackCount(list) + ' tracks · ' + time(state.playlists.find(p=>p.id===list.id)?.totalDuration || 0) + '</p><div class="heading-actions">' +
     button('Play now','play','play-playlist-now','data-id="' + e(list.id) + '" title="Clear the queue and play this playlist" ' + (!trackCount(list) ? 'disabled' : '')) +
     button('Add to queue','plus','queue-playlist','data-id="' + e(list.id) + '" ' + (!trackCount(list) ? 'disabled' : ''),'secondary') +
     button(isDefault ? 'Idle playlist · On' : 'Set as idle playlist','repeat','default-playlist','data-id="' + e(list.id) + '" ' + (!trackCount(list) && !isDefault ? 'disabled' : ''),'secondary') +
     ib('edit','Edit playlist','edit-playlist','data-id="' + e(list.id) + '"') + ib('trash','Delete playlist','delete-playlist','data-id="' + e(list.id) + '"','danger') +
     '</div></div></div>' + (isDefault ? '<div class="notice">This playlist automatically plays when user requests finish. Radio fallback takes priority if enabled.</div>' : '') +
-    trackTable(list.tracks,list.id,{offset:list.offset||0}) + pageControls(list.id,list.total) + '<section class="card import-card"><h3>Add a track or import a playlist</h3><p>Paste a YouTube or SoundCloud URL, a public playlist, or search words.</p><form id="playlist-import" class="inline-form"><input class="field" name="input" required placeholder="Paste a link or search for a song…" aria-label="Track or playlist to import"><label class="check-label"><input type="checkbox" name="skipDuplicates" checked> Skip duplicates</label><button class="button primary" type="submit">' + icon('plus') + 'Add music</button></form></section>';
+    playlistTools(list,filter,selection)+trackTable(list.tracks,list.id,{offset:list.offset||0,positions:list.positions,selectable:state.viewer?.role!=='listener',selected:selection.allMatching?list.positions.filter(i=>!selection.excluded.includes(i)):selection.indices}) + pageControls(list.id,list.total) + '<section class="card import-card"><h3>Add a track or import a playlist</h3><p>Paste a YouTube or SoundCloud URL, a public playlist, or search words.</p><form id="playlist-import" class="inline-form"><input class="field" name="input" required placeholder="Paste a link or search for a song…" aria-label="Track or playlist to import"><label class="check-label"><input type="checkbox" name="skipDuplicates" checked> Skip duplicates</label><button class="button primary" type="submit">' + icon('plus') + 'Add music</button></form></section>';
 }
 function searchView() {
   return heading('Find your next favorite.', 'Search a little. Discover a lot. Set the mood for your channel.') +
@@ -283,7 +293,7 @@ function searchResultsMarkup() {
   return '<div class="section-heading"><h2>Search results <span class="count-badge">' + searchResults.length + '</span></h2></div><div class="results-grid">' + searchResults.map(resultCard).join('') + '</div>';
 }
 function healthCard(b) {
-  return '<section class="card card-padding health-card"><div class="card-title"><h2>Bot health</h2><span class="tag green">Live</span></div><div id="health-values"></div><div class="setting-line"><div>Prepare the next track<p>Prebuffer one upcoming song during the last 15 seconds. Uses extra CPU and memory.</p></div><button class="switch" data-action="prebuffer" role="switch" aria-label="Prepare next track" aria-checked="' + !!b.health?.prebufferEnabled + '"></button></div><div id="prebuffer-status" class="small subtle"></div></section>';
+  return '<section class="card card-padding health-card"><div class="card-title"><h2>Bot health</h2><span class="tag green">Live</span></div><label for="audio-level" class="field-label">Output level (dBFS)</label><meter id="audio-level" class="audio-meter" min="-60" max="0" low="-48" high="-6" optimum="-18" value="-60">-60 dB</meter><div id="health-values"></div><div class="setting-line"><div>Prepare the next track<p>Prebuffer one upcoming song during the last 15 seconds. Uses extra CPU and memory.</p></div><button class="switch" data-action="prebuffer" role="switch" aria-label="Prepare next track" aria-checked="' + !!b.health?.prebufferEnabled + '"></button></div><div id="prebuffer-status" class="small subtle"></div></section>';
 }
 function renderBackground() {
   const b=bot(); if(!b) return;
@@ -308,30 +318,13 @@ function renderBackground() {
   const toggle=$('[data-action="prebuffer"]');
   if(toggle) toggle.setAttribute('aria-checked',String(!!h.prebufferEnabled));
   if($('#prebuffer-status')) $('#prebuffer-status').textContent='Next track: '+(h.prebufferStatus||'off')+' · '+(h.activeProcesses||0)+' audio processes';
-  const recovery=$('#recovery-status');
-  if(recovery) {
-    const message=h.retrying?'Retrying the current track from '+time(b.elapsed)+' · attempt '+h.retryAttempt+' of 2':b.connectionPaused&&b.track?'TeamSpeak is unavailable. Holding your current track and queue.':'';
-    recovery.innerHTML=message?'<div class="notice">'+e(message)+'</div>':'';
-  }
-  const target=$('#import-progress');
-  const jobs=(state.imports||[]).filter(job=>!dismissedImports.has(job.id)).slice(-3);
-  const signature=JSON.stringify(jobs);
-  if(target && target.dataset.signature!==signature) {
-    target.dataset.signature=signature;
-    target.innerHTML=jobs.map(job=>{
-      const active=['queued','resolving'].includes(job.status);
-      const label=active?job.status==='queued'?'Waiting for a media slot…':'Reading '+job.processed+(job.total?' / '+job.total:'')+' tracks…':job.status==='completed'?job.added+' added · '+job.duplicates+' duplicates skipped · '+job.failed+' unavailable':job.status;
-      return '<section class="card import-job"><div><strong>'+e(job.playlistName)+'</strong><span class="small subtle">'+e(label)+'</span></div>'+
-        (active?'<progress aria-label="Playlist import progress" '+(job.total?'max="'+job.total+'" value="'+job.processed+'"':'')+'></progress>':'')+
-        (job.errors?.length?'<details><summary>'+job.errors.length+' import issue(s)</summary><ul>'+job.errors.map(error=>'<li>'+e(error)+'</li>').join('')+'</ul></details>':'')+
-        (!active&&(['interrupted','cancelled','failed'].includes(job.status)||job.hasMore)?'<button class="button secondary" data-action="resume-import" data-id="'+e(job.id)+'">'+(job.status==='completed'?'Continue next batch':'Resume import')+'</button>':'')+
-        (!active&&job.failed?'<button class="button secondary" data-action="retry-import" data-id="'+e(job.id)+'">Retry unavailable entries</button>':'')+
-        '<button class="icon-button" data-action="'+(active?'cancel-import':'dismiss-import')+'" data-id="'+e(job.id)+'" aria-label="'+(active?'Cancel import':'Dismiss import result')+'">'+icon('close')+'</button></section>';
-    }).join('');
-  }
+  notifications.update(state);
+  const meter=$('#audio-level');
+  if(meter){ meter.value=Math.max(-60,b.health?.level?.rmsDb ?? -60); meter.textContent=(b.health?.level?.rmsDb ?? -96).toFixed(1)+' dB'; }
 }
 function settings(b) {
   ensureAccess();
+  if(!managementData)void loadManagement();
   return heading('Keep your channel in tune.', 'Manage your bots, choose their channels, and dial in the sound.') + instancesCard(b) +
     '<section class="card import-card"><h3>Bot name</h3><p>This fixed name is shown in TeamSpeak. It stays the same when songs change.</p><form id="nickname-form" class="inline-form"><label class="field-label" for="bot-nickname" style="align-self:center;margin:0">TeamSpeak name</label><input class="field" id="bot-nickname" name="nickname" required maxlength="30" value="' + e(b.nickname || 'radiospeak') + '" placeholder="radiospeak"><button class="button primary" type="submit">' + icon('check') + 'Save name</button></form></section>' +
     healthCard(b) + '<div class="settings-grid">' + botCard(b) + '<section class="card card-padding"><div class="card-title"><h2>Playback & output</h2>' + icon('headphones') + '</div><div class="setting-line"><div>Shuffle queue<p>Randomize queued and newly added tracks</p></div><button class="switch" role="switch" aria-label="Shuffle queue" aria-checked="' + b.shuffle + '" data-action="shuffle"></button></div><div class="setting-line"><div>Repeat mode<p>Applies to tracks requested by users</p></div><select data-control="repeat" aria-label="Repeat mode">' + ['off','all','one'].map(m => '<option value="' + m + '" ' + (b.loop===m?'selected':'') + '>' + ({off:'Off',all:'Repeat all',one:'Repeat one'}[m]) + '</option>').join('') + '</select></div><div class="setting-line"><div>Default idle playlist<p>Used when the queue is empty and radio is off</p></div><select data-control="default" aria-label="Default idle playlist"><option value="">None</option>' + state.playlists.map(p => '<option value="' + e(p.id) + '" ' + (state.defaults[b.name]===p.id?'selected':'') + (!trackCount(p)?' disabled':'') + '>' + e(p.name) + '</option>').join('') + '</select></div><dl class="detail-list"><dt>Output</dt><dd>TeamSpeak · Opus Music</dd><dt>Bot gain</dt><dd>' + b.volume + '%</dd><dt>Listener auto-pause</dt><dd>' + (b.autoPaused?'Paused · empty channel':'Ready') + '</dd><dt>Radio fallback</dt><dd>' + e(b.radio?.name || 'Off') + '</dd></dl>' + (b.radio ? button('Turn radio off','stop','radio-off','','secondary') : '') + '</section>' + commands(state.commandPrefix) + '<section class="card card-padding"><h3>Your listeners</h3><p class="small subtle">People in the current channel who can hear the bot.</p>' + (b.listeners.length ? b.listeners.map(n => '<div class="listeners-row"><span>' + e(n) + '</span><span class="tag green">Listening</span></div>').join('') : '<p class="small subtle">No listeners in this channel yet.</p>') + '</section></div>';
@@ -430,12 +423,12 @@ function render(force = false) {
     viewTracks = new Map([['queue', [...b.queue]]]);
     viewVersions.clear();
     for (const [id,detail] of playlistCache) {
-      const sparse=Array(detail.total);
-      detail.tracks.forEach((t,i)=>{sparse[detail.offset+i]=t;});
+      const sparse=Array(detail.trackCount ?? detail.total);
+      detail.tracks.forEach((t,i)=>{sparse[detail.positions?.[i] ?? detail.offset+i]=t;});
       viewTracks.set(id,sparse);viewVersions.set(id,detail.version);
     }
-    $('#view').innerHTML = (b.talkBlocked ? '<div class="notice" role="alert">The bot cannot be heard in this channel. Required talk power: ' + b.talkBlocked.needed + '; bot talk power: ' + b.talkBlocked.have + '. Ask a TeamSpeak admin to assign this bot a permanent server or channel group with enough talk power. A temporary talk grant can be lost on reconnect. You can also choose another channel.</div>' : '') +
-      ({dashboard,queue:b=>heading('Good things are up next.', 'Your channel’s requests, in the order you want to hear them.', '<a href="#search" class="button primary">' + icon('plus') + 'Add tracks</a>') + hero(b) + '<div style="margin-top:28px">' + queueSection(b,true) + '</div>',library,search:searchView,radio:radioView,history:historyView,settings:b=>settings(b)+operationsMarkup(state,b)+(state.viewer?.role==='admin'?accessMarkup(accessData):'')}[activeView] || dashboard)(b);
+    $('#view').innerHTML =
+      ({dashboard,queue:b=>heading('Good things are up next.', 'Your channel’s requests, in the order you want to hear them.', '<a href="#search" class="button primary">' + icon('plus') + 'Add tracks</a>') + hero(b) + '<div style="margin-top:28px">' + queueSection(b,true) + '</div>',library,search:searchView,radio:radioView,history:historyView,settings:b=>settings(b)+operationsMarkup(state,b)+(state.viewer?.role==='admin'?managementMarkup(managementData,auditData)+accessMarkup(accessData):'')}[activeView] || dashboard)(b);
     if (focusId && document.getElementById(focusId)) {
       document.getElementById(focusId).focus({preventScroll:true});
       if (selection) document.getElementById(focusId).setSelectionRange(...selection);
@@ -532,15 +525,32 @@ document.addEventListener('click', async event => {
     location.replace('/login');
     return;
   }
+  if(kind==='notifications-read')return;
   if (panelNeedsReload && kind !== 'close-modal') { toast('Reload the panel to use the updated controls.',true); return; }
   try {
     switch(kind) {
+      case 'export-library': {
+        const archive=await request('/api/transfer');const url=URL.createObjectURL(new Blob([JSON.stringify(archive,null,2)],{type:'application/json'}));const link=document.createElement('a');link.href=url;link.download='radiospeak-'+new Date().toISOString().slice(0,10)+'.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);toast('Settings and playlists exported.');return;
+      }
+      case 'refresh-audit': await loadManagement();return;
+      case 'audit-page': await loadManagement(Number(el.dataset.offset));return;
+      case 'cancel-deployment': await mutate('/api/operations',{cancel:true});await loadManagement();return;
+      case 'select-page': {const list=playlist();if(list){const selected=selectionFor(list);selected.allMatching=false;selected.indices=[...new Set([...selected.indices,...list.positions])];render(true);}return;}
+      case 'select-matches': {const list=playlist();if(list){selectionFor(list).allMatching=true;selectionFor(list).excluded=[];render(true);}return;}
+      case 'clear-selection': playlistSelections.delete(playlistId);render(true);return;
+      case 'bulk-tracks': {
+        const list=playlist(),selection=selectionFor(list);if(!selection.allMatching&&!selection.indices.length)throw new Error('Select tracks first.');
+        const destinationOptions=state.playlists.filter(p=>p.id!==list.id).map(p=>'<option value="'+e(p.id)+'">'+e(p.name)+'</option>').join('');
+        return showModal('Edit selected tracks','<p>'+ (selection.allMatching?list.total-selection.excluded.length:selection.indices.length)+' tracks selected. Changes apply to the saved order across every page.</p><label>Action<select class="field" name="operation"><option value="copy">Copy to playlist</option><option value="move">Move to playlist</option><option value="remove">Remove selected tracks</option><option value="deduplicate">Remove duplicate copies (keep first occurrence)</option><option value="sort">Sort selected tracks in place</option></select></label><label>Destination (copy / move)<select class="field" name="destination">'+destinationOptions+'</select></label><label>Sort by<select class="field" name="sort"><option value="title">Title</option><option value="artist">Artist</option><option value="duration">Duration</option></select></label>',async data=>{
+          const destination=state.playlists.find(p=>p.id===data.get('destination'));await mutate(listPath(list.id)+'/bulk',{...selection,...filterFor(list.id),action:data.get('operation'),destination:destination?.id,destinationVersion:destination?.version,sort:data.get('sort'),expectedVersion:list.version});playlistSelections.delete(list.id);render(true);
+        },'Apply changes');
+      }
       case 'page': pages.set(scope,Math.max(0,Number(el.dataset.page)));renderedView='';render();return;
       case 'retry-playlist': playlistErrors.delete(id);renderedView='';render();return;
       case 'undo': await mutate('/api/bots/'+encodeURIComponent(el.dataset.bot)+'/undo',{token:el.dataset.token});return;
       case 'prebuffer': await action('prebuffer',{enabled:!b.health?.prebufferEnabled});render(true);return;
       case 'cancel-import': await mutate('/api/imports/'+encodeURIComponent(id)+'/cancel',{});return;
-      case 'dismiss-import': await mutate('/api/imports/'+encodeURIComponent(id),{},'DELETE');dismissedImports.add(id);renderBackground();return;
+      case 'dismiss-import': await mutate('/api/imports/'+encodeURIComponent(id),{},'DELETE');renderBackground();return;
       case 'resume-import': await mutate('/api/imports/'+encodeURIComponent(id)+'/resume',{});return;
       case 'retry-import': await mutate('/api/imports/'+encodeURIComponent(id)+'/retry',{});return;
       case 'history-enqueue': {
@@ -641,13 +651,22 @@ document.addEventListener('submit',async event=>{
   if (panelNeedsReload) { toast('Reload the panel to use the updated controls.',true); return; }
   const form=event.target, data=new FormData(form), submit=form.querySelector('[type=submit]');
   if(form.id==='search-form') {query=String(data.get('query'));void search();return;}
+  if(form.id==='playlist-filter'){playlistFilters.set(playlistId,{q:String(data.get('q')||''),duplicates:data.get('duplicates')==='on'});pages.set(playlistId,0);playlistSelections.delete(playlistId);render(true);return;}
   if(!submit) return;
   submit.disabled=true;
   try {
-    if(form.id==='nickname-form') {
+    if(form.id==='deployment-policy-form') {
+      await mutate('/api/operations',{policy:{mode:data.get('mode'),start:data.get('start'),end:data.get('end'),timezone:data.get('timezone'),maxWaitMinutes:Number(data.get('maxWaitMinutes'))}});await loadManagement();
+    } else if(form.id==='transfer-form') {
+      const file=form.querySelector('[name=archive]').files[0];
+      if(!file||file.size>16*1024*1024)throw new Error('Choose an export smaller than 16 MB');
+      const archive=JSON.parse(await file.text()),applySettings=data.get('applySettings')==='on';
+      const preview=await request('/api/transfer',{archive,applySettings,preview:true});
+      showModal('Import settings & playlists','<p>'+preview.playlists+' playlists, '+preview.collections+' collections, '+preview.tracks+' tracks and '+preview.stations+' radio stations will be added.</p><p>'+(applySettings?'Preferences for matching bot IDs will be applied; imported schedules replace schedules for those bots.':'Current bot settings will be kept.')+'</p>',()=>mutate('/api/transfer',{archive,applySettings}),'Import');
+    } else if(form.id==='nickname-form') {
       await action('nickname',{nickname:data.get('nickname')});
     } else if(form.id==='performance-form') {
-      const settings={audioProfile:data.get('audioProfile'),queue:{maxTracks:Number(data.get('maxTracks')),perRequester:Number(data.get('perRequester')),cooldownSeconds:Number(data.get('cooldownSeconds'))},avoidRecent:Number(data.get('avoidRecent')),idleReleaseSeconds:Number(data.get('idleReleaseSeconds')),failover:data.getAll('failover').filter(Boolean)};
+      const settings={audioProfile:data.get('audioProfile'),queue:{maxTracks:Number(data.get('maxTracks')),perRequester:Number(data.get('perRequester')),cooldownSeconds:Number(data.get('cooldownSeconds'))},avoidRecent:Number(data.get('avoidRecent')),idleReleaseSeconds:Number(data.get('idleReleaseSeconds')),failover:data.getAll('failover').filter(Boolean),silence:{enabled:data.get('silenceEnabled')==='on',thresholdDb:Number(data.get('silenceThreshold')),seconds:Number(data.get('silenceSeconds')),radioFailover:data.get('silenceFailover')==='on'}};
       await action('settings',{settings});
     } else if(form.id==='schedule-form') {
       await mutate('/api/schedules',scheduleData(data,bot().name));
@@ -664,7 +683,7 @@ document.addEventListener('submit',async event=>{
       const url=String(data.get('url'));
       const preview=await request('/api/imports/preview',{input:url});
       let importedId=null;
-      showModal('Import a public playlist','<p>'+e(preview.total?preview.total+' entries found.':'Preview loaded; the provider has not reported the total.')+' Imports run in batches of up to '+preview.batchLimit+' entries. Continue larger playlists from the import card.</p><details><summary>Preview '+preview.tracks.length+' tracks</summary><ol>'+preview.tracks.map(t=>'<li>'+e(t.title)+'</li>').join('')+'</ol></details><label class="field-label" for="import-name">Playlist name</label><input class="field" id="import-name" name="name" required maxlength="80" value="'+e(preview.name)+'" placeholder="e.g. Weekend rotation"><label class="check-label"><input type="checkbox" name="skipDuplicates" checked> Skip duplicate tracks</label>',async d=>{
+      showModal('Import a public playlist','<p>'+e(preview.total?preview.total+' entries found.':'Preview loaded; the provider has not reported the total.')+' Imports run in batches of up to '+preview.batchLimit+' entries. Continue larger playlists from Notifications (the bell at the top right).</p><details><summary>Preview '+preview.tracks.length+' tracks</summary><ol>'+preview.tracks.map(t=>'<li>'+e(t.title)+'</li>').join('')+'</ol></details><label class="field-label" for="import-name">Playlist name</label><input class="field" id="import-name" name="name" required maxlength="80" value="'+e(preview.name)+'" placeholder="e.g. Weekend rotation"><label class="check-label"><input type="checkbox" name="skipDuplicates" checked> Skip duplicate tracks</label>',async d=>{
         if(!importedId) importedId=(await mutate('/api/playlists',{name:d.get('name'),collectionId:state.collections.some(c=>c.id===libraryFilter)?libraryFilter:null})).playlist.id;
         // Keep the created playlist selected even if the provider rejects the import.
         playlistId=importedId;render(true);
@@ -698,6 +717,7 @@ document.addEventListener('change',async event=>{
   if (panelNeedsReload) return;
   const el=event.target;
   try {
+    if(el.dataset.control==='select-track'){const selected=selectionFor(playlist());if(selected.allMatching){selected.excluded=el.checked?selected.excluded.filter(i=>i!==Number(el.dataset.index)):[...new Set([...selected.excluded,Number(el.dataset.index)])];}else selected.indices=el.checked?[...new Set([...selected.indices,Number(el.dataset.index)])]:selected.indices.filter(i=>i!==Number(el.dataset.index));render(true);return;}
     if(el.id==='volume') volumeControl.set(bot().name, Number(el.value), true);
     if(el.id==='seek') {await action('seek',{seconds:Number(el.value),url:bot().track?.url});}
     if(el.dataset.control==='channel') await action('channel',{channelId:el.value});
@@ -745,7 +765,7 @@ document.addEventListener('keydown',event=>{
 });
 connection.addEventListener('updateavailable',()=>{
   panelNeedsReload = true;
-  $('#update-banner').hidden = false;
+  notifications.add('A new panel version is available. Reload to continue; unsubmitted form edits will be cleared.',false,undefined,undefined,'panel-update');
   if ($('#modal').open) $('#modal-error').textContent='A new panel version is available. Close this dialog and reload the panel.';
 });
 connection.addEventListener('state',event=>{
@@ -764,7 +784,7 @@ connection.addEventListener('playback_progress',event=>{
 });
 connection.addEventListener('online',()=>{$('#offline-banner').hidden=true;});
 connection.addEventListener('offline',()=>{
-  $('#offline-banner').hidden=false;
+  notifications.add('Panel connection lost. Reconnecting automatically?',true,undefined,undefined,'panel-offline');
   $('#connection').innerHTML='<span class="status-dot warning"></span>Panel disconnected';
   renderedChrome='';
 });

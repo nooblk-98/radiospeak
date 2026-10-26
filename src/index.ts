@@ -27,9 +27,11 @@ async function shutdown(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   log("info", "Shutting down...");
+  app.operations?.close();
   await Promise.all(app.bots.map((b) => b.shutdown()));
   await app.imports?.shutdown();
   await app.playlists.flush();
+  await app.operations?.flush();
   process.exit(0);
 }
 process.on("SIGINT", () => void shutdown());

@@ -2,7 +2,9 @@ import { sourceRevision } from '../src/build-info.ts';
 
 const address = process.env.DEPLOY_HEALTH_URL;
 if (!address || !/^https?:\/\//.test(address)) throw new Error('Set DEPLOY_HEALTH_URL to the public /healthz URL.');
-const until = Date.now() + Number(process.env.DEPLOY_TIMEOUT_MS || 180000);
+const timeout=Number(process.env.DEPLOY_TIMEOUT_MS || Number(process.env.DEPLOY_TIMEOUT_SECONDS)*1000 || 180000);
+if(!Number.isFinite(timeout)||timeout<1||timeout>14700000)throw new Error('Invalid deployment health timeout.');
+const until = Date.now() + timeout;
 let last = 'not reachable';
 while (Date.now() < until) {
   try {

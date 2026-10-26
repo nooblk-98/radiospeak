@@ -1,7 +1,7 @@
 ﻿import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { AtomicFile } from "./atomic-file.ts";
-import { settingsFrom, validateSchedule, type BotSettings, type PlaylistSchedule, type Role } from "./policies.ts";
+import { settingsFrom, validateSchedule, validateScheduleConflicts, type BotSettings, type PlaylistSchedule, type Role } from "./policies.ts";
 import { PLAYLISTS_PATH, validateNickname } from "./config.ts";
 import type { Track } from "./player.ts";
 import { trackKey } from "./track-key.ts";
@@ -84,6 +84,95 @@ export class PlaylistStore {
   flush() { return this.#writer.flush(); }
   get path() { return this.#path; }
   get persistenceError() { return this.#writer.error; }
+  /** Portable music/configuration only; credentials, identities and history stay local. */
+  exportLibrary() {
+    const { playlists, collections, defaults, favorites, botNicknames, botChannels, radioStations, quietBots, settings, schedules } = this.#data;
+    return structuredClone({ format: "radiospeak", version: 1, exportedAt: new Date().toISOString(), data: { playlists, collections, defaults, favorites, botNicknames, botChannels, radioStations, quietBots, settings, schedules } });
+  }
+
+  importLibrary(archive: unknown, applySettings: boolean, bots: readonly string[], preview = false) {
+    const root = archive as ReturnType<PlaylistStore["exportLibrary"]>;
+    if (!root || root.format !== "radiospeak" || root.version !== 1 || !root.data) throw new Error("Choose a radiospeak settings and playlists export (version 1)");
+    const input = root.data;
+    if (!Array.isArray(input.playlists) || input.playlists.length > 1000 || !Array.isArray(input.collections) || input.collections.length > 1000 || !Array.isArray(input.radioStations) || input.radioStations.length > 1000) throw new Error("Invalid library or too many playlists/stations");
+    const draft = structuredClone(this.#data);
+    const name = (value: unknown, others: { name: string }[]) => {
+      if (typeof value !== "string" || !value.trim() || /^\d+$/.test(value.trim())) throw new Error("Invalid library name");
+      const base = value.trim().slice(0, 65); let result = base, n = 2;
+      while (others.some(item => item.name.toLowerCase() === result.toLowerCase())) result = `${base} (${n++})`;
+      return result;
+    };
+    const url = (value: unknown) => {
+      if (typeof value !== "string" || value.length > 8000) throw new Error("Invalid media URL");
+      const parsed = new URL(value); if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error("Only public HTTP/HTTPS media URLs are supported");
+      return parsed.href;
+    };
+    let trackCount = 0;
+    const track = (value: Track): Track => {
+      if (!value || typeof value.title !== "string" || !value.title.trim()) throw new Error("Invalid track title");
+      if (++trackCount > 100000) throw new Error("Exports may contain at most 100,000 tracks");
+      return { url: url(value.url), title: value.title.slice(0,1000), ...(typeof value.artist === "string" ? { artist: value.artist.slice(0,500) } : {}), ...(value.thumbnail ? { thumbnail: url(value.thumbnail) } : {}), ...(typeof value.duration === "number" && Number.isFinite(value.duration) && value.duration > 0 ? { duration: value.duration } : {}) };
+    };
+    const collections = new Map<string,string>(), lists = new Map<string,string>(), stations = new Map<string,string>();
+    const id = (value: unknown, seen: Map<string,string>) => { if (typeof value !== "string" || !value || seen.has(value)) throw new Error("Missing or duplicate library ID"); return randomUUID(); };
+    for (const c of input.collections) { const newId = id(c?.id,collections); collections.set(c.id,newId); draft.collections.push({ id:newId,name:name(c.name,draft.collections) }); }
+    for (const p of input.playlists) {
+      const newId = id(p?.id,lists); lists.set(p.id,newId);
+      if (!Array.isArray(p.tracks) || (p.collectionId && !collections.has(p.collectionId))) throw new Error("Invalid playlist collection or tracks");
+      draft.playlists.push({ id:newId, version:randomUUID(), name:name(p.name,draft.playlists), collectionId:collections.get(p.collectionId!) ?? null, tracks:p.tracks.map(track) });
+    }
+    for (const r of input.radioStations) { const newId = id(r?.id,stations); stations.set(r.id,newId); draft.radioStations.push({ id:newId,name:name(r.name,draft.radioStations),url:url(r.url) }); }
+    if (input.favorites !== undefined) { if (!Array.isArray(input.favorites)) throw new Error("Invalid favorites"); const seen = new Set(draft.favorites.map(t=>trackKey(t.url))); for (const t of input.favorites.map(track)) if (!seen.has(trackKey(t.url))) { draft.favorites.push(t); seen.add(trackKey(t.url)); } }
+    if (applySettings) for (const bot of bots) {
+      if (Object.hasOwn(input.botNicknames ?? {},bot)) draft.botNicknames[bot] = validateNickname(input.botNicknames[bot]!);
+      if (Object.hasOwn(input.botChannels ?? {},bot)) { const channel=input.botChannels[bot]; if (typeof channel !== "string" || channel.length > 1000) throw new Error("Invalid saved channel"); draft.botChannels[bot]=channel; }
+      if (Object.hasOwn(input.settings ?? {},bot)) { const s=settingsFrom(input.settings[bot]); s.failover=s.failover.map(old=>stations.get(old)).filter((v): v is string=>!!v); draft.settings[bot]=s; }
+      if (Object.hasOwn(input.defaults ?? {},bot)) { const target=input.defaults[bot]; if (target && !lists.has(target)) throw new Error("Invalid idle playlist"); draft.defaults[bot]=target ? lists.get(target)! : null; }
+      if (Array.isArray(input.quietBots)) { draft.quietBots=draft.quietBots.filter(b=>b!==bot); if(input.quietBots.includes(bot))draft.quietBots.push(bot); }
+    }
+    if (applySettings && input.schedules !== undefined) {
+      if (!Array.isArray(input.schedules) || input.schedules.length > 1000) throw new Error("Invalid schedules");
+      const imported = input.schedules.filter(s=>bots.includes(s.bot)).map(s=> { validateSchedule(s); const playlistId=lists.get(s.playlistId); if(!playlistId)throw new Error("Invalid scheduled playlist"); return {...s,days:[...s.days],id:randomUUID(),playlistId}; });
+      for(const s of imported)validateScheduleConflicts(s,imported);
+      const affected=new Set(imported.map(s=>s.bot)); draft.schedules=draft.schedules.filter(s=>!affected.has(s.bot)); draft.schedules.push(...imported);
+    }
+    const result = { playlists:input.playlists.length, collections:input.collections.length, stations:input.radioStations.length, tracks:trackCount, settings:applySettings, matchingBots:bots.filter(b=>Object.hasOwn(input.settings ?? {},b)) };
+    if (!preview) { this.#data=draft; this.#save(); }
+    return result;
+  }
+
+  bulkTracks(list: SavedPlaylist, value: { action: string; indices?: number[]; excluded?: number[]; destination?: string; destinationVersion?: string; sort?: string; q?: string; duplicates?: boolean; allMatching?: boolean }) {
+    const matching = this.matchTracks(list,value.q,value.duplicates);
+    if(value.excluded!==undefined && (!Array.isArray(value.excluded) || !value.excluded.every(i=>Number.isInteger(i) && i>=0 && i<list.tracks.length)))throw new Error("Invalid excluded track positions");
+    const excluded=new Set(value.excluded ?? []);
+    const indices = value.allMatching ? matching.map(t=>t.index).filter(i=>!excluded.has(i)) : value.indices;
+    if (!Array.isArray(indices) || !indices.length || !indices.every(i=>Number.isInteger(i) && i>=0 && i<list.tracks.length)) throw new Error("Select at least one valid track");
+    const selected=new Set(indices), ordered=list.tracks.filter((_,i)=>selected.has(i));
+    let destination: SavedPlaylist | undefined;
+    if (["copy","move"].includes(value.action)) {
+      destination=this.all.find(p=>p.id===value.destination);
+      if (!destination || destination===list) throw new Error("Choose a different destination playlist");
+      if (destination.version!==value.destinationVersion) throw new Error("The destination changed. Refresh and try again");
+    } else if (!["remove","sort","deduplicate"].includes(value.action)) throw new Error("Unknown bulk action");
+    if(value.action==="sort" && !["title","artist","duration"].includes(value.sort ?? "")) throw new Error("Choose a sort order");
+    let count=ordered.length;
+    if(destination) { destination.tracks.push(...ordered.map(t=>({...t}))); destination.version=randomUUID(); }
+    if(["remove","move"].includes(value.action)) list.tracks=list.tracks.filter((_,i)=>!selected.has(i));
+    if(value.action==="deduplicate") {
+      const seen=new Set<string>(); count=0;
+      list.tracks=list.tracks.filter((t,i)=> { const key=trackKey(t.url), duplicate=seen.has(key); seen.add(key); if(selected.has(i)&&duplicate){count++;return false;} return true; });
+    }
+    if(value.action==="sort") {
+      ordered.sort((a,b)=>value.sort==="duration" ? (a.duration ?? Infinity)-(b.duration ?? Infinity) : String(a[value.sort as "title"|"artist"] ?? "").localeCompare(String(b[value.sort as "title"|"artist"] ?? ""),undefined,{numeric:true,sensitivity:"base"}));
+      let index=0; list.tracks=list.tracks.map((t,i)=>selected.has(i)?ordered[index++]!:t);
+    }
+    if(value.action!=="copy")list.version=randomUUID(); this.#save(); return count;
+  }
+
+  matchTracks(list: SavedPlaylist, q = "", duplicates = false) {
+    const query=q.trim().toLocaleLowerCase(), seen=new Set<string>();
+    return list.tracks.flatMap((track,index)=> { const key=trackKey(track.url), duplicate=seen.has(key); seen.add(key); return (!duplicates || duplicate) && (!query || `${track.title} ${track.artist ?? ""}`.toLocaleLowerCase().includes(query)) ? [{track,index}] : []; });
+  }
   get schedules(): readonly PlaylistSchedule[] { return this.#data.schedules; }
   get accounts(): readonly WebAccount[] { return this.#data.accounts; }
   get chatAccess() { return this.#data.chatAccess; }
@@ -114,15 +203,7 @@ export class PlaylistStore {
     validateSchedule({ ...value, id: id ?? "" });
     if (!this.find(value.playlistId)?.tracks.length) throw new Error("Choose a non-empty playlist");
     if (id && !this.schedules.some(s => s.id === id)) throw new Error("Schedule not found");
-    const slots = (s: Omit<PlaylistSchedule,"id">) => s.days.flatMap(day => {
-      const minutes = (time: string) => Number(time.slice(0,2)) * 60 + Number(time.slice(3));
-      const start = day * 1440 + minutes(s.start), end = day * 1440 + minutes(s.end) + (s.end < s.start ? 1440 : 0);
-      return end > 10080 ? [[start,10080],[0,end-10080]] : [[start,end]];
-    });
-    for (const other of this.schedules.filter(s => s.bot === value.bot && s.id !== id && s.enabled && value.enabled)) {
-      if (other.timezone !== value.timezone) throw new Error("Schedules on one bot must use the same time zone");
-      if (slots(other).some(([a,b]) => slots(value).some(([c,d]) => a! < d! && c! < b!))) throw new Error("This schedule overlaps another enabled schedule");
-    }
+    validateScheduleConflicts({...value,id:id ?? ""},this.schedules);
     const schedule = { ...value, days: [...new Set(value.days)], id: id ?? randomUUID() };
     this.#data.schedules = this.#data.schedules.filter(s => s.id !== schedule.id); this.#data.schedules.push(schedule); this.#save();
     return schedule;

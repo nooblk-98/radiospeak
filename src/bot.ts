@@ -20,6 +20,7 @@ import { Player, type PlayerEvent, type Track } from "./player.ts";
 import type { PlaylistStore } from "./store.ts";
 import type { PlaybackStore } from "./playback-store.ts";
 import type { ImportManager } from "./imports.ts";
+import type { Operations } from "./operations.ts";
 import { formatDuration, resolve } from "./ytdlp.ts";
 import { activeSchedule, type Role } from "./policies.ts";
 
@@ -29,6 +30,7 @@ export interface App {
   playlists: PlaylistStore;
   playback?: PlaybackStore;
   imports?: ImportManager;
+  operations?: Operations;
   bots: MusicBot[];
   /** Last !search results per user unique ID, so "!pick 3" can choose one. */
   searchResults: Map<string, Track[]>;

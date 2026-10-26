@@ -123,9 +123,15 @@ test("UI navigation, creation, import, idle selection, search, save, queue edits
     await until(()=>get("#breadcrumb").textContent==="Up next","queue navigation");
     const queueBefore=f.app.bots[0]!.player.queue.length;
     click('#view [data-action="remove-track"][data-index="0"]');
-    await until(()=>f.app.bots[0]!.player.queue.length===queueBefore-1 && get("#queue-badge").textContent===String(queueBefore-1) && !!document.querySelector('#toast [data-action="undo"]'),"queue removal with undo ready");
-    click('#toast [data-action="undo"]');
+    await until(()=>f.app.bots[0]!.player.queue.length===queueBefore-1 && get("#queue-badge").textContent===String(queueBefore-1) && !!document.querySelector('#notification-panel [data-action="undo"]'),"queue removal with undo ready");
+    assert.equal(get('#notification-panel').hidden,true,"notifications never open automatically");
+    click('#notification-button');
+    assert.equal(get('#notification-button').getAttribute('aria-expanded'),'true');
+    assert.equal(get('#import-progress').textContent,'',"import cards stay out of the workspace");
+    click('#notification-panel [data-action="undo"]');
     await until(()=>f.app.bots[0]!.player.queue.length===queueBefore && get("#toast").textContent==="Track restored to the queue.","undo queue removal");
+    click('[data-action="notifications-read"]');assert.equal(document.querySelector('.notification-badge'),null);
+    document.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));assert.equal(get('#notification-panel').hidden,true);
     dom.window.location.hash="settings";
     await until(()=>!!document.querySelector("#bot-nickname"),"bot settings navigation");
     fill("#bot-nickname","Community Radio");submit("#nickname-form");
@@ -146,6 +152,12 @@ test("UI navigation, creation, import, idle selection, search, save, queue edits
     click('#view [data-action="reorder"][data-index="50"]');
     fill("#track-position","1");submit("#modal-form");
     await until(()=>list.tracks[0]?.url===moved&&!get("#modal").hasAttribute("open") && document.querySelector('#view tr[data-index="50"] .track-title')?.textContent===list.tracks[50]?.title,"reorder a paged track to the first position");
+    fill('#playlist-filter [name="q"]','Page track 11');submit('#playlist-filter');
+    await until(()=>document.querySelectorAll('#view tbody tr').length===11,"playlist search covers all pages");
+    click('[data-action="select-matches"]');assert.match(get('.bulk-count').textContent!,/11 selected/);
+    const importedBeforeBulk=imported.tracks.length;click('[data-action="bulk-tracks"]');fill('#modal-body [name="destination"]',imported.id);submit('#modal-form');
+    await until(()=>imported.tracks.length===importedBeforeBulk+11&&!get('#modal').hasAttribute('open'),"bulk copy filtered tracks through the API");
+    fill('#playlist-filter [name="q"]','');submit('#playlist-filter');await until(()=>document.querySelectorAll('#view tbody tr').length===50,"clear playlist filter");
     click('[data-action="play-playlist-now"]');
     await until(()=>f.app.bots[0]!.player.track?.url===list.tracks[0]!.url&&f.app.bots[0]!.player.queue.length===list.tracks.length-1,"playlist Play now replaces the queue");
     dom.window.location.hash="radio";
@@ -172,6 +184,13 @@ test("UI navigation, creation, import, idle selection, search, save, queue edits
     await until(()=>!!document.querySelector('[data-action="history-enqueue"]'),"persistent playback history view");
     const historyQueue=f.app.bots[0]!.player.queue.length;click('[data-action="history-enqueue"]');
     await until(()=>f.app.bots[0]!.player.queue.length===historyQueue+1&&get('#toast').textContent?.startsWith('Queued')===true,"request a track from playback history");
+    dom.window.location.hash='settings';await until(()=>!!document.querySelector('#transfer-form'),"manual export/import controls");
+    await until(()=>!!document.querySelector('#deployment-policy-form'),"deployment policy loaded");
+    fill('#deployment-policy-form [name="mode"]','window');submit('#deployment-policy-form');await until(()=>f.app.operations?.status.policy.mode==='window',"save deployment policy");
+    const archive=(await f.api('/api/transfer')).data,beforeImport=f.app.playlists.all.length;
+    Object.defineProperty(get('#transfer-form [name="archive"]'),'files',{configurable:true,value:[{size:JSON.stringify(archive).length,text:async()=>JSON.stringify(archive)}]});submit('#transfer-form');
+    await until(()=>get('#modal-title').textContent==='Import settings & playlists'&&get('#modal').hasAttribute('open'),"portable import preview");assert.equal(f.app.playlists.all.length,beforeImport);
+    submit('#modal-form');await until(()=>f.app.playlists.all.length===beforeImport*2&&!get('#modal').hasAttribute('open')&&get('#toast').textContent==='Settings and playlists imported.',"portable import confirms before adding playlists");
     assert.deepEqual(errors,[]);
   } finally {
     for(const timer of timers) {clearTimeout(timer);clearInterval(timer);}

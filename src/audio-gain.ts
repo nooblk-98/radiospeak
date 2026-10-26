@@ -13,12 +13,13 @@ export class AudioGain extends Transform {
   #offset = 0;
   #done: TransformCallback | undefined;
   #finishing = false;
-  #timer: NodeJS.Timeout | undefined;
+  #meter?: (rms: number, peak: number, gain: number) => void;
 
-  constructor(target: () => number, canWrite: () => boolean, submitted: () => void) {
+  constructor(target: () => number, canWrite: () => boolean, submitted: () => void, meter?: (rms: number, peak: number, gain: number) => void) {
     super({ highWaterMark: FRAME_BYTES * 2 });
     this.#target = target; this.#canWrite = canWrite; this.#submitted = submitted;
     this.#gain = target();
+    this.#meter = meter;
   }
 
   override _transform(chunk: Buffer, _encoding: BufferEncoding, done: TransformCallback) {
@@ -33,14 +34,21 @@ export class AudioGain extends Transform {
     this.#pump();
   }
 
+  /** The consumer returns encoder credit when an Opus frame is played. */
+  grantCredit() { this.#pump(); }
+
   #pump = () => {
-    this.#timer = undefined;
     if (this.destroyed || !this.#done) return;
     while (this.#pending.length - this.#offset >= (this.#finishing ? 4 : FRAME_BYTES) && this.#canWrite()) {
       const length = Math.min(FRAME_BYTES, this.#pending.length - this.#offset) & ~3;
       const frame = Buffer.from(this.#pending.subarray(this.#offset, this.#offset + length));
       this.#offset += length;
       const from = this.#gain, to = this.#target();
+      if (this.#meter) {
+        let sum = 0, peak = 0;
+        for (let i=0;i<length;i+=2) { const sample=frame.readInt16LE(i)/32768; sum+=sample*sample; peak=Math.max(peak,Math.abs(sample)); }
+        this.#meter(Math.sqrt(sum/(length/2)),peak,to);
+      }
       if (from !== 1 || to !== 1) {
         const count = length / 2, step = (to - from) / count;
         for (let i = 0; i < count; i++) {
@@ -57,11 +65,10 @@ export class AudioGain extends Transform {
       this.#carry = Buffer.from(this.#pending.subarray(this.#offset));
       this.#pending = Buffer.alloc(0);
       const done = this.#done; this.#done = undefined; done();
-    } else this.#timer = setTimeout(this.#pump, 5).unref();
+    }
   };
 
   override _destroy(error: Error | null, done: (error?: Error | null) => void) {
-    clearTimeout(this.#timer);
     const pending = this.#done; this.#done = undefined;
     pending?.();
     done(error);

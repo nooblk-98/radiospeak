@@ -45,7 +45,7 @@ jobs:
   redeploy:
     needs: test
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 250
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -56,13 +56,17 @@ jobs:
           DEPLOY_HEALTH_URL: ${{ secrets.DEPLOY_HEALTH_URL }}
         run: test -n "$DEPLOY_HEALTH_URL" || { echo "::error::Set DEPLOY_HEALTH_URL to the public radiospeak /healthz URL."; exit 1; }
       - name: Trigger Portainer stack redeploy
+        id: trigger
         env:
           # Repository secret holding the stack's webhook URL (Settings → Secrets and variables → Actions).
           WEBHOOK_URL: ${{ secrets.PORTAINER_WEBHOOK_URL }}
           DEPLOY_HEALTH_URL: ${{ secrets.DEPLOY_HEALTH_URL }}
           FORCE_REDEPLOY: ${{ inputs.force_redeploy }}
+          RADIOSPEAK_DEPLOY_TOKEN: ${{ secrets.RADIOSPEAK_DEPLOY_TOKEN }}
         run: node scripts/deploy.mjs
       - name: Verify deployed source and bot readiness
+        if: steps.trigger.outputs.deferred != 'true'
         env:
           DEPLOY_HEALTH_URL: ${{ secrets.DEPLOY_HEALTH_URL }}
+          DEPLOY_TIMEOUT_SECONDS: ${{ steps.trigger.outputs.timeout_seconds }}
         run: node scripts/check-deployment.mjs

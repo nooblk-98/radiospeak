@@ -98,6 +98,7 @@ interface Pipeline {
   gain: AudioGain;
   submittedFrames: number;
   playedFrames: number;
+  levels: { rms: number; peak: number; gain: number }[];
 }
 
 /**
@@ -125,6 +126,7 @@ export class Player {
 
   #pipe: Pipeline | undefined;
   #prepared: { track: Track; pipe: Pipeline; release: () => void } | undefined;
+  #cancelBudgetWait?: () => void;
   #settings = settingsFrom();
   #recent: string[] = [];
   #idleTimer?: NodeJS.Timeout;
@@ -147,6 +149,15 @@ export class Player {
   #restartTimer: NodeJS.Timeout | undefined;
   #radioDelayMs = 2000;
   #talking = false;
+  #deployPending = false;
+  #deployHeld = false;
+  #level = { rmsDb: -96, peakDb: -96, sourceDb: -96 };
+  #quietFrames = 0;
+  #silenceAlert: { id: string; message: string; at: string } | null = null;
+  #silenceReported = false;
+  #deadlineSamples = 0;
+  #deadlineTotal = 0;
+  #deadlineMax = 0;
   /** Songs that failed in a row; playback stops at MAX_FAIL_STREAK rather than racing through a broken list. */
   #failStreak = 0;
   /** Times playback ran dry mid-stream; a steady climb means the machine or network can't keep up. */
@@ -185,7 +196,7 @@ export class Player {
     return this.#autoPaused;
   }
   get paused(): boolean {
-    return this.#userPaused || this.#autoPaused || this.#connectionPaused;
+    return this.#userPaused || this.#autoPaused || this.#connectionPaused || this.#deployHeld;
   }
   get connectionPaused(): boolean { return this.#connectionPaused; }
 
@@ -243,6 +254,7 @@ export class Player {
   get health() {
     return {
       bufferedSeconds: ((this.#pipe?.frames.length ?? 0) * FRAME_MS) / 1000,
+      buffering: this.#buffering, encoderInFlight: this.#pipe ? this.#pipe.submittedFrames-this.#pipe.playedFrames : 0,
       underruns: this.#totalUnderruns, retrying: this.#retrying, retryAttempt: this.#retries,
       lastError: this.#lastError, prebufferEnabled: this.#prebuffer,
       prebufferStatus: !this.#prebuffer ? "off" : this.#prepared ? this.#prepared.pipe.frames.length >= PREBUFFER_FRAMES ? "ready" : "preparing" : "standby",
@@ -250,6 +262,10 @@ export class Player {
       audioProfile: this.#settings.audioProfile, parked: this.#parked,
       prebufferSlots: (this.#opts.prebufferBudget ?? prebufferBudget).used,
       failoverReason: this.#failoverReason,
+      level: this.paused || !this.#pipe ? { rmsDb:-96,peakDb:-96,sourceDb:-96 } : this.#level,
+      silenceAlert: this.#silenceAlert, silenceSeconds: this.#quietFrames * FRAME_MS / 1000,
+      deploymentHeld: this.#deployHeld,
+      frameTiming: { samples:this.#deadlineSamples, meanLateMs:this.#deadlineSamples ? Math.round(this.#deadlineTotal/this.#deadlineSamples*100)/100 : 0, maxLateMs:Math.round(this.#deadlineMax*100)/100 },
     };
   }
   configure(value: BotSettings): void {
@@ -260,6 +276,17 @@ export class Player {
     if (releaseChanged && this.paused) this.#applyPause();
   }
   setRecentTracks(urls: string[]): void { this.#recent = urls.slice(0,100).map(trackKey); }
+  /** Finish a finite track, then hold at its boundary until deployment or cancellation. */
+  holdForDeployment() {
+    this.#deployPending = true;
+    this.#cancelPrepared();
+    if (!this.#track || this.paused || !this.#track.duration) { this.#deployHeld=true; this.#applyPause(); }
+  }
+  get deploymentReady() { return this.#deployHeld; }
+  releaseDeployment() {
+    const held=this.#deployHeld; this.#deployPending=false; this.#deployHeld=false;
+    if(held) { if(!this.#track) this.#advance(); else this.#applyPause(); }
+  }
   setRadioFallbacks(stations: RadioStream[]): void { this.#radioFallbacks = stations.map(s => ({ ...s })); }
   checkQueue(tracks: readonly Track[], replace = false): void {
     if ((replace ? 0 : this.#queue.length) + tracks.length > this.#settings.queue.maxTracks) throw new Error(`Queue limit is ${this.#settings.queue.maxTracks} tracks. Remove some tracks first.`);
@@ -267,6 +294,7 @@ export class Player {
   setPrebuffer(enabled: boolean): void {
     this.#prebuffer = enabled;
     if (!enabled) this.#cancelPrepared();
+    else this.#prepareNext();
     this.#emit({ type: "change" });
   }
   insertAt(track: Track, position: number): boolean {
@@ -499,11 +527,12 @@ export class Player {
    * the same spot. A live radio stream is closed instead and reopened later.
    */
   #applyPause(): void {
+    this.#quietFrames=0; this.#silenceReported=false;
     clearTimeout(this.#idleTimer);
     this.#endTalking();
     if (this.paused) {
       this.#cancelPrepared();
-      clearInterval(this.#timer); this.#timer = undefined;
+      clearTimeout(this.#timer); this.#timer = undefined;
       if (!this.#track) this.#teardown();
       else this.#idleTimer = setTimeout(() => {
         if (!this.paused) return;
@@ -521,6 +550,7 @@ export class Player {
 
   /** Moves to the next song; with an empty queue, to the radio or else the default playlist. */
   #advance(): void {
+    if (this.#deployPending) { this.#deployHeld=true; this.#teardown(); this.#emit({type:"change"}); return; }
     this.#retries = 0;
     this.#retrying = false;
     this.#prepareFailedUrl = undefined;
@@ -559,7 +589,7 @@ export class Player {
   #teardown(): void {
     this.#kill();
     clearTimeout(this.#restartTimer);
-    clearInterval(this.#timer);
+    clearTimeout(this.#timer);
     this.#timer = undefined;
     this.#endTalking();
   }
@@ -578,6 +608,7 @@ export class Player {
       else return;
     }
     this.#buffering = true;
+    this.#quietFrames=0; this.#silenceReported=false;
     this.#bufferingSince = Date.now();
     this.#retrying = false;
     this.#ensureTimer();
@@ -598,16 +629,19 @@ export class Player {
     return start;
   }
   #cancelPrepared(): void {
+    this.#cancelBudgetWait?.();this.#cancelBudgetWait=undefined;
     const prepared = this.#prepared;
     this.#prepared = undefined;
     if (prepared) { prepared.release(); this.#killPipe(prepared.pipe); }
   }
   #prepareNext(): void {
-    if (!this.#pipe || !this.#prebuffer || this.#prepared || !this.#track?.duration || this.#track.duration - this.elapsed > 15) return;
+    if (this.paused || this.#deployPending || !this.#pipe || !this.#prebuffer || this.#prepared || !this.#track?.duration || this.#track.duration - this.elapsed > 15) return;
     const next = this.#nextTrack();
     if (!next || next.url === this.#prepareFailedUrl) return;
-    const release = (this.#opts.prebufferBudget ?? prebufferBudget).acquire();
-    if (!release) return;
+    const budget=this.#opts.prebufferBudget ?? prebufferBudget;
+    const release = budget.acquire();
+    if (!release) { this.#cancelBudgetWait ??= budget.onAvailable(()=>{this.#cancelBudgetWait=undefined;this.#prepareNext();});return; }
+    this.#cancelBudgetWait?.();this.#cancelBudgetWait=undefined;
     try { this.#prepared = { track: next, pipe: this.#start("track", next.url, 0, next), release }; }
     catch (error) { release(); throw error; }
   }
@@ -630,8 +664,20 @@ export class Player {
     this.#emit({ type: "change" });
   }
 
-  #ensureTimer(): void {
-    this.#timer ??= setInterval(() => this.#tick(), 5);
+  #ensureTimer(delay = 0): void {
+    if(this.#timer || this.paused || !this.#pipe) return;
+    this.#timer = setTimeout(() => {
+      this.#timer=undefined;
+      this.#tick();
+      if (!this.paused && this.#pipe) this.#ensureTimer(this.#buffering
+        ? Math.max(1,30000-(Date.now()-this.#bufferingSince))
+        : Math.max(1,this.#clockStart+this.#framesSent*FRAME_MS-performance.now()));
+    }, delay);
+  }
+  #wakeBuffer(pipe: Pipeline) {
+    if(this.#pipe!==pipe || !this.#buffering || this.paused) return;
+    if(pipe.frames.length < PREBUFFER_FRAMES && !pipe.ended) return;
+    clearTimeout(this.#timer); this.#timer=undefined; this.#ensureTimer();
   }
 
   #start(kind: "track" | "radio", url: string, offset = 0, preparation?: Track): Pipeline {
@@ -639,8 +685,10 @@ export class Player {
     this.#opts.log("info", `${preparation ? "Preparing next track" : kind === "track" ? "Song start" : "Radio start"}: ${preparation?.title ?? (kind === "track" ? this.#track?.title : this.#radio?.name)} (${url})`);
 
     const procs: ChildProcess[] = [];
-    const quiet = ["-hide_banner", "-loglevel", "error", "-nostdin"];
-    const pcmOut = ["-vn", ...(this.#normalization ? ["-af", "loudnorm=I=-16:TP=-1.5:LRA=11"] : []), "-ac", String(CHANNELS), "-ar", String(SAMPLE_RATE), "-f", "s16le", "pipe:1"];
+    // Audio needs one worker; automatic filter pools scale to every host core and
+    // can exhaust a container's PID budget when several tracks prepare at once.
+    const quiet = ["-hide_banner", "-loglevel", "error", "-nostdin", "-threads", "1", "-filter_threads", "1", "-filter_complex_threads", "1"];
+    const pcmOut = ["-vn", ...(this.#normalization ? ["-af", "loudnorm=I=-16:TP=-1.5:LRA=11"] : []), "-ac", String(CHANNELS), "-ar", String(SAMPLE_RATE), "-threads", "1", "-f", "s16le", "pipe:1"];
     let decoder: ChildProcess;
     if (kind === "track") {
       // yt-dlp handles the site's headers and signatures; ffmpeg just decodes its output.
@@ -667,6 +715,7 @@ export class Player {
         "-f", "s16le", "-ar", String(SAMPLE_RATE), "-ac", String(CHANNELS), "-i", "pipe:0",
         "-c:a", "libopus", "-b:a", `${bitrateKbps}k`, "-vbr", "on", "-application", "audio",
         "-compression_level", this.#settings.audioProfile === "balanced" ? "5" : "10",
+        "-threads", "1",
         "-frame_duration", String(FRAME_MS),
         "-f", "ogg", "-page_duration", "20000", "-flush_packets", "1", "pipe:1",
       ],
@@ -675,12 +724,13 @@ export class Player {
     procs.push(decoder, encoder);
     const gain = new AudioGain(() => this.#volume / 100,
       () => pipe.submittedFrames - pipe.playedFrames < 25,
-      () => { pipe.submittedFrames++; });
+      () => { pipe.submittedFrames++; },
+      (rms,peak,gain) => { pipe.levels.push({rms,peak,gain}); });
     decoder.stdout!.pipe(gain).pipe(encoder.stdin!);
     for (const p of procs) p.stdin?.on("error", () => {}); // EPIPE when a process is killed first
 
     const pipe: Pipeline = { kind, procs, encoderOut: encoder.stdout!, startedAt: Date.now(), initialTrackFrames: offset * 1000 / FRAME_MS, ended: false, failure: undefined,
-      frames: [], reader: new OggPacketReader(), readPaused: false, gain, submittedFrames: 0, playedFrames: 0 };
+      frames: [], reader: new OggPacketReader(), readPaused: false, gain, submittedFrames: 0, playedFrames: 0, levels: [] };
     const valid = () => this.#pipe === pipe || this.#prepared?.pipe === pipe;
     const failed = (reason: string) => {
       if (this.#prepared?.pipe === pipe) {
@@ -719,6 +769,7 @@ export class Player {
         pipe.readPaused = true;
         pipe.encoderOut.pause();
       }
+      this.#wakeBuffer(pipe);
     });
 
     encoder.on("close", (code) => {
@@ -728,6 +779,7 @@ export class Player {
         if (pipe.failure && this.#prepared?.pipe === pipe) { failed(pipe.failure); return; }
         // Let the buffered audio play out; #tick finishes the song when it runs dry.
         pipe.ended = true;
+        this.#wakeBuffer(pipe);
         return;
       }
       this.#opts.log("warn", `Radio stream ended${pipe.failure ? `: ${pipe.failure}` : ""}`);
@@ -793,7 +845,7 @@ export class Player {
     if (this.paused) return;
     this.#prepareNext();
     if (!pipe) {
-      clearInterval(this.#timer);
+      clearTimeout(this.#timer);
       this.#timer = undefined;
       return;
     }
@@ -828,6 +880,25 @@ export class Player {
         break;
       }
       pipe.playedFrames++;
+      const late=Math.max(0,now-(this.#clockStart+this.#framesSent*FRAME_MS));
+      this.#deadlineSamples++; this.#deadlineTotal+=late; this.#deadlineMax=Math.max(this.#deadlineMax,late);
+      const level=pipe.levels.shift();
+      if(level) {
+        const db=(v:number)=>Math.max(-96,20*Math.log10(Math.max(0.00001585,v)));
+        this.#level={sourceDb:db(level.rms),rmsDb:db(level.rms*level.gain),peakDb:db(level.peak*level.gain)};
+        const silence=this.#settings.silence!;
+        this.#quietFrames=silence.enabled && this.#volume>0 && this.#level.sourceDb<silence.thresholdDb ? this.#quietFrames+1 : 0;
+        if(!this.#quietFrames)this.#silenceReported=false;
+        if(this.#quietFrames*FRAME_MS>=silence.seconds*1000 && !this.#silenceReported) {
+          this.#silenceReported=true;
+          this.#silenceAlert={id:String(Date.now()),at:new Date().toISOString(),message:`Audio has been below ${silence.thresholdDb} dB for ${silence.seconds} seconds`};
+          this.#opts.log("warn",this.#silenceAlert.message); this.#emit({type:"change"});
+          if(silence.radioFailover && pipe.kind==="radio" && this.#radioFallbacks.some(s=>s.url!==this.#radio?.url)) {
+            this.#radioFailures=1; this.#failed("Sustained source silence"); return;
+          }
+        }
+      }
+      pipe.gain.grantCredit();
       if (this.#volume > 0) {
         this.#talking = true;
         this.#opts.sendFrame(frame);

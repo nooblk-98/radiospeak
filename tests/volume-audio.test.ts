@@ -64,6 +64,8 @@ for(const profile of ["high","balanced"] as const) for(const normalization of [f
     player.configure(settingsFrom({audioProfile:profile}));
     player.playRadio({name:"Test tone",url:"http://127.0.0.1:"+address.port+"/tone.wav"});
     await Promise.race([done,new Promise((_accept,reject)=>{timer=setTimeout(()=>reject(new Error("Audio timeout: "+JSON.stringify(player.health)+" "+errors.join(";"))),15000);})]);
+    assert.ok(player.health.level.sourceDb>-40 && player.health.level.sourceDb<0,"meter sees decoded source amplitude");
+    assert.ok(player.health.frameTiming.samples>=170,"frame deadlines are measured");
     player.stop();
     const decoded=execFileSync(binary,["-hide_banner","-loglevel","error","-f","ogg","-i","pipe:0","-f","s16le","-ac","2","-ar","48000","pipe:1"],{input:ogg(packets),maxBuffer:16*1024*1024,windowsHide:true});
     const loud=rms(decoded,10,30),quiet=rms(decoded,85,100),restored=rms(decoded,150,165);
@@ -81,4 +83,18 @@ for(const profile of ["high","balanced"] as const) for(const normalization of [f
       t.mock.restoreAll();syncBuiltinESMExports();
     }
   }
+});
+
+test("real silent radio generates one sustained-silence alert and mute suppresses it",{skip:!process.env.FFMPEG_PATH,timeout:20000},async()=>{
+  const audio=wave();audio.fill(0,44);
+  const server=createServer((_req,res)=>res.writeHead(200,{"Content-Type":"audio/wav","Content-Length":audio.length}).end(audio));server.listen(0,"127.0.0.1");await once(server,"listening");
+  const address=server.address();assert.ok(address&&typeof address!=="string");let warnings=0;
+  const player=new Player({ffmpegPath:process.env.FFMPEG_PATH!,ytdlpPath:"unused",bitrateKbps:96,volume:0,sendFrame(){},log(level,message){if(level==="warn"&&message.includes("below"))warnings++;}});
+  const wait=async(predicate:()=>boolean,ms:number)=>{const until=Date.now()+ms;while(!predicate()){if(Date.now()>until)throw new Error('Silent audio timeout: '+JSON.stringify(player.health));await new Promise(r=>setTimeout(r,30));}};
+  try {
+    player.configure(settingsFrom({silence:{enabled:true,thresholdDb:-55,seconds:5,radioFailover:false}}));player.playRadio({name:"Silence",url:"http://127.0.0.1:"+address.port});
+    await wait(()=>player.health.frameTiming.samples>100,5000);assert.equal(player.health.silenceSeconds,0);assert.equal(warnings,0);
+    player.setVolume(60);await wait(()=>warnings===1,8000);assert.match(player.health.silenceAlert!.message,/below -55 dB/);assert.ok(player.health.level.sourceDb<-95);
+    await new Promise(r=>setTimeout(r,200));assert.equal(warnings,1,"continuous silence does not flood notifications");
+  }finally{player.stop();server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));}
 });

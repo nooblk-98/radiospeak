@@ -29,10 +29,12 @@ test("gain holds unscaled samples until encoder capacity is available, then appl
     gain.end(pcm);
     assert.equal(frames.length,2);
     volume=0.25;played=2;
+    gain.grantCredit();
     await new Promise(r=>setTimeout(r,15));
     assert.equal(frames.length,4);
     assert.equal(frames[3]!.readInt16LE(0),2500,"buffered raw PCM must use the new gain, not its decode-time gain");
     volume=0;played=4;
+    gain.grantCredit();
     await new Promise(r=>setTimeout(r,15));
     assert.ok(frames[5]!.every(byte=>byte===0),"mute must produce silence");
   } finally {gain.destroy();}
