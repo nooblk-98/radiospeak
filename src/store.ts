@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { AtomicFile } from "./atomic-file.ts";
 import { settingsFrom, validateSchedule, validateScheduleConflicts, type BotSettings, type PlaylistSchedule, type Role } from "./policies.ts";
 import { PLAYLISTS_PATH, validateNickname } from "./config.ts";
+import type { BotPlatform } from "./config.ts";
 import type { Track } from "./player.ts";
 import { trackKey } from "./track-key.ts";
 
@@ -29,6 +30,7 @@ interface Library {
   radioStations: RadioStation[];
   /** Bot instances added in the web panel, started alongside the configured ones. */
   panelBots: string[];
+  botPlatforms: Record<string,BotPlatform>;
   /** Bots that do not greet people joining their channel (greeting is on by default). */
   quietBots: string[];
   settings: Record<string, BotSettings>;
@@ -70,6 +72,7 @@ export class PlaylistStore {
         ? raw.radioStations.filter((r: RadioStation) => r && r.id && r.name && r.url)
         : starterStations.map((r) => ({ id: randomUUID(), ...r })),
       panelBots: Array.isArray(raw.panelBots) ? raw.panelBots.filter((n: unknown) => typeof n === "string" && n) : [],
+      botPlatforms: raw.botPlatforms && typeof raw.botPlatforms==="object" && !Array.isArray(raw.botPlatforms) ? raw.botPlatforms : {},
       quietBots: Array.isArray(raw.quietBots) ? raw.quietBots.filter((n: unknown) => typeof n === "string") : [],
       settings: raw.settings && typeof raw.settings === "object" && !Array.isArray(raw.settings) ? raw.settings : {},
       schedules: Array.isArray(raw.schedules) ? raw.schedules.filter((s: PlaylistSchedule) => {
@@ -87,8 +90,8 @@ export class PlaylistStore {
   get persistenceError() { return this.#writer.error; }
   /** Portable music/configuration only; credentials, identities and history stay local. */
   exportLibrary() {
-    const { playlists, collections, defaults, favorites, botNicknames, botChannels, radioStations, quietBots, settings, schedules } = this.#data;
-    return structuredClone({ format: "radiospeak", version: 1, exportedAt: new Date().toISOString(), data: { playlists, collections, defaults, favorites, botNicknames, botChannels, radioStations, quietBots, settings, schedules } });
+    const { playlists, collections, defaults, favorites, botNicknames, botChannels, radioStations, quietBots, settings, schedules, botPlatforms } = this.#data;
+    return structuredClone({ format: "radiospeak", version: 1, exportedAt: new Date().toISOString(), data: { playlists, collections, defaults, favorites, botNicknames, botChannels, radioStations, quietBots, settings, schedules, botPlatforms } });
   }
 
   importLibrary(archive: unknown, applySettings: boolean, bots: readonly string[], preview = false) {
@@ -126,7 +129,7 @@ export class PlaylistStore {
     if (input.favorites !== undefined) { if (!Array.isArray(input.favorites)) throw new Error("Invalid favorites"); const seen = new Set(draft.favorites.map(t=>trackKey(t.url))); for (const t of input.favorites.map(track)) if (!seen.has(trackKey(t.url))) { draft.favorites.push(t); seen.add(trackKey(t.url)); } }
     if (applySettings) for (const bot of bots) {
       if (Object.hasOwn(input.botNicknames ?? {},bot)) draft.botNicknames[bot] = validateNickname(input.botNicknames[bot]!);
-      if (Object.hasOwn(input.botChannels ?? {},bot)) { const channel=input.botChannels[bot]; if (typeof channel !== "string" || channel.length > 1000) throw new Error("Invalid saved channel"); draft.botChannels[bot]=channel; }
+      if (Object.hasOwn(input.botChannels ?? {},bot)) { const channel=input.botChannels[bot]; if (typeof channel !== "string" || channel.length > 1000) throw new Error("Invalid saved channel"); if(this.platformFor(bot)!=="discord" || /^[1-9]\d{0,19}$/.test(channel))draft.botChannels[bot]=channel; }
       if (Object.hasOwn(input.settings ?? {},bot)) { const s=settingsFrom(input.settings[bot]); s.failover=s.failover.map(old=>stations.get(old)).filter((v): v is string=>!!v); draft.settings[bot]=s; }
       if (Object.hasOwn(input.defaults ?? {},bot)) { const target=input.defaults[bot]; if (target && !lists.has(target)) throw new Error("Invalid idle playlist"); draft.defaults[bot]=target ? lists.get(target)! : null; }
       if (Array.isArray(input.quietBots)) { draft.quietBots=draft.quietBots.filter(b=>b!==bot); if(input.quietBots.includes(bot))draft.quietBots.push(bot); }
@@ -229,17 +232,21 @@ export class PlaylistStore {
   get favorites(): readonly Track[] { return this.#data.favorites; }
   get radioStations(): readonly RadioStation[] { return this.#data.radioStations; }
   get panelBots(): readonly string[] { return this.#data.panelBots; }
+  platformFor(bot: string): BotPlatform { return this.#data.botPlatforms[bot]==="discord"?"discord":"teamspeak"; }
+  setPlatform(bot: string,platform: BotPlatform) {if(this.#data.botPlatforms[bot]!==platform){this.#data.botPlatforms[bot]=platform;this.#save();}}
 
   /** Records a new panel instance with its name and optional home channel in one write. */
-  addPanelBot(bot: string, nickname: string, channel?: string): void {
+  addPanelBot(bot: string, nickname: string, channel?: string, platform: BotPlatform = "teamspeak"): void {
     this.#data.panelBots.push(bot);
     this.#data.botNicknames[bot] = validateNickname(nickname);
+    this.#data.botPlatforms[bot]=platform;
     if (channel) this.#data.botChannels[bot] = channel;
     this.#save();
   }
 
   /** Forgets a panel instance and its per-bot settings; its identity file is kept for reuse. */
   removePanelBot(bot: string): void {
+    delete this.#data.botPlatforms[bot];
     this.#data.panelBots = this.#data.panelBots.filter((n) => n !== bot);
     delete this.#data.botNicknames[bot];
     delete this.#data.botChannels[bot];

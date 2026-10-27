@@ -1,5 +1,6 @@
-import { MusicBot, log, type App } from "./bot.ts";
-import { instanceConfig, loadConfig } from "./config.ts";
+import { log, type App } from "./bot.ts";
+import { loadConfig } from "./config.ts";
+import { createBot, panelBotConfig, checkDiscordSlot } from "./bot-factory.ts";
 import { PlaylistStore } from "./store.ts";
 import { PlaybackStore } from "./playback-store.ts";
 import { startWebServer } from "./web.ts";
@@ -15,8 +16,8 @@ const app: App = {
 // Instances added in the web panel run alongside the configured bots.
 const configured = new Set(config.bots.map((b) => b.name.toLowerCase()));
 const panelBots = app.playlists.panelBots.filter((name) => !configured.has(name.toLowerCase()))
-  .map((name) => instanceConfig(config.bots[0]!, name));
-app.bots = [...config.bots, ...panelBots].map((cfg, i) => new MusicBot(app, cfg, i));
+  .map((name) => panelBotConfig(app,name));
+for(const cfg of [...config.bots,...panelBots]){checkDiscordSlot(app,cfg);app.playlists.setPlatform(cfg.name,cfg.platform ?? "teamspeak");app.bots.push(await createBot(app,cfg,app.bots.length));}
 // Saved defaults also follow edits made through TeamSpeak chat commands.
 app.playlists.onChange = () => {
   for (const bot of app.bots) bot.syncLibrary();
@@ -31,6 +32,7 @@ async function shutdown(): Promise<void> {
   await Promise.all(app.bots.map((b) => b.shutdown()));
   await app.imports?.shutdown();
   await app.playlists.flush();
+  await app.discordInstances?.flush();
   await app.operations?.flush();
   process.exit(0);
 }

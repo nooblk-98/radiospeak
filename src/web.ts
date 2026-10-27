@@ -3,9 +3,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
-import { asChannelID } from "@honeybbq/teamspeak";
 import { log, MusicBot, type App } from "./bot.ts";
-import { clampVolume, instanceConfig, validateBotName, validateNickname } from "./config.ts";
+import { clampVolume, instanceConfig, validateBotName, validateNickname, validateDiscordConfig } from "./config.ts";
+import { createBot, checkDiscordSlot, discordInstances } from "./bot-factory.ts";
 import type { LoopMode, Track } from "./player.ts";
 import { resolve, mediaStats, playlistId } from "./ytdlp.ts";
 import { ImportManager } from "./imports.ts";
@@ -33,6 +33,14 @@ function imports(app: App) {
 }
 /** Each instance runs its own audio pipeline, so panel-created ones are capped. */
 const MAX_INSTANCES = 10;
+const panelManaged=(app:App,name:string)=>app.playlists.panelBots.includes(name) && !app.config.bots.some(bot=>bot.name.toLowerCase()===name.toLowerCase());
+const instanceChanges = new WeakMap<App,Promise<void>>();
+async function changeInstance<T>(app:App,change:()=>Promise<T>):Promise<T> {
+  const previous=instanceChanges.get(app);let release!:()=>void;
+  const current=new Promise<void>(resolve=>{release=resolve;});instanceChanges.set(app,current);
+  if(previous)await previous;
+  try{return await change();}finally{release();if(instanceChanges.get(app)===current)instanceChanges.delete(app);}
+}
 /** Search results come in pages of 10, up to 50 in total. */
 const SEARCH_PAGE_SIZE = 10;
 const SEARCH_PAGES = 5;
@@ -40,7 +48,7 @@ const undo = new WeakMap<MusicBot, { token: string; track: Track; position: numb
 function stateFor(app: App) {
   return {
     uiVersion, authEnabled: app.config.web.password !== "",
-    bots: app.bots.map((b) => ({ ...botState(b), removable: app.playlists.panelBots.includes(b.name), welcomes: app.playlists.welcomes(b.name) })), maxInstances: MAX_INSTANCES, collections: app.playlists.collections, defaults: app.playlists.defaults,
+    bots: app.bots.map((b) => ({ ...botState(b), removable: panelManaged(app,b.name), welcomes: app.playlists.welcomes(b.name) })), maxInstances: MAX_INSTANCES, collections: app.playlists.collections, defaults: app.playlists.defaults,
     radioStations: app.playlists.radioStations,
     schedules: app.playlists.schedules,
     favorites: app.playlists.favorites.map(trackJson), commandPrefix: app.config.commandPrefix,
@@ -58,6 +66,9 @@ const assets = new Map([
   ["/api.js", ["api.js", "text/javascript"]],
   ["/volume.js", ["volume.js", "text/javascript"]],
   ["/components.js", ["components.js", "text/javascript"]],
+  ["/platforms.js", ["platforms.js", "text/javascript"]],
+  ["/discord.svg", ["discord.svg", "image/svg+xml"]],
+  ["/teamspeak.svg", ["teamspeak.svg", "image/svg+xml"]],
   ["/operations.js", ["operations.js", "text/javascript"]],
   ["/notifications.js", ["notifications.js", "text/javascript"]],
   ["/enqueue.js", ["enqueue.js", "text/javascript"]],
@@ -97,9 +108,10 @@ const trackJson =(t: Track) => { const { importKey, ...track } = t; return { ...
 function botState(bot: MusicBot) {
   const pl = bot.player;
   return {
-    name: bot.name, nickname: bot.nickname, connected: bot.connected,
-    channel: bot.channelName ?? null, channelId: bot.channelID?.toString() ?? null, homeChannel: bot.homeChannel || null,
-    channels: bot.connected ? [...(bot.client?.view.channels.values() ?? [])].map((c) => ({ id: c.id.toString(), name: c.name })) : [],
+    name: bot.name, nickname: bot.nickname, connected: bot.connected, platform:bot.platform, serverName:bot.serverName, connectionError:bot.connectionError,
+    discord:bot.discord,
+    channel: bot.channelName ?? null, channelId: bot.channelId ?? null, homeChannel: bot.homeChannel || null,
+    channels: bot.channels,
     talkBlocked: bot.talkBlocked ?? null,
     currentPlaylist: ((list) => list ? { id: list.id, name: list.name } : null)(bot.playlistOf(pl.track)),
     track: pl.track ? trackJson(pl.track) : null, elapsed: pl.elapsed,
@@ -266,9 +278,9 @@ async function botAction(app: App, bot: MusicBot, action: string, body: Record<s
     }
     case "channel": {
       if (!bot.connected) throw new HttpError(400, "Connect the bot before switching channels");
-      const channel = [...(bot.client?.view.channels.values() ?? [])].find((c) => c.id.toString() === str(body.channelId));
+      const channel = bot.channels.find(c=>c.id===str(body.channelId));
       if (!channel) throw new HttpError(404, "Channel not found");
-      await bot.moveTo(asChannelID(channel.id), true);
+      await bot.moveToChannel(channel.id, true);
       return "Moved to " + channel.name + ". The bot returns here after reconnecting.";
     }
     case "default": {
@@ -327,7 +339,7 @@ export async function route(app: App, req: IncomingMessage, url: URL, signal?: A
     throw new HttpError(405,"Unsupported operation");
   }
   if (method !== "GET" && viewer.role !== "admin") {
-    if (["access","accounts"].includes(parts[1] ?? "") || (parts[1] === "bots" && parts.length <= 3)) throw new HttpError(403,"An administrator manages accounts and instances");
+    if (["access","accounts"].includes(parts[1] ?? "") || (parts[1] === "bots" && (parts.length <= 3 || parts[3]==="connection"))) throw new HttpError(403,"An administrator manages accounts and instances");
     if (viewer.role === "listener") {
       const allowed = parts[1] === "bots" && ["enqueue","play","vote-skip","remove","undo"].includes(parts[3] ?? "")
         || parts[1] === "playlists" && parts[3] === "play";
@@ -408,31 +420,64 @@ export async function route(app: App, req: IncomingMessage, url: URL, signal?: A
     return { message: store.toggleFavorite(track) ? "Saved to favorites." : "Removed from favorites." };
   }
   if (url.pathname === "/api/bots" && method === "POST") {
+    return changeInstance(app,async()=>{
     const body = await readJson(req);
     const name = validateBotName(str(body.name));
     if (app.bots.some((b) => b.name.toLowerCase() === name.toLowerCase())) throw new HttpError(409, "An instance with that ID already exists");
     if (app.bots.length >= MAX_INSTANCES) throw new HttpError(400, `This server runs at most ${MAX_INSTANCES} instances`);
     const nickname = validateNickname(str(body.nickname) || name);
+    if(body.platform!==undefined && !["teamspeak","discord"].includes(str(body.platform)))throw new HttpError(400,"Unknown bot platform");
+    if(body.platform==="discord") {
+      if(!app.config.web.password)throw new HttpError(403,"Set a panel administrator password before storing Discord bot credentials");
+      const discord=validateDiscordConfig({token:str(body.token),guildId:str(body.guildId),channelId:str(body.channelId)});
+      const cfg={...instanceConfig(app.config.bots[0]!,name),platform:"discord" as const,discord,nickname};checkDiscordSlot(app,cfg);
+      const credentials=discordInstances(app);credentials.set(name,discord);await credentials.flush();
+      app.playlists.addPanelBot(name,nickname,discord.channelId,"discord");await app.playlists.flush();
+      const bot=await createBot(app,cfg,app.bots.length);app.bots.push(bot);
+      void bot.start().catch(error=>bot.log("error",error instanceof Error?error.message:String(error)));
+      return {message:nickname+" is connecting to Discord.",bot:name};
+    }
     // Every bot is on the same server, so a connected one can name the chosen channel.
     const channelId = str(body.channelId);
-    const channel = channelId ? app.bots.map((b) => b.channelPathById(channelId)).find(Boolean) : undefined;
+    const channel = channelId ? app.bots.filter(b=>b.platform==="teamspeak").map((b) => b.channelPathById(channelId)).find(Boolean) : undefined;
     if (channelId && !channel) throw new HttpError(404, "Channel not found");
     app.playlists.addPanelBot(name, nickname, channel);
-    const bot = new MusicBot(app, instanceConfig(app.config.bots[0]!, name), app.bots.length);
+    const bot = await createBot(app, instanceConfig(app.config.bots.find(b=>b.platform!=="discord") ?? app.config.bots[0]!, name), app.bots.length);
     app.bots.push(bot);
     bot.start().catch((err: unknown) => bot.log("error", `Bot failed: ${err instanceof Error ? err.message : String(err)}`));
     return { message: nickname + " is starting and joins TeamSpeak in a few seconds.", bot: name };
+    });
   }
   if (parts[0] === "api" && parts[1] === "bots" && parts[2] && parts.length === 3 && method === "DELETE") {
+    return changeInstance(app,async()=>{
     const bot = selectedBot(app, parts[2]);
-    if (!app.playlists.panelBots.includes(bot.name)) throw new HttpError(400, "This instance comes from the server configuration. Remove it there.");
+    if (!panelManaged(app,bot.name)) throw new HttpError(400, "This instance comes from the server configuration. Remove it there.");
     await readJson(req);
     const nickname = bot.nickname;
     await bot.shutdown();
     app.bots.splice(app.bots.indexOf(bot), 1);
     app.playlists.removePanelBot(bot.name);
+    await app.playlists.flush();
+    if(bot.platform==="discord"){const credentials=discordInstances(app);credentials.remove(bot.name);await credentials.flush();}
     app.playback?.delete(bot.name);
     return { message: nickname + " was removed." };
+    });
+  }
+  if(parts[1]==="bots" && parts[2] && parts[3]==="connection" && method==="POST") {
+    return changeInstance(app,async()=>{
+    if(!app.config.web.password)throw new HttpError(403,"Set a panel administrator password before storing Discord bot credentials");
+    const bot=selectedBot(app,parts[2]);
+    if(bot.platform!=="discord" || !panelManaged(app,bot.name))throw new HttpError(400,"Edit this instance in the server configuration");
+    const body=await readJson(req),old=bot.cfg.discord;
+    const discord=validateDiscordConfig({token:str(body.token)||old?.token||"",guildId:str(body.guildId)||old?.guildId||"",channelId:str(body.channelId)||bot.homeChannel});
+    const cfg={...bot.cfg,discord};checkDiscordSlot(app,cfg,bot.name);
+    const credentials=discordInstances(app);credentials.set(bot.name,discord);await credentials.flush();
+    const snapshot=bot.player.snapshot();await bot.shutdown();
+    app.playlists.setChannel(bot.name,discord.channelId);await app.playlists.flush();
+    const replacement=await createBot(app,cfg,bot.index);replacement.player.restore(snapshot);replacement.syncLibrary();
+    app.bots[app.bots.indexOf(bot)]=replacement;void replacement.start().catch(error=>replacement.log("error",error instanceof Error?error.message:String(error)));
+    return {message:"Discord connection settings saved. Reconnecting with your queue and position preserved."};
+    });
   }
   if (parts[0] === "api" && parts[1] === "bots" && parts[2] && parts[3] && method === "POST") {
     const result = await botAction(app, selectedBot(app, parts[2]), parts[3], await readJson(req),viewer);

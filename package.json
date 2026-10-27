@@ -16,7 +16,9 @@
     "soak:audio": "node scripts/soak-audio.mjs"
   },
   "dependencies": {
-    "@honeybbq/teamspeak": "1.0.0-beta.21"
+    "@discordjs/voice": "0.19.2",
+    "@honeybbq/teamspeak": "1.0.0-beta.21",
+    "discord.js": "14.27.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

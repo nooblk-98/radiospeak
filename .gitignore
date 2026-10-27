@@ -5,5 +5,8 @@ identity-*.txt
 playlists.json
 playback.json
 playback.json.tmp
+discord-instances.json
+discord-instances.json.tmp
+discord-secrets.key
 data/
 *.log

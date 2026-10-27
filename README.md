@@ -5,7 +5,7 @@
 # radiospeak
 
 **Your channel. Your soundtrack.**<br>
-A self-hosted music bot for TeamSpeak 3 and TeamSpeak 6, with a web control panel.
+A self-hosted music bot for TeamSpeak 3/6 and Discord, with a shared web control panel.
 
 [![Node.js](https://img.shields.io/badge/Node.js-22.18%2B-5fa04e?logo=node.js&logoColor=white)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-no%20build%20step-3178c6?logo=typescript&logoColor=white)](tsconfig.json)
@@ -27,7 +27,7 @@ radiospeak joins your TeamSpeak server as a regular voice client and streams mus
 - **Saved library**: playlists, collections and favorites. Import public YouTube playlists in the background with duplicate detection.
 - **Never silent**: an idle playlist or live radio station takes over whenever the queue is empty. Requests always come first.
 - **Radio stations**: save Icecast, SHOUTcast or plain HTTP streams and tune in with one click. The current song title appears in the panel.
-- **Multi-instance**: add and remove bot instances from the panel and switch between them from the top bar. Each is its own TeamSpeak client with a separate channel, name, queue, volume and idle playlist.
+- **Multi-instance**: add and remove bot instances from the panel and switch between them from the top bar. Mix Discord and TeamSpeak instances, identified by platform logos. Each has a separate channel, name, queue, volume and idle playlist.
 - **Listener-aware**: pauses when nobody is listening and resumes when someone joins, and greets people who join its channel with the main chat commands (once per person per half hour; can be turned off per bot).
 - **Resilient playback**: checkpoints survive restarts, reconnects keep the queue, and failed streams retry from the same position.
 - **Live web panel**: dark, responsive and mobile-friendly. Updates arrive over server-sent events, and there is no frontend build step.
@@ -74,7 +74,7 @@ The image includes Node.js, FFmpeg and yt-dlp.
    ```
 
 3. Open the panel at `http://<server>:48080` and sign in with the password you set.
-4. Under **Bot & TeamSpeak**, pick the bot's channel. It rejoins that channel after every reconnect and restart.
+4. Under **Bots & platforms**, pick the bot's channel. It rejoins that channel after every reconnect and restart.
 5. Create or import a playlist and click **Set as idle playlist**, or tune in to a station under **Radio stations**.
 
 > [!NOTE]
@@ -101,6 +101,43 @@ Test the audio pipeline without a TeamSpeak server. It should report ~50 fps and
 ```bash
 npm run test:audio -- "song name or link"
 ```
+
+## Discord instances
+
+1. Create an application and bot in the [Discord Developer Portal](https://discord.com/developers/applications). Invite it to your server with the **bot** and **applications.commands** scopes and **View Channel**, **Connect**, **Speak** and optionally **Change Nickname** permissions. Message Content and Server Members privileged intents are not needed.
+2. Enable Discord Developer Mode and copy your server ID and a regular voice channel ID. Stage channels are not supported.
+3. Sign in as a panel administrator. Choose **Add instance**, select **Discord**, and enter its name, instance ID, bot token, server ID and voice channel ID. A panel administrator password must be set before credentials can be stored.
+4. Switch to that instance to manage its queue, volume, normalization, playlists, radio and schedules. The switcher, instance list, bot card and player dock show the platform logo/name. Use **Edit connection / reconnect** to change credentials or retry; leaving the token blank preserves it. Tokens are never filled back into the form.
+
+Use one instance per Discord bot account per server. The same token can serve instances in different servers through a shared gateway connection. To play independently in two channels of one server, create two Discord bot applications/tokens. TeamSpeak instances keep their existing identities and behavior.
+
+Discord uses `/radiospeak play query`, `/radiospeak queue`, `/radiospeak skip`, `/radiospeak nowplaying`, `/radiospeak pause`, `/radiospeak resume`, `/radiospeak stop`, `/radiospeak volume level` and `/radiospeak join`. Listeners must be in the bot's voice channel to request music or vote to skip. Server managers are administrators; members with Manage Channels are DJs. The panel's chat-role assignments also accept `discord:USER_ID` and `discord:ROLE_ID`. Discord always enforces these permissions, independently of the legacy TeamSpeak role-enforcement toggle.
+
+Instances share the existing FFmpeg/Opus pipeline; Discord transmits the encoded 20 ms packets through [@discordjs/voice](https://discordjs.guide/voice), including its DAVE encryption support. Voice interruptions hold the current track and queue, then resume at the saved position. Empty-channel auto-pause excludes bot and deafened members from the listener count.
+
+Panel-added Discord credentials are encrypted in `/data/discord-instances.json` using `/data/discord-secrets.key`. Both remain on the persistent data volume. Library exports and API responses include platform/preferences but exclude tokens and keys. Keep both credential files together when moving an installation; a library import does not recreate credentials.
+
+Configuration-defined Discord instances can be supplied through `bots` in `config.json` or `FMBOT_BOTS`:
+
+```json
+{
+  "bots": [
+    {"name": "ts-music", "platform": "teamspeak"},
+    {
+      "name": "discord-music",
+      "platform": "discord",
+      "nickname": "radiospeak",
+      "discord": {
+        "token": "YOUR_DISCORD_BOT_TOKEN",
+        "guildId": "123456789012345678",
+        "channelId": "223456789012345678"
+      }
+    }
+  ]
+}
+```
+
+For a Discord-only installation, include only the Discord entry; a TeamSpeak server is not required. Configuration-defined credentials stay in your configuration/environment, while panel-created credentials use the encrypted store. Platform marks are from [Simple Icons](https://simpleicons.org/) (CC0).
 
 ## Configuration
 

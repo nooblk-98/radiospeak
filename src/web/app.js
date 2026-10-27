@@ -1,6 +1,7 @@
 import { request, StateConnection } from './api.js';
 import { VolumeControl } from './volume.js';
 import { NotificationCenter } from './notifications.js';
+import { platformName, platformIcon, platformBadge, discordFields, discordConnectionCard } from './platforms.js';
 import { EnqueueControl } from './enqueue.js';
 import { playlistTools, managementMarkup } from './management.js';
 import { escape as e, icon, iconButton as ib, button, art, heading, empty, channelSelect, botCard, commands, playlistCard, trackTable, resultCard, playlistResultCard, time, duration, source } from './components.js';
@@ -48,7 +49,7 @@ function enforcePermissions() {
   const role=state?.viewer?.role||'admin',rank={listener:0,dj:1,admin:2};
   document.querySelectorAll('[data-min-role]').forEach(el=>{el.hidden=rank[role]<rank[el.dataset.minRole];});
   if(role==='admin')return;
-  const adminActions=new Set(['new-instance','remove-instance','delete-instance','delete-account']);
+  const adminActions=new Set(['edit-connection','new-instance','remove-instance','delete-instance','delete-account']);
   const listenerActions=new Set(['menu','close-menu','close-modal','reload-panel','logout','sign-out','collection','filter','favorites','library-back','open-playlist','page','search-source','search-type','search-more','search-playlist-queue','enqueue-track','queue-playlist','history-enqueue','skip','undo','switch-bot','toggle-switcher','switcher','notifications-read']);
   document.querySelectorAll('[data-action]').forEach(el=>{
     const action=el.dataset.action;
@@ -90,7 +91,7 @@ let viewTracks = new Map();
 const playlistCache = new Map(), playlistRequests = new Map(), pages = new Map(), viewVersions = new Map();
 const PAGE_SIZE = 50;
 const playlistErrors = new Map();
-const views = { dashboard:'Now playing', queue:'Up next', library:'Collections & playlists', search:'Search & import', radio:'Radio stations', history:'Playback history', settings:'Bot & TeamSpeak' };
+const views = { dashboard:'Now playing', queue:'Up next', library:'Collections & playlists', search:'Search & import', radio:'Radio stations', history:'Playback history', settings:'Bots & platforms' };
 const bot = () => state?.bots.find(b => b.name === botName) || state?.bots[0];
 const trackCount = p => p?.trackCount ?? p?.total ?? p?.tracks?.length ?? 0;
 const playlist = () => playlistCache.get(playlistId) || state?.playlists.find(p => p.id === playlistId);
@@ -185,6 +186,8 @@ function showModal(title, body, submit, label = 'Save', danger = false) {
   $('#modal').showModal();
   requestAnimationFrame(() => $('#modal-body input, #modal-body select')?.focus());
 }
+function clearModalSecrets() { $('#modal-body').querySelectorAll('input[type="password"]').forEach(input=>{input.value='';}); }
+$('#modal').addEventListener('close',clearModalSecrets);
 function confirmAction(title, text, submit, label = 'Delete') {
   showModal(title, '<p>' + e(text) + '</p>', submit, label, true);
 }
@@ -261,7 +264,7 @@ function playlistsSection(b) {
 }
 function dashboard(b) {
   return heading('Let the good tracks roll.', 'A little music. A better channel. You’re in control.', '<a href="#search" class="button secondary">' + icon('download') + 'Import music</a><a href="#search" class="button primary">' + icon('plus') + 'Add to queue</a>', 'YOUR CHANNEL’S SOUNDTRACK') +
-    '<div class="overview-layout"><div class="content-stack">' + hero(b) + queueSection(b) + playlistsSection(b) + '</div><aside class="overview-aside">' + botCard(b) + commands(state.commandPrefix) + '<p class="aside-note">' + icon('shield') + '<span>Built for your community.<br>Music streams directly to TeamSpeak.</span></p></aside></div>';
+    '<div class="overview-layout"><div class="content-stack">' + hero(b) + queueSection(b) + playlistsSection(b) + '</div><aside class="overview-aside">' + botCard(b) + commands(state.commandPrefix,b.platform) + '<p class="aside-note">' + icon('shield') + '<span>Built for your community.<br>Music streams directly to '+platformName(b)+'.</span></p></aside></div>';
 }
 function library(b) {
   const list = playlist();
@@ -354,9 +357,9 @@ function renderBackground() {
 function settings(b) {
   ensureAccess();
   if(!auditData)void loadManagement();
-  return heading('Keep your channel in tune.', 'Manage your bots, choose their channels, and dial in the sound.') + instancesCard(b) +
-    '<section class="card import-card"><h3>Bot name</h3><p>This fixed name is shown in TeamSpeak. It stays the same when songs change.</p><form id="nickname-form" class="inline-form"><label class="field-label" for="bot-nickname" style="align-self:center;margin:0">TeamSpeak name</label><input class="field" id="bot-nickname" name="nickname" required maxlength="30" value="' + e(b.nickname || 'radiospeak') + '" placeholder="radiospeak"><button class="button primary" type="submit">' + icon('check') + 'Save name</button></form></section>' +
-    healthCard(b) + '<div class="settings-grid">' + botCard(b) + '<section class="card card-padding"><div class="card-title"><h2>Playback & output</h2>' + icon('headphones') + '</div><div class="setting-line"><div>Shuffle queue<p>Randomize queued and newly added tracks</p></div><button class="switch" role="switch" aria-label="Shuffle queue" aria-checked="' + b.shuffle + '" data-action="shuffle"></button></div><div class="setting-line"><div>Repeat mode<p>Applies to tracks requested by users</p></div><select data-control="repeat" aria-label="Repeat mode">' + ['off','all','one'].map(m => '<option value="' + m + '" ' + (b.loop===m?'selected':'') + '>' + ({off:'Off',all:'Repeat all',one:'Repeat one'}[m]) + '</option>').join('') + '</select></div><div class="setting-line"><div>Default idle playlist<p>Used when the queue is empty and radio is off</p></div><select data-control="default" aria-label="Default idle playlist"><option value="">None</option>' + state.playlists.map(p => '<option value="' + e(p.id) + '" ' + (state.defaults[b.name]===p.id?'selected':'') + (!trackCount(p)?' disabled':'') + '>' + e(p.name) + '</option>').join('') + '</select></div><dl class="detail-list"><dt>Output</dt><dd>TeamSpeak · Opus Music</dd><dt>Bot gain</dt><dd>' + b.volume + '%</dd><dt>Listener auto-pause</dt><dd>' + (b.autoPaused?'Paused · empty channel':'Ready') + '</dd><dt>Radio fallback</dt><dd>' + e(b.radio?.name || 'Off') + '</dd></dl>' + (b.radio ? button('Turn radio off','stop','radio-off','','secondary') : '') + '</section>' + commands(state.commandPrefix) + '<section class="card card-padding"><h3>Your listeners</h3><p class="small subtle">People in the current channel who can hear the bot.</p>' + (b.listeners.length ? b.listeners.map(n => '<div class="listeners-row"><span>' + e(n) + '</span><span class="tag green">Listening</span></div>').join('') : '<p class="small subtle">No listeners in this channel yet.</p>') + '</section></div>';
+  return heading('Keep your channel in tune.', 'Manage your bots, choose their channels, and dial in the sound.') + instancesCard(b) + discordConnectionCard(b) +
+    '<section class="card import-card"><h3>Bot name</h3><p>This fixed name is shown in '+platformName(b)+'. It stays the same when songs change.</p><form id="nickname-form" class="inline-form"><label class="field-label" for="bot-nickname" style="align-self:center;margin:0">'+platformName(b)+' name</label><input class="field" id="bot-nickname" name="nickname" required maxlength="30" value="' + e(b.nickname || 'radiospeak') + '" placeholder="radiospeak"><button class="button primary" type="submit">' + icon('check') + 'Save name</button></form></section>' +
+    healthCard(b) + '<div class="settings-grid">' + botCard(b) + '<section class="card card-padding"><div class="card-title"><h2>Playback & output</h2>' + icon('headphones') + '</div><div class="setting-line"><div>Shuffle queue<p>Randomize queued and newly added tracks</p></div><button class="switch" role="switch" aria-label="Shuffle queue" aria-checked="' + b.shuffle + '" data-action="shuffle"></button></div><div class="setting-line"><div>Repeat mode<p>Applies to tracks requested by users</p></div><select data-control="repeat" aria-label="Repeat mode">' + ['off','all','one'].map(m => '<option value="' + m + '" ' + (b.loop===m?'selected':'') + '>' + ({off:'Off',all:'Repeat all',one:'Repeat one'}[m]) + '</option>').join('') + '</select></div><div class="setting-line"><div>Default idle playlist<p>Used when the queue is empty and radio is off</p></div><select data-control="default" aria-label="Default idle playlist"><option value="">None</option>' + state.playlists.map(p => '<option value="' + e(p.id) + '" ' + (state.defaults[b.name]===p.id?'selected':'') + (!trackCount(p)?' disabled':'') + '>' + e(p.name) + '</option>').join('') + '</select></div><dl class="detail-list"><dt>Output</dt><dd>'+platformName(b)+' / Opus</dd><dt>Bot gain</dt><dd>' + b.volume + '%</dd><dt>Listener auto-pause</dt><dd>' + (b.autoPaused?'Paused · empty channel':'Ready') + '</dd><dt>Radio fallback</dt><dd>' + e(b.radio?.name || 'Off') + '</dd></dl>' + (b.radio ? button('Turn radio off','stop','radio-off','','secondary') : '') + '</section>' + commands(state.commandPrefix,b.platform) + '<section class="card card-padding"><h3>Your listeners</h3><p class="small subtle">People in the current channel who can hear the bot.</p>' + (b.listeners.length ? b.listeners.map(n => '<div class="listeners-row"><span>' + e(n) + '</span><span class="tag green">Listening</span></div>').join('') : '<p class="small subtle">No listeners in this channel yet.</p>') + '</section></div>';
 }
 
 function dock(b) {
@@ -371,19 +374,19 @@ function dock(b) {
     ib('next','Next track','skip',!b.track?'disabled':'') +
     '<button class="icon-button repeat-button ' + (b.loop!=='off'?'active':'') + '" data-action="repeat" aria-label="Repeat: ' + b.loop + '" title="Repeat: ' + b.loop + '" aria-pressed="' + (b.loop!=='off') + '">' + icon('repeat') + (b.loop==='one'?'<span class="repeat-one">1</span>':'') + '</button></div>' +
     '<div class="timeline"><span id="elapsed">' + time(b.elapsed) + '</span><input id="seek" type="range" min="0" max="' + (b.track?.duration||1) + '" value="' + b.elapsed + '" aria-label="Playback position" ' + (!b.track?.duration?'disabled':'') + '><span>' + (t ? duration(b.track?.duration) : '0:00') + '</span></div></div>' +
-    '<div class="dock-right"><div class="volume-controls">' + ib(b.volume?'volume':'mute',b.volume?'Mute bot':'Unmute bot','mute','aria-pressed="' + (b.volume===0) + '"') + '<input type="range" id="volume" min="0" max="100" value="' + b.volume + '" aria-label="Bot volume gain" aria-valuetext="' + b.volume + '%" title="Bot volume: ' + b.volume + '%" style="--fill:' + b.volume + '%"><span class="volume-number" id="volume-number">' + b.volume + '</span></div><div class="output-info"><div class="output-label">' + icon('headphones') + 'TeamSpeak</div><div class="small">' + e(b.radio ? 'Radio fallback · ' + (!b.track ? 'Active' : 'Ready') : b.defaultPlaylist.size ? 'Idle playlist · ' + (b.track?.auto ? 'Active' : 'Ready') : b.channel || 'Not connected') + '</div></div></div>';
+    '<div class="dock-right"><div class="volume-controls">' + ib(b.volume?'volume':'mute',b.volume?'Mute bot':'Unmute bot','mute','aria-pressed="' + (b.volume===0) + '"') + '<input type="range" id="volume" min="0" max="100" value="' + b.volume + '" aria-label="Bot volume gain" aria-valuetext="' + b.volume + '%" title="Bot volume: ' + b.volume + '%" style="--fill:' + b.volume + '%"><span class="volume-number" id="volume-number">' + b.volume + '</span></div><div class="output-info"><div class="output-label">' + platformIcon(b) + platformName(b) + '</div><div class="small">' + e(b.radio ? 'Radio fallback · ' + (!b.track ? 'Active' : 'Ready') : b.defaultPlaylist.size ? 'Idle playlist · ' + (b.track?.auto ? 'Active' : 'Ready') : b.channel || 'Not connected') + '</div></div></div>';
 }
 
-const instanceSummaries = () => state.bots.map(x => [x.name, x.nickname, x.connected, x.channel, x.removable, nowLine(x)]);
+const instanceSummaries = () => state.bots.map(x => [x.platform,x.serverName,x.connectionError,x.discord,x.name, x.nickname, x.connected, x.channel, x.removable, nowLine(x)]);
 const nowLine = x => x.track ? 'Playing ' + x.track.title : x.radio ? 'Radio · ' + (x.radioTitle || x.radio.name) : 'Idle';
-const instanceAvatar = x => '<span class="switcher-avatar">' + icon('radio') + '<span class="status-dot ' + (x.connected ? 'on' : '') + '"></span></span>';
+const instanceAvatar = x => '<span class="switcher-avatar" title="'+platformName(x)+'">' + platformIcon(x) + '<span class="status-dot ' + (x.connected ? 'on' : '') + '"></span></span>';
 function renderSwitcher(b) {
   const keep = $('#bot-switcher').contains(document.activeElement) ? { ...document.activeElement.dataset } : null;
-  $('#switcher-button').innerHTML = instanceAvatar(b) + '<span class="switcher-text"><strong>' + e(b.nickname || b.name) + '</strong><small>' + e(b.connected ? b.channel || 'Connected' : 'Offline') + '</small></span>' + icon('chevron');
+  $('#switcher-button').innerHTML = instanceAvatar(b) + '<span class="switcher-text"><strong>' + e(b.nickname || b.name) + '</strong><small>'+platformName(b)+' / ' + e(b.connected ? b.channel || 'Connected' : 'Offline') + '</small></span>' + icon('chevron');
   $('#switcher-button').title = 'Bot instance: ' + (b.nickname || b.name);
   $('#switcher-menu').innerHTML = '<div class="switcher-label"><span>BOT INSTANCES</span><span>' + state.bots.length + '</span></div>' +
     state.bots.map(x => '<button type="button" class="switcher-item" role="menuitemradio" aria-checked="' + (x.name === b.name) + '" data-action="switch-bot" data-id="' + e(x.name) + '">' + instanceAvatar(x) +
-      '<span class="switcher-text"><strong>' + e(x.nickname || x.name) + '</strong><small>' + e(x.connected ? x.channel || 'Connected' : 'Offline') + '</small><small class="switcher-now">' + e(nowLine(x)) + '</small></span>' + (x.name === b.name ? icon('check') : '') + '</button>').join('') +
+      '<span class="switcher-text"><strong>' + e(x.nickname || x.name) + '</strong><small>'+platformName(x)+' / ' + e(x.connected ? x.channel || 'Connected' : 'Offline') + '</small><small class="switcher-now">' + e(nowLine(x)) + '</small></span>' + (x.name === b.name ? icon('check') : '') + '</button>').join('') +
     '<div class="switcher-footer">' + button('Add instance', 'plus', 'new-instance', state.bots.length >= state.maxInstances ? 'disabled' : '', 'secondary') + '<a class="button secondary" href="#settings" data-action="close-switcher">' + icon('settings') + 'Manage</a></div>';
   if (keep?.action) [...$('#bot-switcher').querySelectorAll('[data-action]')].find(el => el.dataset.action === keep.action && el.dataset.id === keep.id)?.focus({ preventScroll: true });
 }
@@ -401,22 +404,32 @@ function selectBot(name) {
 }
 function instancesCard(b) {
   return '<section class="card card-padding instances-card"><div class="card-title"><h2>Bot instances <span class="count-badge">' + state.bots.length + '</span></h2>' + button('Add instance', 'plus', 'new-instance', state.bots.length >= state.maxInstances ? 'disabled' : '') + '</div>' +
-    '<p class="small subtle">Each instance is its own TeamSpeak client with a separate channel, queue, volume and idle playlist. Switch between them here or from the top bar.</p>' +
-    state.bots.map(x => '<div class="instance-row ' + (x.name === b.name ? 'current' : '') + '">' + instanceAvatar(x) + '<div class="switcher-text"><strong>' + e(x.nickname || x.name) + ' <span class="instance-id">' + e(x.name) + '</span></strong><small>' + e(x.connected ? x.channel || 'Connected' : 'Offline') + ' · ' + e(nowLine(x)) + '</small></div><div class="instance-actions">' +
+    '<p class="small subtle">Each Discord or TeamSpeak instance has a separate voice channel, queue, volume and idle playlist. Switch between them here or from the top bar.</p>' +
+    state.bots.map(x => '<div class="instance-row ' + (x.name === b.name ? 'current' : '') + '">' + instanceAvatar(x) + '<div class="switcher-text"><strong>' + e(x.nickname || x.name) + ' <span class="instance-id">' + e(x.name) + '</span></strong>'+platformBadge(x)+'<small>' + e(x.connected ? x.channel || 'Connected' : 'Offline') + ' · ' + e(nowLine(x)) + '</small></div><div class="instance-actions">' +
       (x.name === b.name ? '<span class="tag green">Selected</span>' : button('Switch', 'arrow', 'switch-bot', 'data-id="' + e(x.name) + '"', 'secondary')) +
-      (x.removable ? ib('trash', 'Remove ' + (x.nickname || x.name), 'delete-instance', 'data-id="' + e(x.name) + '"', 'danger') : '<span class="tag" title="Defined in the server configuration">Config</span>') + '</div></div>').join('') + '</section>';
+      (x.platform==='discord'&&x.removable?ib('settings','Edit Discord connection','edit-connection','data-id="'+e(x.name)+'"'):'') + (x.removable ? ib('trash', 'Remove ' + (x.nickname || x.name), 'delete-instance', 'data-id="' + e(x.name) + '"', 'danger') : '<span class="tag" title="Defined in the server configuration">Config</span>') + '</div></div>').join('') + '</section>';
+}
+function syncPlatformFields() {
+  const platform=$('#instance-platform')?.value||'teamspeak';
+  document.querySelectorAll('#modal-body [data-platform-fields]').forEach(block=>{const hidden=block.dataset.platformFields!==platform;block.hidden=hidden;block.querySelectorAll('input,select').forEach(el=>{el.disabled=hidden;});});
 }
 function instanceEditor() {
-  const channels = bot()?.connected ? bot().channels : [];
+  const channels=state.bots.find(b=>b.platform!=='discord'&&b.connected)?.channels||[];
   showModal('Add a bot instance',
-    '<p>A new TeamSpeak client joins the same server with its own identity, queue and settings.</p><label class="field-label" for="instance-nickname">TeamSpeak name</label><input class="field" id="instance-nickname" name="nickname" required maxlength="30" placeholder="e.g. Lobby Radio">' +
-    '<label class="field-label" for="instance-id">Instance ID</label><input class="field" id="instance-id" name="name" required maxlength="24" pattern="[A-Za-z0-9][A-Za-z0-9_\\-]*" placeholder="e.g. lobby-radio"><p class="small subtle">Used in logs and file names: letters, numbers, - and _.</p>' +
-    '<label class="field-label" for="instance-channel">Channel</label><select id="instance-channel" name="channelId"><option value="">Server default (choose later)</option>' + channels.map(c => '<option value="' + e(c.id) + '">' + e(c.name) + '</option>').join('') + '</select>',
-    async data => {
-      const result = await mutate('/api/bots', { name: data.get('name'), nickname: data.get('nickname'), channelId: data.get('channelId') || undefined });
+    '<label class="field-label" for="instance-platform">Platform</label><select class="field" id="instance-platform" name="platform"><option value="teamspeak">TeamSpeak</option><option value="discord" '+(bot()?.platform==='discord'?'selected':'')+'>Discord</option></select><p class="small subtle">Each instance has its own queue, volume and idle playlist.</p><label class="field-label" for="instance-nickname">Bot name</label><input class="field" id="instance-nickname" name="nickname" required maxlength="30" placeholder="e.g. Lobby Radio">'+
+    '<label class="field-label" for="instance-id">Instance ID</label><input class="field" id="instance-id" name="name" required maxlength="24" pattern="[A-Za-z0-9][A-Za-z0-9_\\-]*" placeholder="e.g. lobby-radio"><p class="small subtle">Used in logs and file names: letters, numbers, - and _.</p><div data-platform-fields="teamspeak"><p>A new TeamSpeak client joins the configured server with its own persistent identity.</p><label class="field-label" for="instance-channel">Channel</label><select id="instance-channel" name="channelId"><option value="">Server default (choose later)</option>'+channels.map(c=>'<option value="'+e(c.id)+'">'+e(c.name)+'</option>').join('')+'</select></div><div data-platform-fields="discord" hidden>'+discordFields(null)+'</div>',
+    async data=>{
+      const platform=data.get('platform');
+      const result=await mutate('/api/bots',{name:data.get('name'),nickname:data.get('nickname'),platform,channelId:data.get('channelId')||undefined,...(platform==='discord'?{guildId:data.get('guildId'),token:data.get('token')}:{})});
       selectBot(result.bot);
-    }, 'Add instance');
+    },'Add instance');
+  syncPlatformFields();
 }
+function connectionEditor(id) {
+  const target=state.bots.find(b=>b.name===id);if(!target)return;
+  showModal('Discord connection',discordFields(target,false),data=>mutate('/api/bots/'+encodeURIComponent(id)+'/connection',{token:data.get('token'),guildId:data.get('guildId'),channelId:data.get('channelId')}),'Save & reconnect');
+}
+
 function renderChrome(b) {
   const signature = JSON.stringify([b.name,b.nickname,b.connected,b.channel,b.track?.url,b.userPaused,b.autoPaused,b.queue.length,state.collections,state.playlists.map(p=>p.collectionId),state.favorites.length,b.listeners,b.channels,b.normalization,b.defaultPlaylist,b.radio,instanceSummaries()]);
   if (signature === renderedChrome) return;
@@ -431,7 +444,7 @@ function renderChrome(b) {
   $('#sidebar-dot').className = 'status-dot ' + (b.connected?'on':'');
   $('#sidebar-collections').innerHTML = state.collections.length ? state.collections.map(c => '<button class="collection-link" data-action="collection" data-id="' + e(c.id) + '">' + icon('folder') + '<span class="name">' + e(c.name) + '</span><span class="small subtle" style="margin-left:auto">' + state.playlists.filter(p=>p.collectionId===c.id).length + '</span></button>').join('') : '<p class="subtle small">A home for every mood.</p>';
   renderSwitcher(b);
-  $('#statusbar').innerHTML = '<span><span class="status-dot ' + (b.connected?'on':'') + '"></span>' + (b.connected?'Connected to TeamSpeak':'Bot offline') + '</span><span>' + icon('headphones') + channelSelect(b,'Move bot to channel') + '</span><span>' + icon('users') + b.listeners.length + ' listeners</span><button data-action="normalization" aria-pressed="' + b.normalization + '">' + icon('check') + 'Normalization ' + (b.normalization?'on':'off') + '</button><span class="status-end">Made for listening, together.</span>';
+  $('#statusbar').innerHTML = '<span><span class="status-dot ' + (b.connected?'on':'') + '"></span>' + (b.connected?'Connected to '+platformName(b):platformName(b)+' bot offline') + '</span><span>' + icon('headphones') + channelSelect(b,'Move bot to channel') + '</span><span>' + icon('users') + b.listeners.length + ' listeners</span><button data-action="normalization" aria-pressed="' + b.normalization + '">' + icon('check') + 'Normalization ' + (b.normalization?'on':'off') + '</button><span class="status-end">Made for listening, together.</span>';
 }
 function render(force = false) {
   const actual = bot();
@@ -642,11 +655,12 @@ document.addEventListener('click', async event => {
       case 'menu': {
         const open=$('#sidebar').classList.toggle('open');el.setAttribute('aria-expanded',String(open));return;
       }
-      case 'close-modal': $('#modal').close();return;
+      case 'close-modal': clearModalSecrets();$('#modal').close();return;
+      case 'edit-connection': return connectionEditor(id);
       case 'new-instance': toggleSwitcher(false); return instanceEditor();
       case 'delete-instance': {
         const target=state.bots.find(x=>x.name===id);
-        return confirmAction('Remove '+(target?.nickname||id)+'?', 'The bot leaves TeamSpeak and its queue, channel and idle playlist settings are deleted. Saved playlists and radio stations are kept.',()=>mutate('/api/bots/'+encodeURIComponent(id),{},'DELETE'),'Remove instance');
+        return confirmAction('Remove '+(target?.nickname||id)+'?', 'The bot disconnects and its queue, channel and idle playlist settings are deleted. Saved playlists and radio stations are kept.',()=>mutate('/api/bots/'+encodeURIComponent(id),{},'DELETE'),'Remove instance');
       }
       case 'new-collection': return collectionEditor();
       case 'new-playlist': return playlistEditor();
@@ -662,7 +676,7 @@ document.addEventListener('click', async event => {
       case 'play-playlist-now': await mutate(listPath(id)+'/play-now',{bot:b.name});return;
       case 'default-playlist': await action('default',{playlistId:state.defaults[b.name]===id?null:id});return;
       case 'toggle-play':
-        if(b.connectionPaused) {toast('Playback is held until the bot reconnects to TeamSpeak.');return;}
+        if(b.connectionPaused) {toast('Playback is held until the bot reconnects to '+platformName(b)+'.');return;}
         if(b.autoPaused) {toast('Playback will resume when a listener joins the channel.');return;}
         await action(currentTrack()?(b.userPaused?'resume':'pause'):'start');return;
       case 'skip': await action(state.viewer?.role==='listener'?'vote-skip':'skip');return;
@@ -728,7 +742,7 @@ $('#modal-form').addEventListener('submit',async event=>{
   if (panelNeedsReload) { $('#modal-error').textContent='A new panel version is available. Close this dialog and reload the panel.'; return; }
   const submit=$('#modal-submit'), handler=modalSubmit;
   submit.disabled=true;$('#modal-error').textContent='';
-  try { await handler(new FormData(event.target));$('#modal').close(); }
+  try { await handler(new FormData(event.target));clearModalSecrets();$('#modal').close(); }
   catch(error) { $('#modal-error').textContent=error.message; }
   finally { submit.disabled=false; }
 });
@@ -799,6 +813,7 @@ document.addEventListener('change',async event=>{
     if(el.dataset.control==='select-track'){const selected=selectionFor(playlist());if(selected.allMatching){selected.excluded=el.checked?selected.excluded.filter(i=>i!==Number(el.dataset.index)):[...new Set([...selected.excluded,Number(el.dataset.index)])];}else selected.indices=el.checked?[...new Set([...selected.indices,Number(el.dataset.index)])]:selected.indices.filter(i=>i!==Number(el.dataset.index));render(true);return;}
     if(el.id==='volume') volumeControl.set(bot().name, Number(el.value), true);
     if(el.id==='seek') {await action('seek',{seconds:Number(el.value),url:bot().track?.url});}
+    if(el.id==='instance-platform'){syncPlatformFields();return;}
     if(el.dataset.control==='channel') await action('channel',{channelId:el.value});
     if(el.dataset.control==='repeat') await action('loop',{mode:el.value});
     if(el.dataset.control==='default') await action('default',{playlistId:el.value||null});

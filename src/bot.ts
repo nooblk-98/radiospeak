@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   Codec,
+  asChannelID,
   ServerError,
   editClient,
   moveClient,
@@ -14,6 +15,7 @@ import {
 import { Client, generateIdentity, parseIdentity, subscribeAllChannels, type Identity } from "@honeybbq/teamspeak/client";
 import { handleChatMessage, welcomeText } from "./commands.ts";
 import type { AppConfig, BotConfig } from "./config.ts";
+import type { DiscordInstances } from "./discord-instances.ts";
 import { validateNickname } from "./config.ts";
 import { fetchIcyTitle } from "./icy.ts";
 import { Player, type PlayerEvent, type Track } from "./player.ts";
@@ -32,6 +34,7 @@ export interface App {
   playback?: PlaybackStore;
   imports?: ImportManager;
   operations?: Operations;
+  discordInstances?: DiscordInstances;
   bots: MusicBot[];
   /** Last !search results per user unique ID, so "!pick 3" can choose one. */
   searchResults: Map<string, Track[]>;
@@ -127,8 +130,8 @@ export class MusicBot {
       volume: cfg.volume,
       connectionPaused: true,
       log: (level, msg) => this.log(level, msg),
-      sendFrame: (frame) => this.#sendFrame(frame),
-      onEvent: (event) => this.#onPlayerEvent(event),
+      sendFrame: (frame) => this.sendAudioFrame(frame),
+      onEvent: (event) => this.onPlaybackEvent(event),
     });
     const saved = app.playback?.get(this.name);
     if (saved) {
@@ -176,6 +179,18 @@ export class MusicBot {
   get name(): string {
     return this.cfg.name;
   }
+  protected get app() { return this.#app; }
+  get platform() { return this.cfg.platform ?? "teamspeak"; }
+  get serverName(): string { return this.#app.config.server; }
+  get connectionError(): string | null { return null; }
+  get discord(): {guildId:string;channelId:string;applicationId:string|null}|undefined {return undefined;}
+  get channelId(): string | undefined { return this.channelID?.toString(); }
+  get channels(): {id:string;name:string}[] {
+    return this.connected?[...(this.client?.view.channels.values() ?? [])].map(c=>({id:c.id.toString(),name:c.name})):[];
+  }
+  protected sendAudioFrame(frame: Uint8Array) { this.#sendFrame(frame); }
+  protected onPlaybackEvent(event: PlayerEvent) { this.#onPlayerEvent(event); }
+  protected checkpoint() { this.#checkpoint(); }
 
   get nickname(): string {
     return this.#app.playlists.nicknameFor(this.name) ?? this.cfg.nickname;
@@ -268,7 +283,7 @@ export class MusicBot {
   }
 
   /** People in the bot's channel who can hear it: voice clients, not deafened, not one of our bots. */
-  listeners(): ClientEntry[] {
+  listeners(): Pick<ClientEntry,"nickname">[] {
     const c = this.client;
     const cid = this.channelID;
     if (!c || cid === undefined) return [];
@@ -348,6 +363,7 @@ export class MusicBot {
     if (c.channelID !== channelID) await moveClient(c, c.clientID, channelID);
     if (remember) this.#app.playlists.setChannel(this.name, channelPath(c, channelID));
   }
+  async moveToChannel(id: string, remember = false): Promise<void> { await this.moveTo(asChannelID(BigInt(id)),remember); }
 
   /** A reconnect reuses the channel the client was created with, so return to the one saved since. */
   #returnHome(c: Client): void {

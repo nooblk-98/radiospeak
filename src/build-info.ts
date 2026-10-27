@@ -6,7 +6,7 @@ import { join } from "node:path";
 function sourceFiles(directory: string, prefix = ""): string[] {
   return readdirSync(directory,{withFileTypes:true}).flatMap(entry => {
     const path = prefix + entry.name;
-    return entry.isDirectory() ? sourceFiles(join(directory,entry.name),path+"/") : /\.(ts|js|mjs|sh|html|css)$/.test(entry.name) ? [path] : [];
+    return entry.isDirectory() ? sourceFiles(join(directory,entry.name),path+"/") : /\.(ts|js|mjs|sh|html|css|svg)$/.test(entry.name) ? [path] : [];
   }).sort();
 }
 const digest = createHash("sha256");

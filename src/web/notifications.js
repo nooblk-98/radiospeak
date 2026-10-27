@@ -119,9 +119,10 @@ export class NotificationCenter {
     for(const bot of state.bots||[]) {
       const h=bot.health||{};
       if(h.silenceAlert)this.add(bot.nickname+': '+h.silenceAlert.message,true,undefined,undefined,'silence:'+bot.name+':'+h.silenceAlert.id);
-      const recovery=h.retrying?'Retrying '+(bot.track?.title||'audio')+' from '+bot.elapsed+' seconds':bot.connectionPaused&&bot.track?'TeamSpeak is unavailable. Your track and queue are held.':'';
+      const recovery=h.retrying?'Retrying '+(bot.track?.title||'audio')+' from '+bot.elapsed+' seconds':bot.connectionPaused&&bot.track?(bot.platform==='discord'?'Discord':'TeamSpeak')+' is unavailable. Your track and queue are held.':'';
       if(recovery)this.add(bot.nickname+': '+recovery,true,undefined,undefined,'recovery:'+bot.name);
       else this.seen.delete('recovery:'+bot.name);
+      if(bot.connectionError)this.add(bot.nickname+': '+bot.connectionError,true,undefined,undefined,'connection:'+bot.name+':'+bot.connectionError);
       if(bot.talkBlocked)this.add(bot.nickname+': TeamSpeak talk permission is blocked. Required talk power: '+bot.talkBlocked.needed+'; bot talk power: '+bot.talkBlocked.have+'. Assign a permanent server or channel group with enough talk power.',true,undefined,undefined,'talk:'+bot.name+':'+bot.talkBlocked.needed+':'+bot.talkBlocked.have);
     }
     this.render();
@@ -168,7 +169,7 @@ export class NotificationCenter {
       const day=dayOf(item.at),heading=day!==group?'<div class="nc-group">'+day+'</div>':'';group=day;
       return heading+(item.job?this.#job(item,isUnread(item)):this.#message(item,isUnread(item)));
     }).join('');
-    const emptyText=this.filter==='unread'?['No unread notifications','You’ve seen everything new.']:this.filter==='alerts'?['No alerts','Playback, TeamSpeak and import problems show up here.']:['You’re all caught up','Playback alerts, imports and your actions show up here.'];
+    const emptyText=this.filter==='unread'?['No unread notifications','You’ve seen everything new.']:this.filter==='alerts'?['No alerts','Playback, connection and import problems show up here.']:['You’re all caught up','Playback alerts, imports and your actions show up here.'];
     this.panel.innerHTML='<header class="nc-head"><div><h2>Notifications</h2><span class="nc-sub">'+(unread?unread+' unread':'All caught up')+'</span></div><button type="button" class="text-button'+(unread?'':' is-done')+'" data-action="notifications-read">'+icon('check')+'Mark all read</button></header>'+
       '<div class="nc-tabs" aria-label="Filter notifications">'+tab('all','All',entries.length)+tab('unread','Unread',unread)+tab('alerts','Alerts',alerts.length)+'</div>'+
       '<div class="notification-list">'+(list||'<div class="nc-empty"><span class="nc-empty-icon">'+icon('bell')+'</span><h3>'+emptyText[0]+'</h3><p>'+emptyText[1]+'</p></div>')+'</div>';

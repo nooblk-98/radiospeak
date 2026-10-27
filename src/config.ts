@@ -1,8 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-/** One TeamSpeak connection. Several can run in one process, e.g. one per channel. */
+export type BotPlatform = "teamspeak" | "discord";
+export interface DiscordConfig { token: string; guildId: string; channelId: string }
+/** One voice connection. Existing configurations default to TeamSpeak. */
 export interface BotConfig {
+  platform?: BotPlatform;
+  discord?: DiscordConfig;
   /** Short name used in logs and the web panel. */
   name: string;
   nickname: string;
@@ -79,7 +83,18 @@ export function validateBotName(value: string): string {
 
 /** A bot added in the web panel: the first bot's connection settings, its own identity, and no configured channel or playlist. */
 export function instanceConfig(template: BotConfig, name: string): BotConfig {
-  return { ...template, name, channel: "", channelPassword: "", defaultPlaylist: "", identityFile: `identity-${name}.txt` };
+  const { discord, ...shared } = template;
+  return { ...shared, platform:"teamspeak", name, channel: "", channelPassword: "", defaultPlaylist: "", identityFile: `identity-${name}.txt` };
+}
+
+export function discordSnowflake(value: unknown, label: string): string {
+  if(typeof value!=="string" || !/^[1-9]\d{0,19}$/.test(value) || BigInt(value)>18446744073709551615n)throw new Error(`Enter a valid Discord ${label} ID`);
+  return value;
+}
+export function validateDiscordConfig(value: DiscordConfig): DiscordConfig {
+  const token=typeof value?.token==="string"?value.token.trim().replace(/^Bot\s+/i,""):"";
+  if(!/^[A-Za-z0-9_.-]{20,200}$/.test(token))throw new Error("Enter a Discord bot token from the Developer Portal");
+  return {token,guildId:discordSnowflake(value.guildId,"server"),channelId:discordSnowflake(value.channelId,"voice channel")};
 }
 
 function bool(v: string | undefined): boolean | undefined {
@@ -129,7 +144,7 @@ export function loadConfig(): AppConfig {
   let file: RawConfig = {};
   if (existsSync(CONFIG_PATH)) {
     file = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as RawConfig;
-  } else if (!env.server) {
+  } else if (!env.server && !env.bots?.length) {
     throw new Error(`Missing ${CONFIG_PATH}. Copy config.example.json to config.json and edit it, or set FMBOT_SERVER.`);
   }
   const raw: RawConfig = { ...file, ...env, web: { ...file.web, ...env.web } };
@@ -142,19 +157,24 @@ export function loadConfig(): AppConfig {
     volume: raw.volume ?? botDefaults.volume,
     defaultPlaylist: raw.defaultPlaylist ?? botDefaults.defaultPlaylist,
   };
-  const botList = raw.bots?.length ? raw.bots : [{}];
+  const botList = raw.bots?.length ? raw.bots : [{platform:raw.platform,discord:raw.discord}];
   const bots = botList.map((b, i): BotConfig => {
     const name = b.name || `bot${i + 1}`;
+    if(b.platform!==undefined && !["teamspeak","discord"].includes(b.platform))throw new Error("Unknown bot platform");
+    if(b.platform==="discord")validateBotName(name);
     return {
       ...shared,
       ...b,
       name,
       nickname: validateNickname(b.nickname ?? shared.nickname),
+      platform:b.platform ?? "teamspeak",
+      ...(b.platform==="discord"?{discord:validateDiscordConfig(b.discord!)}:{}),
       // The first bot keeps the original identity.txt so upgrading does not change its unique ID.
       identityFile: b.identityFile || (i === 0 ? raw.identityFile || "identity.txt" : `identity-${name}.txt`),
       volume: clampVolume(b.volume ?? shared.volume),
     };
   });
+  if(new Set(bots.map(bot=>bot.name.toLowerCase())).size!==bots.length)throw new Error("Bot instance IDs must be unique across all platforms");
 
   return {
     server: raw.server ?? "127.0.0.1:9987",
