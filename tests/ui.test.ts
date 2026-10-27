@@ -47,6 +47,9 @@ test("UI navigation, creation, import, idle selection, search, save, queue edits
   let playRequests = 0,
     playGate: Promise<void> | null = null,
     releasePlay!: () => void;
+  let seekGate: Promise<void> | null = null,
+    releaseSeek!: () => void,
+    seekRequests = 0;
   const errors: string[] = [];
   dom.window.addEventListener("error", (event) => errors.push(event.message));
   try {
@@ -83,6 +86,10 @@ test("UI navigation, creation, import, idle selection, search, save, queue edits
     }) as typeof setInterval;
     globalThis.fetch = async (input, init) => {
       const url = new URL(String(input), f.base);
+      if (url.pathname.endsWith("/seek") && init?.body) {
+        seekRequests++;
+        if (seekGate) await seekGate;
+      }
       if (url.pathname === "/api/search") {
         searchRequests.push(url.search);
         return new Response(JSON.stringify([searchTrack, tracks[3]]), {
@@ -188,12 +195,58 @@ test("UI navigation, creation, import, idle selection, search, save, queue edits
     assert.equal(document.querySelectorAll(".player-dock").length, 1);
     const seeker = get("#seek") as HTMLInputElement;
     seeker.focus();
+    seekGate = new Promise<void>((resolve) => {
+      releaseSeek = resolve;
+    });
+    seeker.dispatchEvent(new dom.window.Event("pointerdown", { bubbles: true }));
     fill("#seek", "42.5");
+    seeker.dispatchEvent(new dom.window.Event("pointerup", { bubbles: true }));
+    assert.equal(
+      Number(seeker.value),
+      42.5,
+      "releasing the pointer must not restore the old server position before change",
+    );
+    await new Promise((resolve) => nativeTimeout(resolve, 150));
+    assert.equal(
+      Number(seeker.value),
+      42.5,
+      "progress ticks between pointerup and change retain the chosen position",
+    );
     seeker.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+    await until(() => seekRequests === 1, "one seek request commits after releasing the slider");
+    await new Promise((resolve) => nativeTimeout(resolve, 180));
+    assert.equal(
+      Number((get("#seek") as HTMLInputElement).value),
+      42.5,
+      "the chosen position survives stale progress while the server request is pending",
+    );
+    releaseSeek();
+    seekGate = null;
     await until(
       () => f.app.bots[0]!.player.elapsed === 42.5 && get("#elapsed").textContent === "0:42",
       "seek updates the position without waiting for a full state refresh",
     );
+    const reverseSeeker = get("#seek") as HTMLInputElement;
+    reverseSeeker.dispatchEvent(new dom.window.Event("pointerdown", { bubbles: true }));
+    fill("#seek", "48.5");
+    reverseSeeker.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+    reverseSeeker.dispatchEvent(new dom.window.Event("pointerup", { bubbles: true }));
+    await until(
+      () =>
+        f.app.bots[0]!.player.elapsed === 48.5 &&
+        Number((get("#seek") as HTMLInputElement).value) === 48.5,
+      "change before pointerup also preserves the selected position",
+    );
+    const cancelledSeek = get("#seek");
+    cancelledSeek.dispatchEvent(new dom.window.Event("pointerdown", { bubbles: true }));
+    fill("#seek", "100");
+    cancelledSeek.dispatchEvent(new dom.window.Event("pointercancel", { bubbles: true }));
+    assert.equal(
+      Number((get("#seek") as HTMLInputElement).value),
+      48.5,
+      "a cancelled drag resumes the actual playback position",
+    );
+    assert.equal(seekRequests, 2, "cancelling a drag sends no extra seek request");
     f.app.bots[0]!.player.seek(50.5);
     await until(
       () => Number((get("#seek") as HTMLInputElement).value) === 50.5,

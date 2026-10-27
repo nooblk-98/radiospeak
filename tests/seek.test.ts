@@ -55,3 +55,39 @@ test("control responses acknowledge position and volume with revisioned lightwei
     await f.close();
   }
 });
+
+test("a drag preview survives earlier seek acknowledgements and sends nothing until committed", async () => {
+  const calls: number[] = [],
+    releases: Array<() => void> = [];
+  const control = new SeekControl({
+    send: (_name: string, _url: string, seconds: number) => {
+      calls.push(seconds);
+      return new Promise<void>((resolve) => releases.push(resolve));
+    },
+  });
+  control.set("one", "track", 10);
+  control.preview("one", "track", 70);
+  assert.deepEqual(calls, [10]);
+  assert.equal(control.get("one", "track"), 70);
+  releases.shift()!();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(
+    control.get("one", "track"),
+    70,
+    "an earlier response must not replace the new drag",
+  );
+  assert.equal(control.get("one", "new-track"), undefined);
+  control.set("one", "track", 70);
+  assert.equal(
+    control.get("one", "track"),
+    70,
+    "preview transfers to the pending request without reverting",
+  );
+  releases.shift()!();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(control.get("one", "track"), undefined);
+  control.preview("one", "track", 100);
+  control.cancelPreview("one");
+  assert.equal(control.get("one", "track"), undefined);
+  assert.deepEqual(calls, [10, 70], "cancelling a drag never sends its position");
+});

@@ -186,6 +186,7 @@ const SEARCH_PAGE = 10,
   SEARCH_PAGES = 5;
 let dragging = null,
   sliderActive = false,
+  seekGesture = null,
   modalSubmit,
   renderedView = "",
   renderedDock = "",
@@ -1199,7 +1200,8 @@ function render(force = false) {
     b.defaultPlaylist,
     state.viewer?.role,
   ]);
-  if (dockSignature !== renderedDock && !sliderActive) {
+  // Keep the native range attached until its change event commits the drag preview.
+  if (dockSignature !== renderedDock && !sliderActive && !seekGesture?.changed) {
     const focused = $("#player-dock").contains(document.activeElement)
       ? { id: document.activeElement.id, action: document.activeElement.dataset.action }
       : null;
@@ -2023,7 +2025,12 @@ document.addEventListener("input", (event) => {
   if (el.type === "range") {
     el.style.setProperty("--fill", (Number(el.value) / Number(el.max)) * 100 + "%");
     if (el.id === "volume") volumeControl.set(bot().name, Number(el.value));
-    if (el.id === "seek") $("#elapsed").textContent = time(Number(el.value));
+    if (el.id === "seek") {
+      seekGesture ??= { name: bot().name, url: bot().track?.url, changed: false };
+      seekGesture.changed = true;
+      seekControl.preview(seekGesture.name, seekGesture.url, Number(el.value));
+      $("#elapsed").textContent = time(Number(el.value));
+    }
   }
 });
 document.addEventListener("change", async (event) => {
@@ -2052,7 +2059,10 @@ document.addEventListener("change", async (event) => {
     }
     if (el.id === "volume") volumeControl.set(bot().name, Number(el.value), true);
     if (el.id === "seek") {
-      seekControl.set(bot().name, bot().track?.url, Number(el.value));
+      const target = seekGesture ?? { name: bot().name, url: bot().track?.url };
+      const seconds = Number(el.value);
+      seekGesture = null;
+      seekControl.set(target.name, target.url, seconds);
     }
     if (el.id === "instance-platform") {
       syncPlatformFields();
@@ -2070,12 +2080,21 @@ document.addEventListener("change", async (event) => {
 });
 document.addEventListener("pointerdown", (event) => {
   if (event.target.type === "range") sliderActive = event.target.id;
+  if (event.target.id === "seek") {
+    seekGesture = { name: bot().name, url: bot().track?.url, changed: false };
+  }
 });
 document.addEventListener("pointerup", () => {
+  if (seekGesture && !seekGesture.changed) {
+    seekControl.cancelPreview(seekGesture.name);
+    seekGesture = null;
+  }
   sliderActive = false;
   updateProgress();
 });
 document.addEventListener("pointercancel", () => {
+  if (seekGesture) seekControl.cancelPreview(seekGesture.name);
+  seekGesture = null;
   sliderActive = false;
   render();
 });
