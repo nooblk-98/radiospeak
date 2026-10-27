@@ -11,7 +11,7 @@ A self-hosted music bot for TeamSpeak 3/6 and Discord, with a shared web control
 [![TeamSpeak](https://img.shields.io/badge/TeamSpeak-3%20%7C%206-2580c3?logo=teamspeak&logoColor=white)](https://teamspeak.com)
 [![Discord](https://img.shields.io/badge/Discord-voice-5865f2?logo=discord&logoColor=white)](https://discord.com)
 
-[Features](#features) • [Install](#install-with-docker) • [Update](#update) • [Web panel](#using-the-web-panel) • [Discord](#adding-a-discord-bot) • [Chat commands](#chat-commands)
+[Features](#features) • [Install](#install-with-docker) • [Update](#update) • [Web panel](#using-the-web-panel) • [Discord](#adding-a-discord-bot) • [Chat commands](#chat-commands) • [Contributing](#contributing)
 
 ![radiospeak web panel: now playing](docs/screenshots/now-playing.jpg)
 
@@ -232,3 +232,7 @@ In TeamSpeak, type these in the bot's channel or send them to the bot as a priva
 | `!join`, `!bots`, `!help`                                                     | Move the bot to your channel, list bots, help                             |
 
 Playlist names can contain spaces. In commands, you can use the playlist's number from `!pl` instead, for example `!pl add 2 <link>`.
+
+## Contributing
+
+Contributions are welcome! Bug reports, feature ideas, fixes and documentation improvements all help. [Open an issue](https://github.com/nooblk-98/radiospeak/issues) to report a problem or suggest something, or send a pull request. See [CONTRIBUTING.md](CONTRIBUTING.md) to set up a local copy and run the tests.
