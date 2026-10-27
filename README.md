@@ -17,6 +17,9 @@ A self-hosted music bot for TeamSpeak 3/6 and Discord, with a shared web control
 
 </div>
 
+> [!TIP]
+> **Help make radiospeak better!** Found a bug or have an idea? Please [report a bug](https://github.com/nooblk-98/radiospeak/issues/new?template=bug_report.yml) or [request a feature](https://github.com/nooblk-98/radiospeak/issues/new?template=feature_request.yml) on the [Issues](https://github.com/nooblk-98/radiospeak/issues) page. Every report helps make the project better.
+
 radiospeak joins your TeamSpeak or Discord server as a voice client. It plays music from YouTube, SoundCloud, live radio and any other site [yt-dlp](https://github.com/yt-dlp/yt-dlp) supports. Listeners control it from chat, and admins use a web panel to manage the queue, playlists, radio stations and several bots.
 
 ## Features

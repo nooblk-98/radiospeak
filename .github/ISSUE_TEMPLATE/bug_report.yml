@@ -1,0 +1,52 @@
+name: Bug report
+description: Something isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to report a bug! The more detail you give, the faster it can be fixed.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the bug and what you expected to happen instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open the web panel
+        2. Click ...
+        3. See the error
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      multiple: true
+      options:
+        - TeamSpeak 3
+        - TeamSpeak 6
+        - Discord
+        - Web panel
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: radiospeak version or image tag
+      placeholder: e.g. v0.1.0 or latest
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Paste relevant output from `docker compose logs`. Remove any tokens or passwords first.
+      render: shell
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Screenshots, the link you tried to play, browser, OS, etc.
