@@ -67,7 +67,13 @@ export function startWebServer(app: App) {
     } else {
       const progress = {
         uiVersion,
-        bots: app.bots.map((b) => ({ name: b.name, elapsed: b.player.elapsed, health: b.health })),
+        bots: app.bots.map((b) => ({
+          name: b.name,
+          revision: b.revision,
+          generation: b.generation,
+          elapsed: b.player.elapsed,
+          health: b.health,
+        })),
         system: system(),
       };
       const message = frame("playback_progress", progress);

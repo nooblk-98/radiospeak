@@ -288,6 +288,8 @@ The administrator audit log retains the latest 2,000 successful panel changes an
 
 ## Audio monitoring
 
+Seek and volume controls update immediately in the panel. Play now shows Starting, Resolving audio stream and Preparing audio until audio is ready, and repeated clicks cannot restart the same preparation. Playback reuses short-lived provider URLs for fast input seeking and warms the next song's URL near the end of a track. Inputs that require yt-dlp's downloader retain the streaming fallback. Audio startup uses a 100 ms frame buffer, with up to 200 ms of audio submitted to the gain/encoder path. Bot health shows measured source-lookup and startup time; provider extraction, loudness normalization and the voice client's own buffering can still add delay.
+
 Bot health shows the output RMS level in dBFS. Optional silence monitoring measures decoded source audio before volume gain; mute and pause do not generate alerts. Configure a threshold and duration under Performance & requests. Optional radio failover switches to the next configured station after sustained silence; it is disabled by default.
 
 FFmpeg audio decoding, encoding and filter pools use one worker each to keep multiple bots within the container PID budget. Audio gain waits for encoder credit instead of polling. Opus sends use the next 20 ms frame deadline, wake on incoming buffered data, and retain the 30-second stall watchdog. Health includes mean/max frame lateness so deployments can be compared with the isolated benchmark.

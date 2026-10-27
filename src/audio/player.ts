@@ -8,6 +8,7 @@ import {
   type PrebufferBudget,
 } from "../domain/policies.ts";
 import { trackKey } from "../domain/track-key.ts";
+import type { AudioSource } from "../media/audio-sources.ts";
 import { AudioGain } from "./audio-gain.ts";
 import { OggPacketReader, isOpusHeader } from "./ogg.ts";
 import { artistKey, spreadShuffle } from "./shuffle.ts";
@@ -16,7 +17,9 @@ const SAMPLE_RATE = 48000;
 const CHANNELS = 2;
 const FRAME_MS = 20;
 /** Opus frames buffered before playback starts or resumes after an underrun. */
-const PREBUFFER_FRAMES = 15;
+const PREBUFFER_FRAMES = 5;
+/** Keep live gain changes within 200 ms, including raw samples held by FFmpeg. */
+const ENCODER_CREDIT_FRAMES = 10;
 /**
  * Above this many queued frames the encoder's output is paused, which backs up
  * through the whole pipeline (encoder, volume, decoder, yt-dlp). Kept small so a
@@ -89,13 +92,21 @@ export interface PlayerOptions {
   log: (level: "info" | "warn" | "error", msg: string) => void;
   onEvent?: (event: PlayerEvent) => void;
   prebufferBudget?: PrebufferBudget;
+  /** Resolve a seekable input once and reuse it for seeking and short reconnects. */
+  resolveSource?: (url: string, signal: AbortSignal) => Promise<AudioSource | null>;
+  invalidateSource?: (url: string) => void;
 }
 
 interface Pipeline {
   kind: "track" | "radio";
   procs: ChildProcess[];
-  encoderOut: Readable;
+  encoderOut?: Readable;
+  sourceController?: AbortController;
+  sourceMode?: "direct" | "pipe";
+  sourceLookupMs?: number;
+  firstFrameMs?: number;
   startedAt: number;
+  activatedAt?: number;
   initialTrackFrames: number;
   /** The encoder finished: everything left is in the frame queue. */
   ended: boolean;
@@ -104,7 +115,7 @@ interface Pipeline {
   frames: Buffer[];
   reader: OggPacketReader;
   readPaused: boolean;
-  gain: AudioGain;
+  gain?: AudioGain;
   submittedFrames: number;
   playedFrames: number;
   levels: { rms: number; peak: number; gain: number }[];
@@ -146,6 +157,8 @@ export class Player {
   #failoverReason: string | null = null;
   #prebuffer = false;
   #prepareFailedUrl: string | undefined;
+  #legacyTrackUrl: string | undefined;
+  #warmSource: { url: string; controller: AbortController } | undefined;
   #retries = 0;
   #retrying = false;
   #lastError: string | null = null;
@@ -289,9 +302,27 @@ export class Player {
   }
   get health() {
     return {
+      phase: !this.isActive
+        ? "idle"
+        : this.paused
+          ? "paused"
+          : this.#retrying
+            ? "retrying"
+            : this.#pipe?.sourceController && !this.#pipe.sourceMode
+              ? "resolving"
+              : this.#buffering
+                ? "buffering"
+                : "playing",
+      processingMs:
+        this.#pipe && this.#buffering && !this.paused
+          ? Date.now() - (this.#pipe.activatedAt ?? this.#pipe.startedAt)
+          : 0,
       bufferedSeconds: ((this.#pipe?.frames.length ?? 0) * FRAME_MS) / 1000,
       buffering: this.#buffering,
       encoderInFlight: this.#pipe ? this.#pipe.submittedFrames - this.#pipe.playedFrames : 0,
+      sourceMode: this.#pipe?.sourceMode ?? null,
+      sourceLookupMs: this.#pipe?.sourceLookupMs ?? null,
+      startupMs: this.#pipe?.firstFrameMs ?? null,
       underruns: this.#totalUnderruns,
       retrying: this.#retrying,
       retryAttempt: this.#retries,
@@ -364,7 +395,7 @@ export class Player {
   }
   /** Seconds into the current song. */
   get elapsed(): number {
-    return Math.floor((this.#trackFrames * FRAME_MS) / 1000);
+    return (this.#trackFrames * FRAME_MS) / 1000;
   }
   /** The radio URL being played (for song titles); undefined while a song plays. */
   get radioUrl(): string | undefined {
@@ -556,7 +587,7 @@ export class Player {
     this.#emit({ type: "change" });
   }
 
-  /** The encoder is at most half a second ahead; mute ends speech immediately. */
+  /** Live gain is bounded by the encoder credit window; mute ends speech immediately. */
   setVolume(volume: number): void {
     this.#volume = Math.max(
       0,
@@ -636,6 +667,7 @@ export class Player {
     this.#retries = 0;
     this.#retrying = false;
     this.#prepareFailedUrl = undefined;
+    this.#legacyTrackUrl = undefined;
     this.#track = this.#queue.shift();
     if (!this.#track && !this.#radio && this.#defaultList.length) {
       const index = this.#idleIndex();
@@ -703,6 +735,7 @@ export class Player {
       else if (this.#radio && !this.paused) this.#pipe = this.#start("radio", this.#radio.url);
       else return;
     }
+    this.#pipe.activatedAt = Date.now();
     this.#buffering = true;
     this.#quietFrames = 0;
     this.#silenceReported = false;
@@ -751,6 +784,8 @@ export class Player {
     return start;
   }
   #cancelPrepared(): void {
+    this.#warmSource?.controller.abort();
+    this.#warmSource = undefined;
     this.#cancelBudgetWait?.();
     this.#cancelBudgetWait = undefined;
     const prepared = this.#prepared;
@@ -761,6 +796,23 @@ export class Player {
     }
   }
   #prepareNext(): void {
+    // Resolve only the next URL ahead of time even when full audio prebuffering is off.
+    // This avoids another provider lookup at the song boundary without an idle decoder.
+    if (
+      !this.paused &&
+      this.#pipe &&
+      this.#track?.duration &&
+      this.#opts.resolveSource &&
+      this.#track.duration - this.elapsed <= 20
+    ) {
+      const next = this.#nextTrack();
+      if (next && this.#warmSource?.url !== next.url) {
+        this.#warmSource?.controller.abort();
+        const controller = new AbortController();
+        this.#warmSource = { url: next.url, controller };
+        void this.#opts.resolveSource(next.url, controller.signal).catch(() => {});
+      }
+    }
     if (
       this.paused ||
       !this.#pipe ||
@@ -847,13 +899,50 @@ export class Player {
   }
 
   #start(kind: "track" | "radio", url: string, offset = 0, preparation?: Track): Pipeline {
-    const { ffmpegPath, ytdlpPath, bitrateKbps } = this.#opts;
+    const pipe: Pipeline = {
+      kind,
+      procs: [],
+      startedAt: Date.now(),
+      initialTrackFrames: (offset * 1000) / FRAME_MS,
+      ended: false,
+      failure: undefined,
+      frames: [],
+      reader: new OggPacketReader(),
+      readPaused: false,
+      submittedFrames: 0,
+      playedFrames: 0,
+      levels: [],
+    };
     this.#opts.log(
       "info",
       `${preparation ? "Preparing next track" : kind === "track" ? "Song start" : "Radio start"}: ${preparation?.title ?? (kind === "track" ? this.#track?.title : this.#radio?.name)} (${url})`,
     );
+    if (kind === "track" && this.#opts.resolveSource && this.#legacyTrackUrl !== url) {
+      const controller = new AbortController();
+      pipe.sourceController = controller;
+      const open = (source: AudioSource | null) => {
+        if (controller.signal.aborted || (this.#pipe !== pipe && this.#prepared?.pipe !== pipe))
+          return;
+        pipe.sourceLookupMs = Date.now() - pipe.startedAt;
+        try {
+          this.#openPipeline(pipe, url, offset, source);
+        } catch {
+          if (this.#prepared?.pipe === pipe) {
+            this.#prepareFailedUrl = this.#prepared.track.url;
+            this.#cancelPrepared();
+          } else this.#failed("Audio input could not start");
+        }
+      };
+      void this.#opts.resolveSource(url, controller.signal).then(open, () => open(null));
+    } else this.#openPipeline(pipe, url, offset, null);
+    return pipe;
+  }
 
-    const procs: ChildProcess[] = [];
+  #openPipeline(pipe: Pipeline, url: string, offset: number, source: AudioSource | null): void {
+    const { ffmpegPath, ytdlpPath, bitrateKbps } = this.#opts;
+    const kind = pipe.kind;
+    pipe.sourceMode = source ? "direct" : "pipe";
+    const procs = pipe.procs;
     // Audio needs one worker; automatic filter pools scale to every host core and
     // can exhaust a container's PID budget when several tracks prepare at once.
     const quiet = [
@@ -882,7 +971,25 @@ export class Player {
       "pipe:1",
     ];
     let decoder: ChildProcess;
-    if (kind === "track") {
+    if (kind === "track" && source) {
+      const headers = Object.entries(source.headers)
+        .map(([name, value]) => name + ": " + value + "\r\n")
+        .join("");
+      decoder = spawn(
+        ffmpegPath,
+        [
+          ...quiet,
+          "-rw_timeout",
+          "15000000",
+          ...(headers ? ["-headers", headers] : []),
+          ...(offset > 0 ? ["-ss", String(offset)] : []),
+          "-i",
+          source.url,
+          ...pcmOut,
+        ],
+        { stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
+      );
+    } else if (kind === "track") {
       // yt-dlp handles the site's headers and signatures; ffmpeg just decodes its output.
       const ytdlp = spawn(
         ytdlpPath,
@@ -959,7 +1066,7 @@ export class Player {
     procs.push(decoder, encoder);
     const gain = new AudioGain(
       () => this.#volume / 100,
-      () => pipe.submittedFrames - pipe.playedFrames < 25,
+      () => pipe.submittedFrames - pipe.playedFrames < ENCODER_CREDIT_FRAMES,
       () => {
         pipe.submittedFrames++;
       },
@@ -970,22 +1077,8 @@ export class Player {
     decoder.stdout!.pipe(gain).pipe(encoder.stdin!);
     for (const p of procs) p.stdin?.on("error", () => {}); // EPIPE when a process is killed first
 
-    const pipe: Pipeline = {
-      kind,
-      procs,
-      encoderOut: encoder.stdout!,
-      startedAt: Date.now(),
-      initialTrackFrames: (offset * 1000) / FRAME_MS,
-      ended: false,
-      failure: undefined,
-      frames: [],
-      reader: new OggPacketReader(),
-      readPaused: false,
-      gain,
-      submittedFrames: 0,
-      playedFrames: 0,
-      levels: [],
-    };
+    pipe.encoderOut = encoder.stdout!;
+    pipe.gain = gain;
     const valid = () => this.#pipe === pipe || this.#prepared?.pipe === pipe;
     const failed = (reason: string) => {
       if (this.#prepared?.pipe === pipe) {
@@ -1000,14 +1093,20 @@ export class Player {
       p.stderr!.on("data", (s: string) => (stderrTail = (stderrTail + s).slice(-2000)));
       p.on("error", (err) => {
         if (!valid()) return;
-        const exe = p === procs[0] && kind === "track" ? ytdlpPath : ffmpegPath;
+        const exe = p === procs[0] && kind === "track" && !source ? ytdlpPath : ffmpegPath;
         failed(`${exe} could not start: ${err.message}`);
       });
     }
     gain.on("error", (err) => {
       if (valid()) failed("Audio gain failed: " + err.message);
     });
-    const tail = () => stderrTail.trim().split(/\r?\n/).slice(-2).join(" | ");
+    const tail = () =>
+      stderrTail
+        .trim()
+        .split(/\r?\n/)
+        .slice(-2)
+        .join(" | ")
+        .replace(/https?:\/\/[^\s]+/g, "[media URL]");
 
     // yt-dlp or the decoder failing ends the decoder's output; the encoder then
     // finishes normally, so remember the reason for when the queue runs dry.
@@ -1024,7 +1123,7 @@ export class Player {
       }
       if (!pipe.readPaused && pipe.frames.length > QUEUE_HIGH) {
         pipe.readPaused = true;
-        pipe.encoderOut.pause();
+        pipe.encoderOut?.pause();
       }
       this.#wakeBuffer(pipe);
     });
@@ -1045,12 +1144,29 @@ export class Player {
       this.#opts.log("warn", `Radio stream ended${pipe.failure ? `: ${pipe.failure}` : ""}`);
       failed(pipe.failure ?? "stream ended");
     });
-    return pipe;
+  }
+
+  /** A provider that rejects direct HTTP still has the established yt-dlp download path. */
+  #fallbackSource(pipe: Pipeline): boolean {
+    if (
+      pipe.kind !== "track" ||
+      pipe.sourceMode !== "direct" ||
+      pipe.playedFrames > 0 ||
+      !this.#track
+    )
+      return false;
+    this.#legacyTrackUrl = this.#track.url;
+    this.#opts.invalidateSource?.(this.#track.url);
+    this.#opts.log("warn", "Direct audio input was unavailable; using streamed playback.");
+    this.#restart();
+    this.#emit({ type: "change" });
+    return true;
   }
 
   #failed(reason: string): void {
     const pipe = this.#pipe;
     if (!pipe) return;
+    if (this.#fallbackSource(pipe)) return;
     this.#kill();
     if (pipe.kind === "track") {
       this.#retryTrack(reason);
@@ -1086,8 +1202,9 @@ export class Player {
     if (pipe) this.#killPipe(pipe);
   }
   #killPipe(pipe: Pipeline): void {
-    pipe.gain.destroy();
-    pipe.encoderOut.removeAllListeners("data");
+    pipe.sourceController?.abort();
+    pipe.gain?.destroy();
+    pipe.encoderOut?.removeAllListeners("data");
     // Release blocked pipe writes before terminating FFmpeg. On Linux its SIGTERM
     // handler alone can leave it waiting forever for a full output pipe to drain.
     for (const p of pipe.procs) {
@@ -1148,6 +1265,7 @@ export class Player {
         }
         break;
       }
+      pipe.firstFrameMs ??= Date.now() - (pipe.activatedAt ?? pipe.startedAt);
       pipe.playedFrames++;
       const late = Math.max(0, now - (this.#clockStart + this.#framesSent * FRAME_MS));
       this.#deadlineSamples++;
@@ -1187,7 +1305,7 @@ export class Player {
           }
         }
       }
-      pipe.gain.grantCredit();
+      pipe.gain?.grantCredit();
       if (this.#volume > 0) {
         this.#talking = true;
         this.#opts.sendFrame(frame);
@@ -1198,12 +1316,13 @@ export class Player {
 
     if (pipe.readPaused && pipe.frames.length < QUEUE_LOW && this.#pipe === pipe) {
       pipe.readPaused = false;
-      pipe.encoderOut.resume();
+      pipe.encoderOut?.resume();
     }
   }
 
   /** The song's audio has all been sent. Under a second of it means it never really played. */
   #songDone(pipe: Pipeline): void {
+    if (pipe.failure && this.#fallbackSource(pipe)) return;
     this.#kill();
     const premature =
       this.#track?.duration && this.elapsed > 0 && this.elapsed < this.#track.duration - 3;

@@ -48,6 +48,15 @@ export async function botAction(
       let tracks = tracksFrom(body.tracks);
       if (!tracks.length) throw new HttpError(400, "No playable tracks");
       if (action === "play-now") {
+        if (
+          body.unique === true &&
+          tracks.length === 1 &&
+          pl.track &&
+          trackKey(tracks[0]!.url) === trackKey(pl.track.url) &&
+          pl.health.buffering
+        ) {
+          return "This song is already being prepared.";
+        }
         pl.playNow(tracks.map((t) => ({ ...t, requestedBy: "web" })));
         return "Playing now.";
       }

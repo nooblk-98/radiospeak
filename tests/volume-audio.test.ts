@@ -6,6 +6,7 @@ import childProcess, { execFileSync, type ChildProcess } from "node:child_proces
 import { syncBuiltinESMExports } from "node:module";
 import { Player } from "../src/audio/player.ts";
 import { settingsFrom } from "../src/domain/policies.ts";
+import { AudioSources } from "../src/media/audio-sources.ts";
 
 function wave() {
   const samples = 48000 * 20,
@@ -177,13 +178,14 @@ for (const profile of ["high", "balanced"] as const)
             { input: ogg(packets), maxBuffer: 16 * 1024 * 1024, windowsHide: true },
           );
           const loud = rms(decoded, 10, 30),
-            quiet = rms(decoded, 85, 100),
+            quiet = rms(decoded, 55, 70),
             restored = rms(decoded, 150, 165);
           assert.ok(loud > 500);
           assert.ok(
             quiet / loud > 0.18 && quiet / loud < 0.33,
-            "25% volume must produce roughly a quarter of the decoded amplitude: " + quiet / loud,
+            "25% volume must reach the decoded output within 300 ms: " + quiet / loud,
           );
+
           assert.ok(
             restored / loud > 0.85 && restored / loud < 1.15,
             "unmuted volume must return to its original amplitude",
@@ -265,6 +267,98 @@ test(
       player.stop();
       server.closeAllConnections();
       await new Promise<void>((r) => server.close(() => r()));
+    }
+  },
+);
+
+test(
+  "real FFmpeg seeks through HTTP ranges without downloading and decoding the entire prefix",
+  { skip: !process.env.FFMPEG_PATH, timeout: 15000 },
+  async (t) => {
+    // A 60 second file over a throttled connection makes decoding a 45 second prefix visibly slow.
+    const tone = wave();
+    const audio = Buffer.concat([
+      tone.subarray(0, 44),
+      tone.subarray(44),
+      tone.subarray(44),
+      tone.subarray(44),
+    ]);
+    audio.writeUInt32LE(audio.length - 8, 4);
+    audio.writeUInt32LE(audio.length - 44, 40);
+    const ranges: number[] = [];
+    const server = createServer((req, res) => {
+      const start = Number(/bytes=(\d+)-/.exec(req.headers.range ?? "")?.[1] ?? 0);
+      ranges.push(start);
+      res.writeHead(req.headers.range ? 206 : 200, {
+        "Content-Type": "audio/wav",
+        "Accept-Ranges": "bytes",
+        "Content-Length": audio.length - start,
+        ...(req.headers.range
+          ? { "Content-Range": `bytes ${start}-${audio.length - 1}/${audio.length}` }
+          : {}),
+      });
+      let offset = start;
+      const timer = setInterval(() => {
+        const next = Math.min(offset + 16384, audio.length);
+        if (!res.writableNeedDrain) {
+          res.write(audio.subarray(offset, next));
+          offset = next;
+        }
+        if (offset === audio.length) {
+          clearInterval(timer);
+          res.end();
+        }
+      }, 10);
+      res.on("close", () => clearInterval(timer));
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address() as { port: number };
+    let lookups = 0,
+      frames = 0;
+    const sources = new AudioSources(async () => {
+      lookups++;
+      return { url: `http://127.0.0.1:${address.port}/tone.wav`, headers: {} };
+    });
+    const player = new Player({
+      ffmpegPath: process.env.FFMPEG_PATH!,
+      ytdlpPath: "unused",
+      bitrateKbps: 96,
+      volume: 50,
+      resolveSource: (url, signal) => sources.resolve("test", url, signal),
+      log() {},
+      sendFrame: (frame) => {
+        if (frame.length) frames++;
+      },
+    });
+    const wait = async (ready: () => boolean, timeout = 3000) => {
+      const deadline = Date.now() + timeout;
+      while (!ready()) {
+        if (Date.now() > deadline)
+          throw new Error("Seek timeout: " + JSON.stringify(player.health));
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    };
+    try {
+      player.enqueue([{ url: "https://example.com/song", title: "Seek test", duration: 60 }]);
+      await wait(() => frames >= 10);
+      const before = frames,
+        started = performance.now();
+      player.seek(45);
+      await wait(() => frames > before, 1800);
+      const latency = performance.now() - started;
+      assert.ok(
+        ranges.some((start) => start >= 45 * 192000),
+        "FFmpeg uses a range close to the requested time",
+      );
+      assert.equal(lookups, 1, "seeking reuses the resolved source");
+      assert.ok(player.elapsed >= 45 && player.elapsed < 46);
+      assert.ok(player.health.startupMs !== null);
+      t.diagnostic(`Seek to 45s: ${Math.round(latency)} ms to first audio packet`);
+    } finally {
+      player.stop();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   },
 );

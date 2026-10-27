@@ -29,19 +29,14 @@ export class VolumeControl {
       clearTimeout(state.timer);
       state.timer = null;
       void this.#drain(bot, state);
-    } else if (!state.running && !state.timer) {
-      state.timer = setTimeout(() => {
-        state.timer = null;
-        void this.#drain(bot, state);
-      }, 75);
-    }
+    } else if (!state.running) void this.#drain(bot, state);
   }
   async #drain(bot, state) {
     if (state.running) return;
     state.running = true;
     try {
       while (state.pending !== null) {
-        const wait = 75 - (Date.now() - state.lastSent);
+        const wait = 40 - (Date.now() - state.lastSent);
         if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
         const value = state.pending;
         state.pending = null;

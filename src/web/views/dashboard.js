@@ -14,6 +14,7 @@ import {
   trackTable,
 } from "../ui/components.js";
 import { platformName } from "../ui/platforms.js";
+import { playbackStatus } from "../ui/playback.js";
 
 export function createDashboardViews(getContext) {
   function hero(b) {
@@ -21,21 +22,16 @@ export function createDashboardViews(getContext) {
     const t = currentTrack(),
       isPaused = paused(b),
       idle = !t;
-    const label = b.autoPaused
-      ? "PAUSED · NO LISTENERS"
-      : isPaused
-        ? "PLAYBACK PAUSED"
-        : t
-          ? "ON THE AIR"
-          : "READY WHEN YOU ARE";
+    const status = playbackStatus(b),
+      label = status.label.toUpperCase();
     return (
       '<section class="hero" aria-label="Now playing">' +
       art(t, "hero-art") +
-      '<div class="hero-copy"><div class="eyebrow"><span class="status-dot ' +
-      (t && !isPaused ? "on" : "") +
-      '"></span>' +
+      '<div class="hero-copy"><div class="eyebrow"><span data-playback-dot class="status-dot ' +
+      (status.phase === "playing" ? "on" : status.loading ? "warning" : "") +
+      '"></span><span data-playback-label role="status">' +
       label +
-      "</div><h2>" +
+      "</span></div><h2>" +
       e(t?.title || "Your channel.\nYour soundtrack.") +
       '</h2><div class="artist">' +
       e(t?.artist || (idle ? "Good music sounds better together." : source(t))) +
@@ -61,8 +57,8 @@ export function createDashboardViews(getContext) {
         ? ib("next", "Skip track", "skip", !b.track ? "disabled" : "") +
           ib("library", "Save to playlist", "save-current")
         : "") +
-      '</div></div><div class="hero-indicator ' +
-      (idle || isPaused ? "paused" : "") +
+      '</div></div><div data-playback-indicator class="hero-indicator ' +
+      (status.phase !== "playing" ? "paused" : "") +
       '" aria-hidden="true"><i></i><i></i><i></i><i></i></div></section>'
     );
   }

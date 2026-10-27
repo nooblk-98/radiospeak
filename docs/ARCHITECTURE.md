@@ -52,6 +52,10 @@ The factory imports the Discord implementation lazily. TeamSpeak-only installs t
 
 `media/ytdlp.ts` handles provider lookup, search caching and cancellation. Its task pool bounds subprocess concurrency. `library/imports.ts` persists import cursors and track batches so interruption does not restart a large playlist from the beginning. Keep lookup, import and playback cancellation separate: cancelling one search consumer must not cancel another consumer's shared lookup.
 
+`media/audio-sources.ts` resolves short-lived playback URLs in a separate two-slot pool. These URLs and provider headers live only in a bounded memory cache, expire before their signed URL deadline, and are shared across seeking and compatible instances. The next track's URL is warmed near the end of a song even when full audio prebuffering is off. Full URL metadata seeds this cache when it already contains a selected audio format, avoiding a second extraction. FFmpeg seeks a direct input before decoding; unsupported or rejected inputs fall back to the original yt-dlp pipe. Cancellation stops abandoned extraction and prevents a stopped pipeline from starting later.
+
+Startup waits for five Opus frames (100 ms). Encoder credit holds at most ten frames of submitted audio (200 ms), keeping live gain responsive while raw PCM remains available upstream. Health reports source lookup and first-audio latency. A cold provider lookup, normalization analysis and a voice client's network buffer can still add delay.
+
 ## HTTP boundaries
 
 | Module              | Responsibility                                                                             |
@@ -66,9 +70,11 @@ The factory imports the Discord implementation lazily. TeamSpeak-only installs t
 
 The panel receives full structural state when a revision changes and lightweight `playback_progress` events otherwise. Broadcast frames are serialized once for all connected viewers. Authentication is rechecked for open streams. Playlist tracks remain paginated, and stale positional edits fail before mutating a different track.
 
+Seek and volume responses include a compact playback acknowledgement, so the initiating browser avoids an extra state request. Bot revisions are scoped to a runtime generation; late progress cannot roll back an acknowledged control, and replacing an instance correctly starts a new revision scope.
+
 ## Browser boundaries
 
-`web/app.js` coordinates mutable panel state and user events. View factories receive a `getContext` callback and read it for each render, so they always use the latest SSE snapshot, selected bot and filters. Shared `ui/` modules format escaped markup without owning application state. Feature controllers serialize rapid volume changes, guard duplicate enqueue requests and manage the notification bell independently of view rendering.
+`web/app.js` coordinates mutable panel state and user events. View factories receive a `getContext` callback and read it for each render, so they always use the latest SSE snapshot, selected bot and filters. Shared `ui/` modules format escaped markup without owning application state. Feature controllers serialize rapid volume changes, guard duplicate enqueue and Play now requests, and manage the notification bell independently of view rendering. Playback labels follow actual resolving, buffering and playing phases; selecting a track alone never marks it as audible.
 
 The server serves nested module paths and retains the previous root asset URLs, including `/app.js`, `/components.js` and platform logos. HTML and every module import share the same source revision query parameter. Browser source imports remain normal relative imports so DOM tests can execute the same files directly.
 

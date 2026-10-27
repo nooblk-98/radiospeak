@@ -44,6 +44,9 @@ test("UI navigation, creation, import, idle selection, search, save, queue edits
     enqueueGate: Promise<void> | null = null,
     releaseEnqueue!: () => void,
     enqueueFailure = false;
+  let playRequests = 0,
+    playGate: Promise<void> | null = null,
+    releasePlay!: () => void;
   const errors: string[] = [];
   dom.window.addEventListener("error", (event) => errors.push(event.message));
   try {
@@ -85,6 +88,14 @@ test("UI navigation, creation, import, idle selection, search, save, queue edits
         return new Response(JSON.stringify([searchTrack, tracks[3]]), {
           headers: { "Content-Type": "application/json" },
         });
+      }
+      if (
+        url.pathname.endsWith("/play-now") &&
+        init?.body &&
+        JSON.parse(String(init.body)).tracks?.[0]?.url === searchTrack.url
+      ) {
+        playRequests++;
+        if (playGate) await playGate;
       }
       if (
         url.pathname.endsWith("/enqueue") &&
@@ -175,6 +186,19 @@ test("UI navigation, creation, import, idle selection, search, save, queue edits
       "latest rapid slider value wins",
     );
     assert.equal(document.querySelectorAll(".player-dock").length, 1);
+    const seeker = get("#seek") as HTMLInputElement;
+    seeker.focus();
+    fill("#seek", "42.5");
+    seeker.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+    await until(
+      () => f.app.bots[0]!.player.elapsed === 42.5 && get("#elapsed").textContent === "0:42",
+      "seek updates the position without waiting for a full state refresh",
+    );
+    f.app.bots[0]!.player.seek(50.5);
+    await until(
+      () => Number((get("#seek") as HTMLInputElement).value) === 50.5,
+      "a focused seek bar keeps following server progress after release",
+    );
     assert.equal(
       document.querySelectorAll("script:not([src])").length,
       0,
@@ -639,6 +663,65 @@ test("UI navigation, creation, import, idle selection, search, save, queue edits
         get("#toast").textContent === "Settings and playlists imported.",
       "portable import confirms before adding playlists",
     );
+    // A selected track is not audible until the provider lookup and buffering complete.
+    const player = f.app.bots[0]!.player,
+      baseHealth = player.health;
+    let phase = "resolving";
+    Object.defineProperties(player, {
+      health: {
+        configurable: true,
+        get: () => ({ ...baseHealth, phase, buffering: phase !== "playing" }),
+      },
+      userPaused: { configurable: true, get: () => false },
+      autoPaused: { configurable: true, get: () => false },
+      connectionPaused: { configurable: true, get: () => false },
+    });
+    try {
+      dom.window.location.hash = "search";
+      await until(
+        () => !!document.querySelector('.result-card [data-action="play-track"]'),
+        "search playback controls",
+      );
+      playGate = new Promise<void>((resolve) => {
+        releasePlay = resolve;
+      });
+      click('.result-card [data-action="play-track"]');
+      assert.match(get('.result-card [data-action="play-track"]').textContent!, /Starting/);
+      click('.result-card [data-action="play-track"]');
+      await until(() => playRequests === 1, "one Play now request while starting");
+      releasePlay();
+      playGate = null;
+      await until(
+        () =>
+          document.querySelector('[data-play-state="preparing"]')?.getAttribute("aria-busy") ===
+          "true",
+        "Play now stays disabled while preparing audio",
+      );
+      assert.match(get("#playback-stage").textContent!, /Resolving audio stream/);
+      click('.result-card [data-action="play-track"]');
+      assert.equal(playRequests, 1);
+      dom.window.location.hash = "dashboard";
+      await until(
+        () => !!document.querySelector("[data-playback-label]"),
+        "dashboard playback state",
+      );
+      assert.match(get("[data-playback-label]").textContent!, /RESOLVING AUDIO STREAM/);
+      phase = "buffering";
+      await until(
+        () => get("#playback-stage").textContent === "Preparing audio…",
+        "provider resolution progresses to buffering",
+      );
+      phase = "playing";
+      await until(
+        () =>
+          get("[data-playback-label]").textContent === "ON THE AIR" &&
+          get("#playback-stage").textContent === "",
+        "only ready audio shows On the air",
+      );
+    } finally {
+      for (const key of ["health", "userPaused", "autoPaused", "connectionPaused"])
+        delete (player as any)[key];
+    }
     assert.deepEqual(errors, []);
   } finally {
     for (const timer of timers) {

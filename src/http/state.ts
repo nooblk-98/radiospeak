@@ -67,6 +67,8 @@ export function botState(bot: MusicBot) {
   const pl = bot.player;
   return {
     name: bot.name,
+    revision: bot.revision,
+    generation: bot.generation,
     nickname: bot.nickname,
     connected: bot.connected,
     platform: bot.platform,
@@ -102,5 +104,18 @@ export function botState(bot: MusicBot) {
     activeSchedule: bot.activeSchedule ?? null,
     votes: bot.votes,
     historyVersion: bot.historyVersion,
+  };
+}
+
+/** Acknowledge fast controls without making the browser fetch the entire library again. */
+export function playbackUpdate(bot: MusicBot) {
+  return {
+    name: bot.name,
+    revision: bot.revision,
+    generation: bot.generation,
+    trackUrl: bot.player.track?.url ?? null,
+    elapsed: bot.player.elapsed,
+    volume: bot.player.volume,
+    health: bot.health,
   };
 }

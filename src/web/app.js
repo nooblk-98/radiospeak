@@ -1,7 +1,10 @@
 /** Panel controller: owns live state, navigation, rendering coordination and delegated events. */
 import { EnqueueControl } from "./features/enqueue.js";
+import { PlayControl } from "./features/play.js";
+import { playbackStatus } from "./ui/playback.js";
 import { NotificationCenter } from "./features/notifications.js";
 import { VolumeControl } from "./features/volume.js";
+import { SeekControl } from "./features/seek.js";
 import { request, StateConnection } from "./state/connection.js";
 import {
   button,
@@ -189,23 +192,46 @@ let dragging = null,
   renderedChrome = "";
 let receivedAt = 0,
   lastRenderBot = "";
+let lastEtaKey = "";
 const lastVolumes = new Map();
 const requestedVolumes = new Map();
 const volumeControl = new VolumeControl({
-  send: (name, volume) => request("/api/bots/" + encodeURIComponent(name) + "/volume", { volume }),
+  send: async (name, volume) => {
+    const result = await request("/api/bots/" + encodeURIComponent(name) + "/volume", { volume });
+    connection.applyPlayback(result.playback);
+  },
   onValue: (name, value) => {
     requestedVolumes.set(name, value);
     if (value > 0) lastVolumes.set(name, value);
     paintVolume(name, value);
   },
-  onSettled: () => {
-    void connection.refresh(true).then(() => render());
+  onSettled: (name, value) => {
+    if (state?.bots.find((b) => b.name === name)?.volume === value) requestedVolumes.delete(name);
+    render();
   },
   onError: (name, error) => {
     requestedVolumes.delete(name);
     toast("Could not change volume: " + error.message, true);
     if (bot()?.name === name) paintVolume(name, bot().volume);
     void connection.refresh(true).then(() => render());
+  },
+});
+const seekControl = new SeekControl({
+  send: async (name, url, seconds) => {
+    const result = await request("/api/bots/" + encodeURIComponent(name) + "/seek", {
+      seconds,
+      url,
+    });
+    connection.applyPlayback(result.playback);
+  },
+  onValue: () => updateProgress(),
+  onSettled: () => {
+    updateProgress();
+    renderBackground();
+  },
+  onError: (_name, error) => {
+    toast(error.message, true);
+    void connection.refresh(true).then(() => updateProgress());
   },
 });
 function paintVolume(name, value) {
@@ -303,6 +329,37 @@ const enqueueControl = new EnqueueControl({
     mutate("/api/bots/" + encodeURIComponent(name) + "/enqueue", { tracks: [track], unique: true }),
   onChange: paintEnqueueButtons,
 });
+const playControl = new PlayControl({
+  send: (name, track) =>
+    mutate("/api/bots/" + encodeURIComponent(name) + "/play-now", {
+      tracks: [track],
+      unique: true,
+    }),
+  onChange: paintPlayButtons,
+});
+function paintPlayButtons() {
+  const b = bot();
+  if (!b) return;
+  document.querySelectorAll('[data-action="play-track"]').forEach((el) => {
+    const track = tracksFor(el.dataset.scope)[Number(el.dataset.index)];
+    if (!track) return;
+    const phase = playControl.state(b, track),
+      busy = phase !== "idle";
+    const label =
+      phase === "requesting" ? "Starting…" : phase === "preparing" ? "Preparing…" : "Play now";
+    if (el.dataset.playState !== phase) {
+      el.dataset.playState = phase;
+      el.innerHTML =
+        icon(busy && phase !== "busy" ? "clock" : "play") +
+        (el.classList.contains("icon-button") ? "" : label);
+    }
+    el.disabled = busy || state?.viewer?.role === "listener";
+    el.setAttribute("aria-busy", String(phase === "requesting" || phase === "preparing"));
+    el.setAttribute("aria-label", label + ": " + track.title);
+    el.title =
+      phase === "preparing" ? "Preparing this song; clicking again would restart it" : label;
+  });
+}
 function enqueueTrackFor(el, b) {
   return el.dataset.action === "history-enqueue"
     ? historyCache.get(b.name)?.entries.find((item) => item.id === el.dataset.id)?.track
@@ -320,25 +377,40 @@ function paintEnqueueButtons() {
     const track = enqueueTrackFor(el, b);
     if (!track) return;
     const phase = phaseFor(track),
-      label = { idle: "Enqueue", adding: "Adding…", queued: "Queued", playing: "Playing" }[phase];
+      label = {
+        idle: "Enqueue",
+        adding: "Adding…",
+        queued: "Queued",
+        preparing: "Preparing…",
+        playing: "Playing",
+      }[phase];
     if (el.dataset.enqueueState !== phase) {
       el.dataset.enqueueState = phase;
       el.innerHTML =
-        icon({ idle: "plus", adding: "clock", queued: "check", playing: "headphones" }[phase]) +
-        (el.classList.contains("icon-button") ? "" : label);
+        icon(
+          {
+            idle: "plus",
+            adding: "clock",
+            queued: "check",
+            preparing: "clock",
+            playing: "headphones",
+          }[phase],
+        ) + (el.classList.contains("icon-button") ? "" : label);
     }
     el.disabled = phase !== "idle";
     el.classList.toggle("enqueue-confirmed", phase === "queued" || phase === "playing");
-    el.setAttribute("aria-busy", String(phase === "adding"));
+    el.setAttribute("aria-busy", String(phase === "adding" || phase === "preparing"));
     el.setAttribute("aria-label", label + ": " + track.title);
     el.title =
       phase === "idle"
         ? "Add to queue"
         : phase === "adding"
           ? "Adding to queue…"
-          : phase === "playing"
-            ? "This track is already playing"
-            : "This track is already in Up next";
+          : phase === "preparing"
+            ? "Preparing this song for playback"
+            : phase === "playing"
+              ? "This track is already playing"
+              : "This track is already in Up next";
   });
 }
 function toast(message, error = false, undoToken, undoBot) {
@@ -615,6 +687,32 @@ function renderBackground() {
   const h = b.health || {},
     system = state.system || {},
     container = $("#health-values");
+  const playback = playbackStatus(b);
+  const stage = $("#playback-stage");
+  const label = playback.loading || playback.phase === "paused" ? playback.label : "";
+  if (stage && stage.textContent !== label) stage.textContent = label;
+  document.querySelectorAll("[data-playback-label]").forEach((el) => {
+    if (el.textContent !== playback.label.toUpperCase())
+      el.textContent = playback.label.toUpperCase();
+  });
+  document.querySelectorAll("[data-playback-dot]").forEach((el) => {
+    el.className =
+      "status-dot " + (playback.phase === "playing" ? "on" : playback.loading ? "warning" : "");
+  });
+  document
+    .querySelectorAll("[data-playback-indicator]")
+    .forEach((el) => el.classList.toggle("paused", playback.phase !== "playing"));
+  const statusText = !b.connected
+    ? "Offline"
+    : playback.phase === "idle"
+      ? "Connected · Idle"
+      : playback.phase === "playing"
+        ? "Playing"
+        : playback.label;
+  const statusNode = $("#connection-label");
+  if (statusNode && statusNode.textContent !== statusText) statusNode.textContent = statusText;
+  paintPlayButtons();
+  paintEnqueueButtons();
   if (container) {
     const metrics = [
       ["Server uptime", time(Math.floor(system.uptime || 0))],
@@ -622,6 +720,18 @@ function renderBackground() {
       ["Process ID", system.pid || "—"],
       ["Reconnects", h.reconnectCount || 0],
       ["Audio buffer", Number(h.bufferedSeconds || 0).toFixed(1) + "s"],
+      [
+        "Audio startup",
+        h.startupMs === null || h.startupMs === undefined
+          ? "Waiting for audio"
+          : h.startupMs + " ms",
+      ],
+      [
+        "Source lookup",
+        h.sourceLookupMs === null || h.sourceLookupMs === undefined
+          ? "—"
+          : h.sourceLookupMs + " ms",
+      ],
       ["Buffer underruns", h.underruns || 0],
       ["Event loop delay", (system.eventLoopLagMs ?? "—") + " ms"],
       [
@@ -932,7 +1042,11 @@ function renderChrome(b) {
         ? "Playing"
         : "Connected · Idle";
   $("#connection").innerHTML =
-    '<span class="status-dot ' + (b.connected ? "on" : "") + '"></span>' + status;
+    '<span class="status-dot ' +
+    (b.connected ? "on" : "") +
+    '"></span><span id="connection-label">' +
+    e(status) +
+    "</span>";
   $("#queue-badge").textContent = b.queue.length;
   $("#favorite-count").textContent = state.favorites.length;
   $("#sidebar-bot").textContent = b.nickname || b.name;
@@ -995,6 +1109,7 @@ function render(force = false) {
   const bWithoutProgress = { ...b };
   delete bWithoutProgress.elapsed;
   delete bWithoutProgress.health;
+  delete bWithoutProgress.revision;
   const signature = JSON.stringify([
     activeView,
     playlistId,
@@ -1084,13 +1199,17 @@ function render(force = false) {
     b.defaultPlaylist,
     state.viewer?.role,
   ]);
-  if (
-    dockSignature !== renderedDock &&
-    !sliderActive &&
-    !$("#player-dock").contains(document.activeElement)
-  ) {
+  if (dockSignature !== renderedDock && !sliderActive) {
+    const focused = $("#player-dock").contains(document.activeElement)
+      ? { id: document.activeElement.id, action: document.activeElement.dataset.action }
+      : null;
     renderedDock = dockSignature;
     $("#player-dock").innerHTML = dock(b);
+    if (focused?.id) document.getElementById(focused.id)?.focus({ preventScroll: true });
+    else if (focused?.action)
+      [...$("#player-dock").querySelectorAll("[data-action]")]
+        .find((el) => el.dataset.action === focused.action)
+        ?.focus({ preventScroll: true });
     const title = $(".dock-title"),
       text = $(".dock-title>span");
     if (text && text.scrollWidth > title.clientWidth) {
@@ -1099,16 +1218,6 @@ function render(force = false) {
         title.clientWidth - text.scrollWidth - 10 + "px",
       );
       title.classList.add("is-long");
-    }
-  } else if (dockSignature !== renderedDock && !sliderActive) {
-    // Keep the focused transport button usable while updating its labels and state.
-    const focusedAction = document.activeElement?.dataset.action;
-    if (focusedAction && document.activeElement.closest("#player-dock")) {
-      renderedDock = dockSignature;
-      $("#player-dock").innerHTML = dock(b);
-      [...$("#player-dock").querySelectorAll("[data-action]")]
-        .find((el) => el.dataset.action === focusedAction)
-        ?.focus({ preventScroll: true });
     }
   }
   updateProgress();
@@ -1119,9 +1228,14 @@ function render(force = false) {
 function updateProgress() {
   const b = bot(),
     seek = $("#seek");
-  if (!b || !seek || sliderActive || document.activeElement === seek) return;
-  const extra = !paused(b) && b.track ? Math.min(1.5, (Date.now() - receivedAt) / 1000) : 0;
-  const elapsed = Math.min(b.track?.duration || Infinity, b.elapsed + extra);
+  if (!b || !seek || sliderActive === "seek") return;
+  const pending = seekControl.get(b.name, b.track?.url);
+  const extra =
+    !paused(b) && b.track && !b.health?.buffering
+      ? Math.min(1.5, (Date.now() - receivedAt) / 1000)
+      : 0;
+  const elapsed = Math.min(b.track?.duration || Infinity, pending ?? b.elapsed + extra);
+  seek.setAttribute("aria-busy", String(pending !== undefined || !!b.health?.buffering));
   seek.value = elapsed;
   seek.style.setProperty(
     "--fill",
@@ -1134,6 +1248,9 @@ function updateProgress() {
       (b.track?.duration ? duration(b.track.duration) : "live stream"),
   );
   $("#elapsed").textContent = time(Math.floor(elapsed));
+  const etaKey = b.name + "|" + b.revision + "|" + Math.floor(elapsed);
+  if (lastEtaKey === etaKey) return;
+  lastEtaKey = etaKey;
   let wait = b.track ? (b.track.duration ? Math.max(0, b.track.duration - elapsed) : null) : 0;
   const estimates = b.queue.map((t) => {
     const estimate = wait;
@@ -1663,7 +1780,7 @@ document.addEventListener("click", async (event) => {
         const track = tracksFor(scope)[index];
         if (!track) throw new Error("This track is no longer available");
         if (kind === "enqueue-track") await enqueueControl.add(b, track);
-        else await action("play-now", { tracks: [track] });
+        else await playControl.play(b, track);
         return;
       }
       case "favorite-current":
@@ -1935,7 +2052,7 @@ document.addEventListener("change", async (event) => {
     }
     if (el.id === "volume") volumeControl.set(bot().name, Number(el.value), true);
     if (el.id === "seek") {
-      await action("seek", { seconds: Number(el.value), url: bot().track?.url });
+      seekControl.set(bot().name, bot().track?.url, Number(el.value));
     }
     if (el.id === "instance-platform") {
       syncPlatformFields();
@@ -1952,10 +2069,11 @@ document.addEventListener("change", async (event) => {
   }
 });
 document.addEventListener("pointerdown", (event) => {
-  if (event.target.type === "range") sliderActive = true;
+  if (event.target.type === "range") sliderActive = event.target.id;
 });
 document.addEventListener("pointerup", () => {
   sliderActive = false;
+  updateProgress();
 });
 document.addEventListener("pointercancel", () => {
   sliderActive = false;
@@ -2095,4 +2213,4 @@ document.querySelectorAll("[data-icon]").forEach((el) => {
 });
 navigate();
 connection.start();
-setInterval(updateProgress, 500);
+setInterval(updateProgress, 100);

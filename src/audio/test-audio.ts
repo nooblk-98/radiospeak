@@ -3,6 +3,7 @@
 // Set TEST_OUT=file.ogg to also save what the bot would send, to listen to it.
 import { createWriteStream } from "node:fs";
 import { resolve } from "../media/ytdlp.ts";
+import { audioSources } from "../media/audio-sources.ts";
 import { Player } from "./player.ts";
 
 const [input = "never gonna give you up", secondsArg] = process.argv.slice(2);
@@ -19,6 +20,8 @@ const out = process.env.TEST_OUT
 const player = new Player({
   ffmpegPath,
   ytdlpPath,
+  resolveSource: (url, signal) => audioSources.resolve(ytdlpPath, url, signal),
+  invalidateSource: (url) => audioSources.invalidate(ytdlpPath, url),
   bitrateKbps: 96,
   volume: 50,
   log: (level, msg) => console.log(`[${level}] ${msg}`),

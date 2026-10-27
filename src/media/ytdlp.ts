@@ -2,6 +2,7 @@
 import { execFile } from "node:child_process";
 import type { Track } from "../audio/player.ts";
 import { TaskPool } from "./task-pool.ts";
+import { audioSources } from "./audio-sources.ts";
 
 export interface Resolved {
   tracks: Track[];
@@ -44,6 +45,7 @@ export const mediaStats = () => ({
   ...pool.stats,
   cachedSearches: cache.size,
   sharedLookups: flights.size,
+  playback: audioSources.stats,
 });
 const isUrl = (s: string) => /^https?:\/\//i.test(s);
 function mediaEntry(entry: Record<string, any>, index: number): MediaEntry {
@@ -189,8 +191,10 @@ async function lookup(path: string, input: string, options: ResolveOptions): Pro
         Number(entry.playlist_index) || (options.startIndex ?? 1) + entries.length,
       );
       entries.push(item);
-      if (item.track) tracks.push(item.track);
-      else skipped.push(item.error!);
+      if (item.track) {
+        audioSources.remember(path, item.track.url, entry);
+        tracks.push(item.track);
+      } else skipped.push(item.error!);
     } catch {
       skipped.push("Invalid media entry");
     }

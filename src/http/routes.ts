@@ -33,7 +33,7 @@ import {
   tracksFrom,
 } from "./helpers.ts";
 import { botAction } from "./player-actions.ts";
-import { stateFor } from "./state.ts";
+import { playbackUpdate, stateFor } from "./state.ts";
 
 /** Search results come in pages of 10, up to 50 in total. */
 const SEARCH_PAGE_SIZE = 10;
@@ -446,14 +446,12 @@ export async function route(
     });
   }
   if (parts[0] === "api" && parts[1] === "bots" && parts[2] && parts[3] && method === "POST") {
-    const result = await botAction(
-      app,
-      selectedBot(app, parts[2]),
-      parts[3],
-      await readJson(req),
-      viewer,
-    );
-    return typeof result === "string" ? { message: plain(result) } : result;
+    const bot = selectedBot(app, parts[2]);
+    const result = await botAction(app, bot, parts[3], await readJson(req), viewer);
+    const response = typeof result === "string" ? { message: plain(result) } : result;
+    return ["volume", "seek"].includes(parts[3])
+      ? { ...response, playback: playbackUpdate(bot) }
+      : response;
   }
   if (parts[0] === "api" && parts[1] === "collections") {
     if (method === "POST" && parts.length === 2) {

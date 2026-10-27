@@ -1,3 +1,5 @@
+import { playbackStatus } from "../ui/playback.js";
+
 /** Match alternate YouTube URLs while retaining meaningful stream parameters. */
 export function queueTrackKey(link) {
   try {
@@ -39,7 +41,13 @@ export class EnqueueControl {
     return (track) => {
       if (this.#pending.has(this.#key(bot, track))) return "adding";
       const key = queueTrackKey(track.url);
-      return key === playing ? "playing" : queued.has(key) ? "queued" : "idle";
+      return key === playing
+        ? playbackStatus(bot).loading
+          ? "preparing"
+          : "playing"
+        : queued.has(key)
+          ? "queued"
+          : "idle";
     };
   }
   async add(bot, track) {

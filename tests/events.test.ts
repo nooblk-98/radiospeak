@@ -116,3 +116,68 @@ test("a changed UI revision requests reload before accepting incompatible playli
     }
   }
 });
+
+test("control acknowledgements win over older progress and replacement instances reset revision scope", () => {
+  const saved = new Map(
+    ["EventSource", "document"].map((key) => [
+      key,
+      Object.getOwnPropertyDescriptor(globalThis, key),
+    ]),
+  );
+  const connection = new StateConnection();
+  try {
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      value: Object.assign(new EventTarget(), { hidden: false }),
+    });
+    Object.defineProperty(globalThis, "EventSource", { configurable: true, value: Source });
+    connection.start();
+    const bot = {
+      name: "one",
+      generation: "first",
+      revision: 2,
+      track: { url: "track-a" },
+      volume: 50,
+      elapsed: 1,
+    };
+    const base = { bots: [bot], playlists: [], favorites: [] };
+    Source.current.emit("state", base);
+    connection.applyPlayback({
+      name: "one",
+      generation: "first",
+      revision: 4,
+      trackUrl: "track-a",
+      elapsed: 50.5,
+      volume: 25,
+    });
+    Source.current.emit("playback_progress", {
+      bots: [{ name: "one", generation: "first", revision: 3, elapsed: 1.5 }],
+    });
+    Source.current.emit("state", base);
+    assert.equal(connection.state.bots[0].elapsed, 50.5);
+    assert.equal(connection.state.bots[0].volume, 25);
+    Source.current.emit("state", {
+      ...base,
+      bots: [{ ...bot, generation: "replacement", revision: 0 }],
+    });
+    assert.equal(connection.state.bots[0].generation, "replacement");
+    connection.applyPlayback({
+      name: "one",
+      generation: "first",
+      revision: 100,
+      trackUrl: "track-a",
+      elapsed: 150,
+    });
+    assert.equal(
+      connection.state.bots[0].elapsed,
+      1,
+      "late responses from the previous instance are discarded",
+    );
+  } finally {
+    connection.stop();
+    for (const [key, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete (globalThis as any)[key];
+    }
+  }
+});

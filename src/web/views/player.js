@@ -9,11 +9,13 @@ import {
   time,
 } from "../ui/components.js";
 import { platformIcon, platformName } from "../ui/platforms.js";
+import { playbackStatus } from "../ui/playback.js";
 
 export function createPlayerViews(getContext) {
   function dock(b) {
     const { state, currentTrack, paused } = getContext();
     const t = currentTrack(),
+      status = playbackStatus(b),
       isPaused = paused(b),
       liked = state.favorites.some((f) => f.url === t?.url),
       canStart = t || b.queue.length || b.defaultPlaylist.size;
@@ -24,7 +26,9 @@ export function createPlayerViews(getContext) {
       e(t?.title || "Nothing playing yet") +
       '"><span>' +
       e(t?.title || "Nothing playing yet") +
-      '</span></div><div class="dock-artist">' +
+      '</span></div><div class="dock-artist"><span id="playback-stage" class="playback-stage" role="status">' +
+      e(status.loading || status.phase === "paused" ? status.label : "") +
+      "</span>" +
       e(t?.artist || (t ? source(t) : "Your next track is waiting")) +
       "</div></div>" +
       ib(
@@ -83,7 +87,7 @@ export function createPlayerViews(getContext) {
       "</button></div>" +
       '<div class="timeline"><span id="elapsed">' +
       time(b.elapsed) +
-      '</span><input id="seek" type="range" min="0" max="' +
+      '</span><input id="seek" type="range" step="0.1" min="0" max="' +
       (b.track?.duration || 1) +
       '" value="' +
       b.elapsed +

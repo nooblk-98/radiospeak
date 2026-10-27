@@ -1,3 +1,5 @@
+import { audioSources } from "../media/audio-sources.ts";
+import { randomUUID } from "node:crypto";
 /** Shared bot lifecycle and library integration, with the default TeamSpeak transport. */
 import {
   Codec,
@@ -66,6 +68,8 @@ export class WelcomeLimiter {
 }
 
 export class MusicBot {
+  /** Scopes revision counters to this runtime instance, including panel replacements. */
+  readonly generation = randomUUID();
   readonly cfg: BotConfig;
   readonly index: number;
   readonly player: Player;
@@ -115,6 +119,8 @@ export class MusicBot {
       ytdlpPath: app.config.ytdlpPath,
       bitrateKbps: app.config.bitrateKbps,
       volume: cfg.volume,
+      resolveSource: (url, signal) => audioSources.resolve(app.config.ytdlpPath, url, signal),
+      invalidateSource: (url) => audioSources.invalidate(app.config.ytdlpPath, url),
       connectionPaused: true,
       log: (level, msg) => this.log(level, msg),
       sendFrame: (frame) => this.sendAudioFrame(frame),

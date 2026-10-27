@@ -53,6 +53,13 @@ export class StateConnection extends EventTarget {
   #accept(state) {
     if (!this.#compatible(state)) return;
     if (!state.viewer && this.state?.viewer) state = { ...state, viewer: this.state.viewer };
+    state = {
+      ...state,
+      bots: state.bots.map((bot) => {
+        const previous = this.state?.bots.find((item) => item.name === bot.name);
+        return previous && this.#older(bot, previous) ? previous : bot;
+      }),
+    };
     const fingerprints = {
       track_changed: JSON.stringify(
         state.bots.map((b) => [b.name, b.track, b.radio, b.userPaused, b.autoPaused]),
@@ -68,6 +75,34 @@ export class StateConnection extends EventTarget {
     this.dispatchEvent(new CustomEvent("playback_progress", { detail: state }));
     this.dispatchEvent(new CustomEvent("state", { detail: state }));
     this.dispatchEvent(new Event("online"));
+  }
+  #older(update, current) {
+    if (update.generation && current.generation && update.generation !== current.generation)
+      return false;
+    return (
+      Number.isFinite(update.revision) &&
+      Number.isFinite(current.revision) &&
+      update.revision < current.revision
+    );
+  }
+  /** A successful control response is authoritative; older SSE/REST frames cannot roll it back. */
+  applyPlayback(update) {
+    if (!update || !this.state || this.#stopped) return;
+    const current = this.state.bots.find((bot) => bot.name === update.name);
+    if (
+      !current ||
+      (update.generation && current.generation && update.generation !== current.generation) ||
+      (current.track?.url ?? null) !== update.trackUrl ||
+      this.#older(update, current)
+    )
+      return;
+    const { trackUrl, ...values } = update;
+    this.#streamVersion++;
+    this.state = {
+      ...this.state,
+      bots: this.state.bots.map((bot) => (bot === current ? { ...bot, ...values } : bot)),
+    };
+    this.dispatchEvent(new CustomEvent("playback_progress", { detail: this.state }));
   }
   async #load() {
     const version = this.#streamVersion;
@@ -120,10 +155,14 @@ export class StateConnection extends EventTarget {
         this.state = {
           ...this.state,
           system: progress.system,
-          bots: this.state.bots.map((b) => ({
-            ...b,
-            ...progress.bots.find((update) => update.name === b.name),
-          })),
+          bots: this.state.bots.map((b) => {
+            const update = progress.bots.find((item) => item.name === b.name);
+            return update &&
+              (!update.generation || !b.generation || update.generation === b.generation) &&
+              !this.#older(update, b)
+              ? { ...b, ...update }
+              : b;
+          }),
         };
         this.dispatchEvent(new CustomEvent("playback_progress", { detail: this.state }));
         this.dispatchEvent(new Event("online"));

@@ -45,7 +45,7 @@ function page(value: number) {
   }
   return data;
 }
-function setup(t: any, budget?: PrebufferBudget) {
+function setup(t: any, budget?: PrebufferBudget, extra = {}) {
   const procs: Process[] = [],
     frames: number[] = [];
   t.mock.method(childProcess, "spawn", (_path: string, args: string[]) => {
@@ -64,6 +64,7 @@ function setup(t: any, budget?: PrebufferBudget) {
     sendFrame(frame) {
       if (frame.length) frames.push(frame[0]!);
     },
+    ...extra,
   });
   return {
     player,
@@ -72,6 +73,58 @@ function setup(t: any, budget?: PrebufferBudget) {
     encoder: () => procs.filter((p) => p.args.includes("libopus") && !p.killed).at(-1)!,
   };
 }
+
+test("seeking a resolved source uses HTTP input seeking and cancelled lookups cannot start stale tracks", async (t) => {
+  const pending: Array<{ signal: AbortSignal; accept: (value: any) => void }> = [];
+  const f = setup(t, undefined, {
+    resolveSource: (_url: string, signal: AbortSignal) =>
+      new Promise((accept) => pending.push({ signal, accept })),
+  });
+  try {
+    f.player.enqueue([tracks[0]!, tracks[1]!]);
+    assert.equal(f.procs.length, 0, "no decoders start before the source is resolved");
+    f.player.seek(120);
+    assert.equal(pending[0]!.signal.aborted, true);
+    pending[0]!.accept({ url: "https://cdn.example/stale", headers: {} });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(f.procs.length, 0);
+    pending[1]!.accept({
+      url: "https://cdn.example/audio",
+      headers: { Referer: "https://example.com" },
+    });
+    await wait(() => f.procs.length === 2);
+    const decoder = f.procs[0]!;
+    assert.ok(
+      decoder.args.indexOf("-ss") < decoder.args.indexOf("-i"),
+      "the source seeks before decoding, rather than decoding its prefix",
+    );
+    assert.equal(decoder.args[decoder.args.indexOf("-ss") + 1], "120");
+    assert.equal(f.player.health.sourceMode, "direct");
+    f.player.stop();
+    assert.ok(f.procs.every((process) => process.killed));
+  } finally {
+    f.player.stop();
+  }
+});
+
+test("a rejected direct input falls back once to the established download pipeline", async (t) => {
+  const f = setup(t, undefined, {
+    resolveSource: async () => ({ url: "https://cdn.example/audio", headers: {} }),
+  });
+  try {
+    f.player.enqueue([tracks[0]!]);
+    await wait(() => f.procs.length === 2);
+    f.procs[0]!.stderr.write("HTTP error 403: https://cdn.example/audio?secret=test\n");
+    f.procs[0]!.emit("exit", 1);
+    f.procs[1]!.emit("close", 0);
+    await wait(() => f.procs.length === 5);
+    assert.equal(f.player.health.sourceMode, "pipe");
+    assert.equal(f.player.track?.url, tracks[0]!.url);
+    assert.equal(f.player.queue.length, 0);
+  } finally {
+    f.player.stop();
+  }
+});
 test("shared prebuffer capacity is released on pause and another bot can prepare", async (t) => {
   const budget = new PrebufferBudget(1),
     f = setup(t, budget);

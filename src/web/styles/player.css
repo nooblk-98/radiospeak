@@ -109,6 +109,12 @@
   overflow: hidden;
   margin-top: 5px;
 }
+.playback-stage {
+  color: var(--accent);
+}
+.playback-stage:not(:empty)::after {
+  content: " · ";
+}
 .dock-heart.active svg {
   fill: #c3f36b22;
 }
