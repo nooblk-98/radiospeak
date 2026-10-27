@@ -1,0 +1,254 @@
+.statusbar {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  height: 35px;
+  border-top: 1px solid var(--line);
+  padding: 0 37px;
+  font-size: 9px;
+  color: #7b886f;
+}
+.statusbar > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.statusbar svg {
+  height: 12px;
+  width: 12px;
+}
+.statusbar .status-end {
+  margin-left: auto;
+  color: #708063;
+}
+.statusbar select {
+  font-size: 9px;
+  border: 0;
+  padding: 2px 3px;
+  background: transparent;
+  max-width: 190px;
+}
+.statusbar button {
+  color: inherit;
+  background: none;
+  font-size: 9px;
+  padding: 0;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.statusbar button[aria-pressed="true"] {
+  color: #b8d19e;
+}
+.player-dock {
+  position: fixed;
+  z-index: 40;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  min-height: var(--dock-height);
+  background: #181c18f5;
+  backdrop-filter: blur(24px);
+  border-top: 1px solid #3a4333;
+  display: grid;
+  grid-template-columns: minmax(210px, 1fr) minmax(280px, 1.3fr) minmax(190px, 1fr);
+  gap: 24px;
+  align-items: center;
+  padding: 16px 27px;
+}
+.dock-track {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.dock-art {
+  width: 55px;
+  height: 55px;
+  border-radius: 8px;
+  background: linear-gradient(145deg, #82966d, #2b4038);
+}
+.dock-info {
+  flex: 1;
+  min-width: 0;
+}
+.dock-title {
+  font-size: 12px;
+  font-weight: 500;
+  overflow: hidden;
+  white-space: nowrap;
+  position: relative;
+}
+.dock-title > span {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+}
+.dock-title.is-long > span {
+  max-width: none;
+  overflow: visible;
+  animation: marquee 13s linear infinite alternate;
+}
+@keyframes marquee {
+  0%,
+  15% {
+    transform: translateX(0);
+  }
+  85%,
+  100% {
+    transform: translateX(var(--marquee-distance, 0px));
+  }
+}
+.dock-artist {
+  font-size: 10px;
+  color: #85957a;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  margin-top: 5px;
+}
+.dock-heart.active svg {
+  fill: #c3f36b22;
+}
+.dock-center {
+  min-width: 0;
+  max-width: 600px;
+  width: 100%;
+  margin: auto;
+}
+.transport {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+.transport .icon-button {
+  width: 26px;
+  height: 26px;
+}
+.transport .icon-button svg {
+  width: 16px;
+  height: 16px;
+}
+.transport .dock-play {
+  width: 33px;
+  height: 33px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #17200e;
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+.dock-play:hover {
+  background: #daff9b;
+}
+.dock-play svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+.timeline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 9px;
+  color: #8d9c81;
+  font-variant-numeric: tabular-nums;
+}
+.timeline > span {
+  width: 32px;
+}
+.timeline > span:last-child {
+  text-align: right;
+}
+input[type="range"] {
+  --fill: 0%;
+  appearance: none;
+  -webkit-appearance: none;
+  height: 3px;
+  min-width: 0;
+  accent-color: var(--accent);
+  background: linear-gradient(to right, var(--accent) var(--fill), #3b4334 var(--fill));
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+  padding: 0;
+}
+input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #d9f6b6;
+}
+input[type="range"]::-moz-range-thumb {
+  width: 8px;
+  height: 8px;
+  border: 0;
+  border-radius: 50%;
+  background: #d9f6b6;
+}
+.timeline input {
+  flex: 1;
+  width: 100%;
+}
+.dock-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 13px;
+}
+.volume-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.volume-controls input {
+  width: 75px;
+}
+.volume-number {
+  font-size: 9px;
+  color: #a8b49d;
+  min-width: 20px;
+}
+.output-info {
+  border-left: 1px solid var(--line);
+  padding-left: 16px;
+  min-width: 0;
+  max-width: 130px;
+}
+.output-label {
+  font-size: 9px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #c1cfb4;
+}
+.output-label svg {
+  width: 12px;
+  height: 12px;
+}
+.output-info .small {
+  font-size: 8px;
+  color: #7b8e6b;
+  margin-top: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.repeat-one {
+  font-size: 8px;
+  position: absolute;
+  right: 0;
+  top: -1px;
+  background: var(--surface);
+  border-radius: 50%;
+  width: 10px;
+}
+.repeat-button {
+  position: relative;
+}

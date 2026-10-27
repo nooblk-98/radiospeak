@@ -3,4 +3,16 @@ node_modules
 data
 config.json
 identity.txt
+identity-*.txt
+playlists.json
+playlists.json.tmp
+playback.json
+playback.json.tmp
+imports.json
+imports.json.tmp
+operations.json
+operations.json.tmp
+discord-instances.json
+discord-instances.json.tmp
+discord-secrets.key
 *.log

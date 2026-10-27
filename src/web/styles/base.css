@@ -1,0 +1,254 @@
+:root {
+  --bg: #111312;
+  --sidebar: #151715;
+  --surface: #1a1d1a;
+  --surface-2: #202420;
+  --line: #2b302a;
+  --text: #f1f3ed;
+  --muted: #969f92;
+  --accent: #c3f36b;
+  --danger: #ff9b95;
+  --radius: 14px;
+  --sidebar-width: 246px;
+  --dock-height: 106px;
+  font-family: Inter, "Segoe UI", Arial, sans-serif;
+  font-size: 14px;
+  color-scheme: dark;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+}
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+button,
+a {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+button {
+  cursor: pointer;
+  border: 0;
+  transition:
+    background 0.15s,
+    color 0.15s,
+    border-color 0.15s,
+    transform 0.15s;
+}
+button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+a {
+  color: inherit;
+  text-decoration: none;
+}
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+[hidden] {
+  display: none !important;
+}
+svg {
+  width: 20px;
+  height: 20px;
+  display: inline-block;
+  vertical-align: middle;
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+h1,
+h2,
+h3,
+p {
+  margin-top: 0;
+}
+h1 {
+  font-size: 32px;
+  letter-spacing: -1.2px;
+  line-height: 1.2;
+  margin-bottom: 10px;
+  font-weight: 650;
+}
+h2 {
+  font-size: 19px;
+  letter-spacing: -0.4px;
+  font-weight: 600;
+  margin-bottom: 0;
+}
+h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 5px;
+}
+.subtle {
+  color: var(--muted);
+}
+.small {
+  font-size: 12px;
+}
+.eyebrow {
+  font-size: 10px;
+  letter-spacing: 1.9px;
+  font-weight: 650;
+}
+.section-label,
+.nav-label {
+  font-size: 10px;
+  letter-spacing: 1.4px;
+  color: #7f897a;
+  font-weight: 600;
+}
+.section-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.icon-button {
+  background: transparent;
+  color: var(--muted);
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.icon-button:hover:not(:disabled) {
+  background: #ffffff0c;
+  color: var(--text);
+}
+.icon-button.active {
+  color: var(--accent);
+  background: #c3f36b12;
+}
+.icon-button.danger:hover {
+  color: var(--danger);
+}
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  white-space: nowrap;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 10px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  min-height: 39px;
+}
+.button svg {
+  width: 16px;
+  height: 16px;
+}
+.primary {
+  color: #17200e;
+  background: var(--accent);
+}
+.primary:hover:not(:disabled) {
+  background: #d4ff89;
+}
+.secondary {
+  border-color: #ffffff19;
+  background: #ffffff04;
+  color: #e0e5dc;
+}
+.secondary:hover:not(:disabled) {
+  background: #ffffff0b;
+  border-color: #ffffff30;
+}
+.danger-button {
+  background: #ff9b9515;
+  color: var(--danger);
+  border: 1px solid #ff9b952b;
+}
+.danger-button:hover {
+  background: #ff9b9526;
+}
+.text-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12px;
+  background: none;
+  padding: 6px 0;
+}
+.text-button:hover {
+  color: var(--accent);
+}
+.text-button svg {
+  width: 15px;
+  height: 15px;
+}
+.status-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  background: #7e8778;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.status-dot.on {
+  background: var(--accent);
+  box-shadow: 0 0 9px #c3f36b25;
+}
+.status-dot.warning {
+  background: #e2bc65;
+}
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  line-height: 1.3;
+  padding: 5px 8px;
+  border-radius: 5px;
+  background: #ffffff08;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.tag.green {
+  background: #c3f36b12;
+  color: var(--accent);
+}
+.tag svg {
+  width: 12px;
+  height: 12px;
+}
+.skip-link {
+  position: fixed;
+  top: -60px;
+  left: 15px;
+  z-index: 100;
+  padding: 10px;
+  background: var(--accent);
+  color: var(--bg);
+  border-radius: 8px;
+}
+.skip-link:focus {
+  top: 15px;
+}

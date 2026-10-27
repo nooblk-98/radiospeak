@@ -1,23 +1,30 @@
-import { log, type App } from "./bot.ts";
-import { loadConfig } from "./config.ts";
-import { createBot, panelBotConfig, checkDiscordSlot } from "./bot-factory.ts";
-import { PlaylistStore } from "./store.ts";
-import { PlaybackStore } from "./playback-store.ts";
-import { startWebServer } from "./web.ts";
+/** Process composition root: load persistent state, create instances, and own shutdown. */
+import { type App } from "./app/context.ts";
+import { checkDiscordSlot, createBot, panelBotConfig } from "./bots/factory.ts";
+import { loadConfig } from "./config/config.ts";
+import { startWebServer } from "./http/server.ts";
+import { PlaylistStore } from "./library/store.ts";
+import { PlaybackStore } from "./persistence/playback-store.ts";
+import { log } from "./shared/logger.ts";
 
 const config = loadConfig();
 const app: App = {
   config,
   playlists: new PlaylistStore(),
-  playback: new PlaybackStore(undefined, message => log("warn", message)),
+  playback: new PlaybackStore(undefined, (message) => log("warn", message)),
   bots: [],
   searchResults: new Map(),
 };
 // Instances added in the web panel run alongside the configured bots.
 const configured = new Set(config.bots.map((b) => b.name.toLowerCase()));
-const panelBots = app.playlists.panelBots.filter((name) => !configured.has(name.toLowerCase()))
-  .map((name) => panelBotConfig(app,name));
-for(const cfg of [...config.bots,...panelBots]){checkDiscordSlot(app,cfg);app.playlists.setPlatform(cfg.name,cfg.platform ?? "teamspeak");app.bots.push(await createBot(app,cfg,app.bots.length));}
+const panelBots = app.playlists.panelBots
+  .filter((name) => !configured.has(name.toLowerCase()))
+  .map((name) => panelBotConfig(app, name));
+for (const cfg of [...config.bots, ...panelBots]) {
+  checkDiscordSlot(app, cfg);
+  app.playlists.setPlatform(cfg.name, cfg.platform ?? "teamspeak");
+  app.bots.push(await createBot(app, cfg, app.bots.length));
+}
 // Saved defaults also follow edits made through TeamSpeak chat commands.
 app.playlists.onChange = () => {
   for (const bot of app.bots) bot.syncLibrary();
@@ -46,6 +53,10 @@ if (config.web.enabled) startWebServer(app);
 // Stagger connections a little so several bots don't trip the server's flood protection.
 for (const [i, bot] of app.bots.entries()) {
   setTimeout(() => {
-    bot.start().catch((err: unknown) => bot.log("error", `Bot failed: ${err instanceof Error ? err.message : String(err)}`));
+    bot
+      .start()
+      .catch((err: unknown) =>
+        bot.log("error", `Bot failed: ${err instanceof Error ? err.message : String(err)}`),
+      );
   }, i * 3000);
 }

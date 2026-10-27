@@ -5,14 +5,18 @@ on:
   push:
     branches: [main]
     paths:
-      - 'src/**'
-      - 'scripts/**'
-      - 'tests/**'
-      - 'package*.json'
-      - 'tsconfig.json'
-      - 'Dockerfile'
-      - 'docker-compose.yml'
-      - '.github/workflows/deploy.yml'
+      - "src/**"
+      - "scripts/**"
+      - "tests/**"
+      - "package*.json"
+      - "tsconfig.json"
+      - ".prettierrc.json"
+      - ".prettierignore"
+      - ".editorconfig"
+      - ".gitattributes"
+      - "Dockerfile"
+      - "docker-compose.yml"
+      - ".github/workflows/deploy.yml"
   workflow_dispatch:
     inputs:
       force_redeploy:
@@ -37,6 +41,7 @@ jobs:
       - run: npm ci
       - name: Install audio tools
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: npm run format:check
       - run: npm run check
       - run: npm test
         env:

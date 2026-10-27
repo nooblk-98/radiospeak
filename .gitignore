@@ -3,6 +3,11 @@ config.json
 identity.txt
 identity-*.txt
 playlists.json
+playlists.json.tmp
+imports.json
+imports.json.tmp
+operations.json
+operations.json.tmp
 playback.json
 playback.json.tmp
 discord-instances.json

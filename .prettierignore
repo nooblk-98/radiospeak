@@ -1,0 +1,14 @@
+node_modules/
+package-lock.json
+config.json
+data/
+docs/screenshots/
+*.svg
+*.tmp
+identity*.txt
+playlists.json
+imports.json
+operations.json
+playback.json
+discord-instances.json
+discord-secrets.key

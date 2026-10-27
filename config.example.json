@@ -23,7 +23,5 @@
     "port": 8080,
     "password": ""
   },
-  "bots": [
-    { "name": "music" }
-  ]
+  "bots": [{ "name": "music" }]
 }

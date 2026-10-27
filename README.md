@@ -122,7 +122,7 @@ Configuration-defined Discord instances can be supplied through `bots` in `confi
 ```json
 {
   "bots": [
-    {"name": "ts-music", "platform": "teamspeak"},
+    { "name": "ts-music", "platform": "teamspeak" },
     {
       "name": "discord-music",
       "platform": "discord",
@@ -143,31 +143,31 @@ For a Discord-only installation, include only the Discord entry; a TeamSpeak ser
 
 Settings come from `config.json` (path set by `FMBOT_CONFIG`). Any `FMBOT_*` environment variable overrides the file.
 
-| `config.json` key | Environment variable | Description |
-| --- | --- | --- |
-| `server` | `FMBOT_SERVER` | `host:port` of the TeamSpeak server (usually port 9987) |
-| `serverPassword` | `FMBOT_SERVER_PASSWORD` | Server password, empty if none |
-| `nickname` | `FMBOT_NICKNAME` | Initial bot name (default `radiospeak`). A name saved in the panel takes precedence |
-| `channel`, `channelPassword` | `FMBOT_CHANNEL`, `FMBOT_CHANNEL_PASSWORD` | Optional first channel (`"Music"` or `"Lounge/Music"`). A channel chosen in the panel replaces it |
-| `volume` | `FMBOT_VOLUME` | Starting volume, 0–100 |
-| `defaultPlaylist` | `FMBOT_DEFAULT_PLAYLIST` | Optional YouTube playlist link for idle play. Usually left empty in favor of the panel's idle playlist |
-| `maxPlaylistItems` | `FMBOT_MAX_PLAYLIST_ITEMS` | Most songs taken from one playlist link (default 300) |
-| `bitrateKbps` | `FMBOT_BITRATE` | Opus bitrate (default 96) |
-| `admins`, `adminGroups` | `FMBOT_ADMINS`, `FMBOT_ADMIN_GROUPS` | Unique IDs / server group IDs allowed to delete saved playlists. Both empty means everyone |
-| `pauseWhenEmpty`, `emptyGraceSeconds` | `FMBOT_PAUSE_WHEN_EMPTY` | Pause after the channel has been empty this long (default 15 s) |
-| `songInDescription` | `FMBOT_SONG_IN_DESCRIPTION` | Show the current song in the bot's description. The nickname never changes |
-| `web.enabled`, `web.host`, `web.port`, `web.password` | `FMBOT_WEB_ENABLED`, `FMBOT_WEB_HOST`, `FMBOT_WEB_PORT`, `FMBOT_WEB_PASSWORD` | Web panel and its sign-in password |
-| `bots` | `FMBOT_BOTS` (JSON) | Several bots. Each can override `name`, `nickname`, `channel`, `channelPassword`, `volume`, `defaultPlaylist`, `identityFile` |
-| `ffmpegPath`, `ytdlpPath`, `identityLevel`, `commandPrefix` | | Tool paths, identity security level (default 8), chat prefix (default `!`) |
+| `config.json` key                                           | Environment variable                                                          | Description                                                                                                                   |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `server`                                                    | `FMBOT_SERVER`                                                                | `host:port` of the TeamSpeak server (usually port 9987)                                                                       |
+| `serverPassword`                                            | `FMBOT_SERVER_PASSWORD`                                                       | Server password, empty if none                                                                                                |
+| `nickname`                                                  | `FMBOT_NICKNAME`                                                              | Initial bot name (default `radiospeak`). A name saved in the panel takes precedence                                           |
+| `channel`, `channelPassword`                                | `FMBOT_CHANNEL`, `FMBOT_CHANNEL_PASSWORD`                                     | Optional first channel (`"Music"` or `"Lounge/Music"`). A channel chosen in the panel replaces it                             |
+| `volume`                                                    | `FMBOT_VOLUME`                                                                | Starting volume, 0–100                                                                                                        |
+| `defaultPlaylist`                                           | `FMBOT_DEFAULT_PLAYLIST`                                                      | Optional YouTube playlist link for idle play. Usually left empty in favor of the panel's idle playlist                        |
+| `maxPlaylistItems`                                          | `FMBOT_MAX_PLAYLIST_ITEMS`                                                    | Most songs taken from one playlist link (default 300)                                                                         |
+| `bitrateKbps`                                               | `FMBOT_BITRATE`                                                               | Opus bitrate (default 96)                                                                                                     |
+| `admins`, `adminGroups`                                     | `FMBOT_ADMINS`, `FMBOT_ADMIN_GROUPS`                                          | Unique IDs / server group IDs allowed to delete saved playlists. Both empty means everyone                                    |
+| `pauseWhenEmpty`, `emptyGraceSeconds`                       | `FMBOT_PAUSE_WHEN_EMPTY`                                                      | Pause after the channel has been empty this long (default 15 s)                                                               |
+| `songInDescription`                                         | `FMBOT_SONG_IN_DESCRIPTION`                                                   | Show the current song in the bot's description. The nickname never changes                                                    |
+| `web.enabled`, `web.host`, `web.port`, `web.password`       | `FMBOT_WEB_ENABLED`, `FMBOT_WEB_HOST`, `FMBOT_WEB_PORT`, `FMBOT_WEB_PASSWORD` | Web panel and its sign-in password                                                                                            |
+| `bots`                                                      | `FMBOT_BOTS` (JSON)                                                           | Several bots. Each can override `name`, `nickname`, `channel`, `channelPassword`, `volume`, `defaultPlaylist`, `identityFile` |
+| `ffmpegPath`, `ytdlpPath`, `identityLevel`, `commandPrefix` |                                                                               | Tool paths, identity security level (default 8), chat prefix (default `!`)                                                    |
 
 The bot keeps its state in its working directory (`/data` in Docker):
 
-| File | Contents |
-| --- | --- |
-| `identity.txt`, `identity-<name>.txt` | Each bot's TeamSpeak identity. Keep these so server groups stick to the bots |
-| `playlists.json` (`FMBOT_PLAYLISTS`) | Library, per-bot settings, schedules, playback history, named account hashes and chat roles |
-| `playback.json` (`FMBOT_PLAYBACK`) | Playback checkpoints: track, position, queue, radio, volume and modes |
-| `imports.json` (beside the library file) | Recoverable import jobs and continuation cursors |
+| File                                     | Contents                                                                                    |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `identity.txt`, `identity-<name>.txt`    | Each bot's TeamSpeak identity. Keep these so server groups stick to the bots                |
+| `playlists.json` (`FMBOT_PLAYLISTS`)     | Library, per-bot settings, schedules, playback history, named account hashes and chat roles |
+| `playback.json` (`FMBOT_PLAYBACK`)       | Playback checkpoints: track, position, queue, radio, volume and modes                       |
+| `imports.json` (beside the library file) | Recoverable import jobs and continuation cursors                                            |
 
 > [!WARNING]
 > If the panel has no password, the sign-in page is skipped, so set `web.host` to `127.0.0.1`. With a password, the panel is still plain HTTP, so put it behind a reverse proxy with TLS before exposing it to the internet.
@@ -176,21 +176,21 @@ The bot keeps its state in its working directory (`/data` in Docker):
 
 Send these in the bot's channel or as a private message to the bot:
 
-| Command | Description |
-| --- | --- |
-| `!play <link or search>` | Add a song or playlist to the queue (`!play` alone starts/resumes) |
-| `!playall <link>` | Queue the whole playlist from a song-in-a-playlist link |
-| `!playnext <link or search>` | Play right after the current song |
-| `!search <words>` then `!pick <n> [n...]` | Choose from 5 results |
-| `!pause`, `!resume`, `!skip [n]`, `!stop` | Playback |
-| `!queue [page]`, `!remove <n>`, `!clear`, `!shuffle`, `!loop [off\|one\|all]` | Queue |
-| `!np`, `!vol [0-100]` | Now playing, volume |
-| `!pl`, `!pl new <name>`, `!pl show <name> [page]` | List, create and view saved playlists |
-| `!pl add <name> [link or search]` | Add songs (no link adds the current song; a playlist link adds all of it) |
-| `!pl save <name>`, `!pl play <name> [shuffle]` | Save the queue / queue a saved playlist |
-| `!pl remove <name> <n>`, `!pl delete <name>` | Edit / delete (delete is admin only) |
-| `!radio <station\|stream link\|off>`, `!radio list` | Live radio while the queue is empty (saved station name or number) |
-| `!join`, `!bots`, `!help` | Move the bot to your channel, list bots, help |
+| Command                                                                       | Description                                                               |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `!play <link or search>`                                                      | Add a song or playlist to the queue (`!play` alone starts/resumes)        |
+| `!playall <link>`                                                             | Queue the whole playlist from a song-in-a-playlist link                   |
+| `!playnext <link or search>`                                                  | Play right after the current song                                         |
+| `!search <words>` then `!pick <n> [n...]`                                     | Choose from 5 results                                                     |
+| `!pause`, `!resume`, `!skip [n]`, `!stop`                                     | Playback                                                                  |
+| `!queue [page]`, `!remove <n>`, `!clear`, `!shuffle`, `!loop [off\|one\|all]` | Queue                                                                     |
+| `!np`, `!vol [0-100]`                                                         | Now playing, volume                                                       |
+| `!pl`, `!pl new <name>`, `!pl show <name> [page]`                             | List, create and view saved playlists                                     |
+| `!pl add <name> [link or search]`                                             | Add songs (no link adds the current song; a playlist link adds all of it) |
+| `!pl save <name>`, `!pl play <name> [shuffle]`                                | Save the queue / queue a saved playlist                                   |
+| `!pl remove <name> <n>`, `!pl delete <name>`                                  | Edit / delete (delete is admin only)                                      |
+| `!radio <station\|stream link\|off>`, `!radio list`                           | Live radio while the queue is empty (saved station name or number)        |
+| `!join`, `!bots`, `!help`                                                     | Move the bot to your channel, list bots, help                             |
 
 Playlist names can contain spaces. In commands, use the playlist's number from `!pl` instead, for example `!pl add 2 <link>`.
 
@@ -312,21 +312,29 @@ The script stops the old container, backs up its `/data` (including identities),
 
 ```bash
 npm ci
-npm run check   # TypeScript type check
-npm test        # unit, HTTP and DOM tests (no TeamSpeak, FFmpeg or network needed)
+npm run format:check # verify consistent formatting
+npm run check        # TypeScript type check
+npm test             # unit, HTTP and DOM tests; optional real FFmpeg tests
 ```
 
 The tests cover library persistence and migration, player controls, the authenticated HTTP API, stale-edit protection, SSE, imports, retries and prebuffering, plus a jsdom workflow through the real panel. To also check live gain against real FFmpeg/Opus output, set `FFMPEG_PATH` to your FFmpeg executable before running `npm test`.
 
+For the module map and runtime contracts, see [Architecture](docs/ARCHITECTURE.md). See [Contributing](CONTRIBUTING.md) for formatting, tests and development conventions.
+
 ```text
 src/
-├── index.ts         # entry point: loads config, starts bots and the web panel
-├── bot.ts           # TeamSpeak connection, presence, listeners, talk power
-├── player.ts        # queue, idle playlist, radio, FFmpeg/Opus pipeline
-├── commands.ts      # chat commands
-├── web.ts           # HTTP API, SSE and static panel
-├── store.ts         # library (playlists.json)
-├── playback-store.ts# checkpoints (playback.json)
-├── ytdlp.ts         # search, resolution and lookup pool
-└── web/             # panel: index.html, app.js, components.js, styles.css
+|-- index.ts       # process entry point and shutdown
+|-- app/           # shared application contracts
+|-- audio/         # playback, gain, Opus and shuffle
+|-- bots/          # shared bot lifecycle, TeamSpeak and Discord adapters
+|-- config/        # configuration and validation
+|-- domain/        # policies, schedules, roles and track identity
+|-- http/          # server, API routes, actions, state and static assets
+|-- library/       # playlists, collections and resumable imports
+|-- media/         # yt-dlp, concurrency and radio metadata
+|-- operations/    # durable audit journal
+|-- persistence/   # atomic files and playback checkpoints
+|-- security/      # authentication and accounts
+|-- shared/        # logging and source revision
+`-- web/           # controller, views, UI primitives, features and styles
 ```

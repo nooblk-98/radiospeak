@@ -1,0 +1,135 @@
+/* A single sidebar scroller prevents navigation from squeezing the library to a clipped strip. */
+.sidebar {
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: #69765e var(--sidebar);
+  padding-bottom: 12px;
+}
+.sidebar > * {
+  flex-shrink: 0;
+}
+.sidebar-library {
+  flex: 0 0 auto;
+  min-height: 0;
+  overflow: visible;
+  margin-top: 22px;
+  padding-top: 16px;
+}
+#sidebar-collections {
+  overflow: visible;
+  min-height: 0;
+  gap: 4px;
+}
+.collection-link,
+.favorites-link {
+  font-size: 14px;
+  line-height: 1.5;
+  min-height: 42px;
+  padding: 10px 2px;
+}
+.collection-link .name {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+  color: #d2ddc8;
+}
+.collection-link svg {
+  align-self: flex-start;
+  margin-top: 3px;
+}
+.sidebar-bottom {
+  position: static;
+  background: var(--sidebar);
+  margin-top: auto;
+}
+.playlist-card h3,
+.library-grid .playlist-card h3 {
+  font-size: 15px;
+  line-height: 1.45;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+}
+.playlist-card p,
+.library-grid .playlist-card p {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #b4c0aa;
+}
+.track-table th {
+  font-size: 10px;
+  color: #a9b69e;
+}
+.track-table td {
+  padding-top: 13px;
+  padding-bottom: 13px;
+}
+.track-title {
+  font-size: 14px;
+  line-height: 1.45;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  color: #eef3e8;
+}
+.track-artist,
+.track-source,
+.track-time {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #adbea1;
+}
+.track-eta {
+  display: block;
+  font-size: 11px;
+  color: #bdcbaf;
+}
+.track-art {
+  width: 42px;
+  height: 42px;
+}
+.row-actions .icon-button {
+  width: 30px;
+  height: 34px;
+}
+.library-toolbar .filter-button {
+  font-size: 12px;
+  padding: 8px 14px;
+}
+@media (max-width: 520px) {
+  .track-title {
+    font-size: 12px;
+  }
+  .track-artist,
+  .track-source,
+  .track-time {
+    font-size: 11px;
+  }
+  .track-eta {
+    font-size: 10px;
+  }
+  .track-art {
+    width: 34px;
+    height: 38px;
+  }
+  .row-actions .icon-button {
+    width: 23px;
+    height: 32px;
+  }
+  .playlist-card h3,
+  .library-grid .playlist-card h3 {
+    font-size: 14px;
+  }
+  .playlist-card p,
+  .library-grid .playlist-card p {
+    font-size: 11px;
+  }
+  .sidebar-library {
+    min-height: 0;
+  }
+}

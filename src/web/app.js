@@ -1,136 +1,362 @@
-import { request, StateConnection } from './api.js';
-import { VolumeControl } from './volume.js';
-import { NotificationCenter } from './notifications.js';
-import { platformName, platformIcon, platformBadge, discordFields, discordConnectionCard } from './platforms.js';
-import { EnqueueControl } from './enqueue.js';
-import { playlistTools, managementMarkup } from './management.js';
-import { escape as e, icon, iconButton as ib, button, art, heading, empty, channelSelect, botCard, commands, playlistCard, trackTable, resultCard, playlistResultCard, time, duration, source } from './components.js';
+/** Panel controller: owns live state, navigation, rendering coordination and delegated events. */
+import { EnqueueControl } from "./features/enqueue.js";
+import { NotificationCenter } from "./features/notifications.js";
+import { VolumeControl } from "./features/volume.js";
+import { request, StateConnection } from "./state/connection.js";
+import {
+  button,
+  channelSelect,
+  duration,
+  escape as e,
+  heading,
+  iconButton as ib,
+  icon,
+  time,
+} from "./ui/components.js";
+import { discordFields, platformBadge, platformIcon, platformName } from "./ui/platforms.js";
+import { createDashboardViews } from "./views/dashboard.js";
+import { createLibraryViews } from "./views/library.js";
+import { managementMarkup } from "./views/management.js";
+import { createPlayerViews } from "./views/player.js";
+import { createRadioViews } from "./views/radio.js";
+import { createSearchViews } from "./views/search.js";
+import { createSettingsViews } from "./views/settings.js";
 
-import { operationsMarkup, accessMarkup, historyMarkup, scheduleFields, scheduleData } from './operations.js';
-const $ = selector => document.querySelector(selector);
+import {
+  accessMarkup,
+  historyMarkup,
+  operationsMarkup,
+  scheduleData,
+  scheduleFields,
+} from "./views/operations.js";
+const $ = (selector) => document.querySelector(selector);
 const connection = new StateConnection();
 const notifications = new NotificationCenter();
-let state, botName = localStorage.getItem('radiospeak.bot') || '', activeView = '', libraryFilter = 'all', playlistId = null;
+let state,
+  botName = localStorage.getItem("radiospeak.bot") || "",
+  activeView = "",
+  libraryFilter = "all",
+  playlistId = null;
 let panelNeedsReload = false;
-let accessData = null, accessPending = false;
-let auditData=null,managementPending=false;
-async function loadManagement(offset=0) {
-  if(managementPending || state?.viewer?.role!=='admin')return;
-  managementPending=true;
-  try { const audit=await request('/api/audit?offset='+offset);auditData={...audit,offset};renderedView='';render(); }
-  catch(error){toast(error.message,true);}finally{managementPending=false;}
+let accessData = null,
+  accessPending = false;
+let auditData = null,
+  managementPending = false;
+async function loadManagement(offset = 0) {
+  if (managementPending || state?.viewer?.role !== "admin") return;
+  managementPending = true;
+  try {
+    const audit = await request("/api/audit?offset=" + offset);
+    auditData = { ...audit, offset };
+    renderedView = "";
+    render();
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    managementPending = false;
+  }
 }
-const playlistFilters=new Map(),playlistSelections=new Map();
-const filterFor=id=>playlistFilters.get(id)||{q:'',duplicates:false};
+const playlistFilters = new Map(),
+  playlistSelections = new Map();
+const filterFor = (id) => playlistFilters.get(id) || { q: "", duplicates: false };
 function selectionFor(list) {
-  let selection=playlistSelections.get(list.id);
-  if(!selection||selection.version!==list.version){selection={version:list.version,indices:[],excluded:[],allMatching:false};playlistSelections.set(list.id,selection);}
+  let selection = playlistSelections.get(list.id);
+  if (!selection || selection.version !== list.version) {
+    selection = { version: list.version, indices: [], excluded: [], allMatching: false };
+    playlistSelections.set(list.id, selection);
+  }
   return selection;
 }
 const historyCache = new Map();
 function ensureAccess() {
-  if (accessData || accessPending || state?.viewer?.role !== 'admin') return;
+  if (accessData || accessPending || state?.viewer?.role !== "admin") return;
   accessPending = true;
-  void request('/api/access').then(data => { accessData=data; renderedView=''; render(); }).catch(error=>toast(error.message,true)).finally(()=>{accessPending=false;});
+  void request("/api/access")
+    .then((data) => {
+      accessData = data;
+      renderedView = "";
+      render();
+    })
+    .catch((error) => toast(error.message, true))
+    .finally(() => {
+      accessPending = false;
+    });
 }
 function historyView(b) {
-  let cached=historyCache.get(b.name);
-  if (!cached || cached.version!==b.historyVersion) {
+  let cached = historyCache.get(b.name);
+  if (!cached || cached.version !== b.historyVersion) {
     if (!cached?.pending) {
-      cached={...cached,pending:true};historyCache.set(b.name,cached);
-      void request('/api/bots/'+encodeURIComponent(b.name)+'/history').then(data=>{
-        historyCache.set(b.name,{entries:data.entries,version:b.historyVersion,pending:false});renderedView='';if(activeView==='history')render();
-      }).catch(error=>{historyCache.delete(b.name);toast(error.message,true);});
+      cached = { ...cached, pending: true };
+      historyCache.set(b.name, cached);
+      void request("/api/bots/" + encodeURIComponent(b.name) + "/history")
+        .then((data) => {
+          historyCache.set(b.name, {
+            entries: data.entries,
+            version: b.historyVersion,
+            pending: false,
+          });
+          renderedView = "";
+          if (activeView === "history") render();
+        })
+        .catch((error) => {
+          historyCache.delete(b.name);
+          toast(error.message, true);
+        });
     }
   }
-  return historyMarkup(b,cached?.entries);
+  return historyMarkup(b, cached?.entries);
 }
 function enforcePermissions() {
-  const role=state?.viewer?.role||'admin',rank={listener:0,dj:1,admin:2};
-  document.querySelectorAll('[data-min-role]').forEach(el=>{el.hidden=rank[role]<rank[el.dataset.minRole];});
-  if(role==='admin')return;
-  const adminActions=new Set(['edit-connection','new-instance','remove-instance','delete-instance','delete-account']);
-  const listenerActions=new Set(['menu','close-menu','close-modal','reload-panel','logout','sign-out','collection','filter','favorites','library-back','open-playlist','page','search-source','search-type','search-more','search-playlist-queue','enqueue-track','queue-playlist','history-enqueue','skip','undo','switch-bot','toggle-switcher','switcher','notifications-read']);
-  document.querySelectorAll('[data-action]').forEach(el=>{
-    const action=el.dataset.action;
-    let allowed=role==='dj'?!adminActions.has(action):listenerActions.has(action);
-    if(role==='listener'&&action==='remove-track'&&el.dataset.scope==='queue') allowed=bot()?.queue[Number(el.dataset.index)]?.requesterId===state.viewer.id;
-    if(!allowed)el.disabled=true;
-    if(role==='listener'&&action==='skip'){el.setAttribute('aria-label','Vote to skip');el.title='Vote to skip';}
+  const role = state?.viewer?.role || "admin",
+    rank = { listener: 0, dj: 1, admin: 2 };
+  document.querySelectorAll("[data-min-role]").forEach((el) => {
+    el.hidden = rank[role] < rank[el.dataset.minRole];
   });
-  if(role==='listener') document.querySelectorAll('#view form:not(#search-form):not(#playlist-filter) input,#view form:not(#search-form):not(#playlist-filter) select,#view form:not(#search-form):not(#playlist-filter) textarea,#view form:not(#search-form):not(#playlist-filter) button,#volume,#seek,#modal-submit').forEach(el=>{el.disabled=true;});
+  if (role === "admin") return;
+  const adminActions = new Set([
+    "edit-connection",
+    "new-instance",
+    "remove-instance",
+    "delete-instance",
+    "delete-account",
+  ]);
+  const listenerActions = new Set([
+    "menu",
+    "close-menu",
+    "close-modal",
+    "reload-panel",
+    "logout",
+    "sign-out",
+    "collection",
+    "filter",
+    "favorites",
+    "library-back",
+    "open-playlist",
+    "page",
+    "search-source",
+    "search-type",
+    "search-more",
+    "search-playlist-queue",
+    "enqueue-track",
+    "queue-playlist",
+    "history-enqueue",
+    "skip",
+    "undo",
+    "switch-bot",
+    "toggle-switcher",
+    "switcher",
+    "notifications-read",
+  ]);
+  document.querySelectorAll("[data-action]").forEach((el) => {
+    const action = el.dataset.action;
+    let allowed = role === "dj" ? !adminActions.has(action) : listenerActions.has(action);
+    if (role === "listener" && action === "remove-track" && el.dataset.scope === "queue")
+      allowed = bot()?.queue[Number(el.dataset.index)]?.requesterId === state.viewer.id;
+    if (!allowed) el.disabled = true;
+    if (role === "listener" && action === "skip") {
+      el.setAttribute("aria-label", "Vote to skip");
+      el.title = "Vote to skip";
+    }
+  });
+  if (role === "listener")
+    document
+      .querySelectorAll(
+        "#view form:not(#search-form):not(#playlist-filter) input,#view form:not(#search-form):not(#playlist-filter) select,#view form:not(#search-form):not(#playlist-filter) textarea,#view form:not(#search-form):not(#playlist-filter) button,#volume,#seek,#modal-submit",
+      )
+      .forEach((el) => {
+        el.disabled = true;
+      });
 }
-let query = '', searchSource = 'youtube', searchResults = [], searchStatus = 'idle', searchError = '', searchController, searchTimer;
+let query = "",
+  searchSource = "youtube",
+  searchResults = [],
+  searchStatus = "idle",
+  searchError = "",
+  searchController,
+  searchTimer;
 // Songs or playlists, fetched SEARCH_PAGE results at a time, up to SEARCH_PAGES pages.
-let searchType = 'tracks', searchPage = 1, searchHasMore = false, searchMoreLoading = false;
-const SEARCH_PAGE = 10, SEARCH_PAGES = 5;
-let dragging = null, sliderActive = false, modalSubmit, renderedView = '', renderedDock = '', renderedChrome = '';
-let receivedAt = 0, lastRenderBot = '';
+let searchType = "tracks",
+  searchPage = 1,
+  searchHasMore = false,
+  searchMoreLoading = false;
+const SEARCH_PAGE = 10,
+  SEARCH_PAGES = 5;
+let dragging = null,
+  sliderActive = false,
+  modalSubmit,
+  renderedView = "",
+  renderedDock = "",
+  renderedChrome = "";
+let receivedAt = 0,
+  lastRenderBot = "";
 const lastVolumes = new Map();
 const requestedVolumes = new Map();
 const volumeControl = new VolumeControl({
-  send: (name, volume) => request('/api/bots/' + encodeURIComponent(name) + '/volume', { volume }),
-  onValue: (name, value) => { requestedVolumes.set(name,value); if (value > 0) lastVolumes.set(name, value); paintVolume(name, value); },
-  onSettled: () => { void connection.refresh(true).then(() => render()); },
+  send: (name, volume) => request("/api/bots/" + encodeURIComponent(name) + "/volume", { volume }),
+  onValue: (name, value) => {
+    requestedVolumes.set(name, value);
+    if (value > 0) lastVolumes.set(name, value);
+    paintVolume(name, value);
+  },
+  onSettled: () => {
+    void connection.refresh(true).then(() => render());
+  },
   onError: (name, error) => {
     requestedVolumes.delete(name);
-    toast('Could not change volume: ' + error.message, true);
+    toast("Could not change volume: " + error.message, true);
     if (bot()?.name === name) paintVolume(name, bot().volume);
     void connection.refresh(true).then(() => render());
   },
 });
 function paintVolume(name, value) {
   if (bot()?.name !== name) return;
-  const slider = $('#volume');
-  if (slider) { slider.value = value; slider.style.setProperty('--fill', value + '%'); slider.setAttribute('aria-valuetext', value + '%'); slider.title = 'Bot volume: ' + value + '%'; }
-  if ($('#volume-number')) $('#volume-number').textContent = value;
+  const slider = $("#volume");
+  if (slider) {
+    slider.value = value;
+    slider.style.setProperty("--fill", value + "%");
+    slider.setAttribute("aria-valuetext", value + "%");
+    slider.title = "Bot volume: " + value + "%";
+  }
+  if ($("#volume-number")) $("#volume-number").textContent = value;
   const mute = $('#player-dock [data-action="mute"]');
-  if (mute) { mute.innerHTML = icon(value ? 'volume' : 'mute'); mute.setAttribute('aria-pressed', String(value === 0)); mute.setAttribute('aria-label', value ? 'Mute bot' : 'Unmute bot'); mute.title = value ? 'Mute bot' : 'Unmute bot'; }
+  if (mute) {
+    mute.innerHTML = icon(value ? "volume" : "mute");
+    mute.setAttribute("aria-pressed", String(value === 0));
+    mute.setAttribute("aria-label", value ? "Mute bot" : "Unmute bot");
+    mute.title = value ? "Mute bot" : "Unmute bot";
+  }
 }
 let viewTracks = new Map();
-const playlistCache = new Map(), playlistRequests = new Map(), pages = new Map(), viewVersions = new Map();
+const playlistCache = new Map(),
+  playlistRequests = new Map(),
+  pages = new Map(),
+  viewVersions = new Map();
 const PAGE_SIZE = 50;
 const playlistErrors = new Map();
-const views = { dashboard:'Now playing', queue:'Up next', library:'Collections & playlists', search:'Search & import', radio:'Radio stations', history:'Playback history', settings:'Bots & platforms' };
-const bot = () => state?.bots.find(b => b.name === botName) || state?.bots[0];
-const trackCount = p => p?.trackCount ?? p?.total ?? p?.tracks?.length ?? 0;
-const playlist = () => playlistCache.get(playlistId) || state?.playlists.find(p => p.id === playlistId);
-const listPath = id => '/api/playlists/' + encodeURIComponent(id);
-const currentTrack = () => bot()?.track || (bot()?.radio ? { url:bot().radio.url, title:bot().radioTitle || bot().radio.name, artist:'Live radio' } : null);
-const paused = b => b.userPaused || b.autoPaused || b.connectionPaused;
-const enqueueControl=new EnqueueControl({
-  send:(name,track)=>mutate('/api/bots/'+encodeURIComponent(name)+'/enqueue',{tracks:[track],unique:true}),
-  onChange:paintEnqueueButtons,
+const views = {
+  dashboard: "Now playing",
+  queue: "Up next",
+  library: "Collections & playlists",
+  search: "Search & import",
+  radio: "Radio stations",
+  history: "Playback history",
+  settings: "Bots & platforms",
+};
+const bot = () => state?.bots.find((b) => b.name === botName) || state?.bots[0];
+const trackCount = (p) => p?.trackCount ?? p?.total ?? p?.tracks?.length ?? 0;
+const playlist = () =>
+  playlistCache.get(playlistId) || state?.playlists.find((p) => p.id === playlistId);
+const listPath = (id) => "/api/playlists/" + encodeURIComponent(id);
+const currentTrack = () =>
+  bot()?.track ||
+  (bot()?.radio
+    ? { url: bot().radio.url, title: bot().radioTitle || bot().radio.name, artist: "Live radio" }
+    : null);
+const paused = (b) => b.userPaused || b.autoPaused || b.connectionPaused;
+
+// View factories resolve current state for every render, including SSE updates.
+const { hero, queueSection, dashboard } = createDashboardViews(() => ({
+  state,
+  currentTrack,
+  paused,
+  pages,
+  PAGE_SIZE,
+  pageControls,
+}));
+const { library } = createLibraryViews(() => ({
+  state,
+  playlist,
+  playlistErrors,
+  pages,
+  trackCount,
+  PAGE_SIZE,
+  filterFor,
+  playlistCache,
+  ensurePlaylist,
+  selectionFor,
+  pageControls,
+  libraryFilter,
+}));
+const { searchView, searchResultsMarkup } = createSearchViews(() => ({
+  query,
+  searchSource,
+  searchType,
+  searchStatus,
+  searchError,
+  searchResults,
+  searchHasMore,
+  searchMoreLoading,
+}));
+const { radioView } = createRadioViews(() => ({ state, paused }));
+const { settings } = createSettingsViews(() => ({
+  ensureAccess,
+  auditData,
+  loadManagement,
+  instancesCard,
+  state,
+  trackCount,
+}));
+const { dock } = createPlayerViews(() => ({ state, currentTrack, paused }));
+
+const enqueueControl = new EnqueueControl({
+  send: (name, track) =>
+    mutate("/api/bots/" + encodeURIComponent(name) + "/enqueue", { tracks: [track], unique: true }),
+  onChange: paintEnqueueButtons,
 });
-function enqueueTrackFor(el,b) {
-  return el.dataset.action==='history-enqueue'?historyCache.get(b.name)?.entries.find(item=>item.id===el.dataset.id)?.track:tracksFor(el.dataset.scope)[Number(el.dataset.index)];
+function enqueueTrackFor(el, b) {
+  return el.dataset.action === "history-enqueue"
+    ? historyCache.get(b.name)?.entries.find((item) => item.id === el.dataset.id)?.track
+    : tracksFor(el.dataset.scope)[Number(el.dataset.index)];
 }
 function paintEnqueueButtons() {
-  const b=bot();if(!b)return;
-  const controls=document.querySelectorAll('[data-action="enqueue-track"],[data-action="history-enqueue"]');if(!controls.length)return;
-  const phaseFor=enqueueControl.statesFor(b);
-  controls.forEach(el=>{
-    const track=enqueueTrackFor(el,b);if(!track)return;
-    const phase=phaseFor(track),label={idle:'Enqueue',adding:'Adding…',queued:'Queued',playing:'Playing'}[phase];
-    if(el.dataset.enqueueState!==phase) {
-      el.dataset.enqueueState=phase;
-      el.innerHTML=icon({idle:'plus',adding:'clock',queued:'check',playing:'headphones'}[phase])+(el.classList.contains('icon-button')?'':label);
+  const b = bot();
+  if (!b) return;
+  const controls = document.querySelectorAll(
+    '[data-action="enqueue-track"],[data-action="history-enqueue"]',
+  );
+  if (!controls.length) return;
+  const phaseFor = enqueueControl.statesFor(b);
+  controls.forEach((el) => {
+    const track = enqueueTrackFor(el, b);
+    if (!track) return;
+    const phase = phaseFor(track),
+      label = { idle: "Enqueue", adding: "Adding…", queued: "Queued", playing: "Playing" }[phase];
+    if (el.dataset.enqueueState !== phase) {
+      el.dataset.enqueueState = phase;
+      el.innerHTML =
+        icon({ idle: "plus", adding: "clock", queued: "check", playing: "headphones" }[phase]) +
+        (el.classList.contains("icon-button") ? "" : label);
     }
-    el.disabled=phase!=='idle';el.classList.toggle('enqueue-confirmed',phase==='queued'||phase==='playing');
-    el.setAttribute('aria-busy',String(phase==='adding'));el.setAttribute('aria-label',label+': '+track.title);
-    el.title=phase==='idle'?'Add to queue':phase==='adding'?'Adding to queue…':phase==='playing'?'This track is already playing':'This track is already in Up next';
+    el.disabled = phase !== "idle";
+    el.classList.toggle("enqueue-confirmed", phase === "queued" || phase === "playing");
+    el.setAttribute("aria-busy", String(phase === "adding"));
+    el.setAttribute("aria-label", label + ": " + track.title);
+    el.title =
+      phase === "idle"
+        ? "Add to queue"
+        : phase === "adding"
+          ? "Adding to queue…"
+          : phase === "playing"
+            ? "This track is already playing"
+            : "This track is already in Up next";
   });
 }
 function toast(message, error = false, undoToken, undoBot) {
-  notifications.add(message,error,undoToken,undoBot || bot()?.name);
+  notifications.add(message, error, undoToken, undoBot || bot()?.name);
 }
-async function mutate(path, body = {}, method = 'POST') {
-  if (panelNeedsReload) throw new Error('Reload the panel to use the updated controls.');
+async function mutate(path, body = {}, method = "POST") {
+  if (panelNeedsReload) throw new Error("Reload the panel to use the updated controls.");
   try {
     const result = await request(path, body, method);
     await connection.refresh(true);
     render();
-    if (result.message) toast(result.message, false, result.undoToken, path.startsWith('/api/bots/') ? decodeURIComponent(path.split('/')[3]) : undefined);
+    if (result.message)
+      toast(
+        result.message,
+        false,
+        result.undoToken,
+        path.startsWith("/api/bots/") ? decodeURIComponent(path.split("/")[3]) : undefined,
+      );
     return result;
   } catch (error) {
     await connection.refresh(true);
@@ -139,363 +365,750 @@ async function mutate(path, body = {}, method = 'POST') {
   }
 }
 function action(name, body = {}) {
-  if (!bot()) throw new Error('No music bot is available');
-  return mutate('/api/bots/' + encodeURIComponent(bot().name) + '/' + name, body);
+  if (!bot()) throw new Error("No music bot is available");
+  return mutate("/api/bots/" + encodeURIComponent(bot().name) + "/" + name, body);
 }
 function tracksFor(scope) {
-  if (scope === 'queue') return viewTracks.get(scope) || bot()?.queue || [];
-  if (scope === 'search') return searchResults;
-  if (scope === 'favorites') return state?.favorites || [];
-  return viewTracks.get(scope) || state?.playlists.find(p => p.id === scope)?.tracks || [];
+  if (scope === "queue") return viewTracks.get(scope) || bot()?.queue || [];
+  if (scope === "search") return searchResults;
+  if (scope === "favorites") return state?.favorites || [];
+  return viewTracks.get(scope) || state?.playlists.find((p) => p.id === scope)?.tracks || [];
 }
 function orderData(scope) {
-  return scope === 'queue' ? { expected: tracksFor(scope).map(t=>t.url) } : { expectedVersion: viewVersions.get(scope) };
+  return scope === "queue"
+    ? { expected: tracksFor(scope).map((t) => t.url) }
+    : { expectedVersion: viewVersions.get(scope) };
 }
 async function ensurePlaylist(id) {
-  const meta = state.playlists.find(p=>p.id===id);
+  const meta = state.playlists.find((p) => p.id === id);
   if (!meta) return;
-  const filter=filterFor(id);
-  const page = Math.min(pages.get(id)||0,Math.max(0,Math.ceil((playlistCache.get(id)?.total ?? trackCount(meta))/PAGE_SIZE)-1));
-  pages.set(id,page);
+  const filter = filterFor(id);
+  const page = Math.min(
+    pages.get(id) || 0,
+    Math.max(0, Math.ceil((playlistCache.get(id)?.total ?? trackCount(meta)) / PAGE_SIZE) - 1),
+  );
+  pages.set(id, page);
   const current = playlistCache.get(id);
-  if (current?.version === meta.version && current.offset === page * PAGE_SIZE && current.filter===JSON.stringify(filter)) return;
-  const key = id + ':' + page + ':' + meta.version+':'+JSON.stringify(filter);
+  if (
+    current?.version === meta.version &&
+    current.offset === page * PAGE_SIZE &&
+    current.filter === JSON.stringify(filter)
+  )
+    return;
+  const key = id + ":" + page + ":" + meta.version + ":" + JSON.stringify(filter);
   if (playlistRequests.has(key)) return playlistRequests.get(key);
-  const promise = request(listPath(id) + '?offset=' + (page*PAGE_SIZE) + '&limit=' + PAGE_SIZE+'&q='+encodeURIComponent(filter.q)+'&duplicates='+filter.duplicates,undefined,'GET',AbortSignal.timeout(10000)).then(detail => {
-    if (state.playlists.find(p=>p.id===id)?.version !== detail.version || (pages.get(id)||0)!==page || JSON.stringify(filterFor(id))!==JSON.stringify(filter)) return;
-    detail.filter=JSON.stringify(filter);playlistErrors.delete(id);
-    playlistCache.set(id,detail); renderedView=''; render();
-  }).catch(error=>{ playlistErrors.set(id,error.message); renderedView='';render(); }).finally(()=>playlistRequests.delete(key));
-  playlistRequests.set(key,promise);
+  const promise = request(
+    listPath(id) +
+      "?offset=" +
+      page * PAGE_SIZE +
+      "&limit=" +
+      PAGE_SIZE +
+      "&q=" +
+      encodeURIComponent(filter.q) +
+      "&duplicates=" +
+      filter.duplicates,
+    undefined,
+    "GET",
+    AbortSignal.timeout(10000),
+  )
+    .then((detail) => {
+      if (
+        state.playlists.find((p) => p.id === id)?.version !== detail.version ||
+        (pages.get(id) || 0) !== page ||
+        JSON.stringify(filterFor(id)) !== JSON.stringify(filter)
+      )
+        return;
+      detail.filter = JSON.stringify(filter);
+      playlistErrors.delete(id);
+      playlistCache.set(id, detail);
+      renderedView = "";
+      render();
+    })
+    .catch((error) => {
+      playlistErrors.set(id, error.message);
+      renderedView = "";
+      render();
+    })
+    .finally(() => playlistRequests.delete(key));
+  playlistRequests.set(key, promise);
   return promise;
 }
 function pageControls(scope, total) {
-  if (total <= PAGE_SIZE) return '';
-  const max = Math.max(0,Math.ceil(total/PAGE_SIZE)-1), page = Math.min(pages.get(scope)||0,max);
-  pages.set(scope,page);
-  return '<div class="pagination" aria-label="Track pages"><button class="button secondary" data-action="page" data-scope="' + e(scope) + '" data-page="' + (page-1) + '" ' + (!page?'disabled':'') + '>Previous</button><span>' + (page*PAGE_SIZE+1) + '–' + Math.min(total,(page+1)*PAGE_SIZE) + ' of ' + total + '</span><button class="button secondary" data-action="page" data-scope="' + e(scope) + '" data-page="' + (page+1) + '" ' + (page===max?'disabled':'') + '>Next</button></div>';
+  if (total <= PAGE_SIZE) return "";
+  const max = Math.max(0, Math.ceil(total / PAGE_SIZE) - 1),
+    page = Math.min(pages.get(scope) || 0, max);
+  pages.set(scope, page);
+  return (
+    '<div class="pagination" aria-label="Track pages"><button class="button secondary" data-action="page" data-scope="' +
+    e(scope) +
+    '" data-page="' +
+    (page - 1) +
+    '" ' +
+    (!page ? "disabled" : "") +
+    ">Previous</button><span>" +
+    (page * PAGE_SIZE + 1) +
+    "–" +
+    Math.min(total, (page + 1) * PAGE_SIZE) +
+    " of " +
+    total +
+    '</span><button class="button secondary" data-action="page" data-scope="' +
+    e(scope) +
+    '" data-page="' +
+    (page + 1) +
+    '" ' +
+    (page === max ? "disabled" : "") +
+    ">Next</button></div>"
+  );
 }
-function showModal(title, body, submit, label = 'Save', danger = false) {
-  $('#modal-title').textContent = title;
-  $('#modal-body').innerHTML = body;
-  $('#modal-error').textContent = '';
-  $('#modal-submit').textContent = label;
-  $('#modal-submit').className = 'button ' + (danger ? 'danger-button' : 'primary');
-  $('#modal-submit').disabled = false;
+function showModal(title, body, submit, label = "Save", danger = false) {
+  $("#modal-title").textContent = title;
+  $("#modal-body").innerHTML = body;
+  $("#modal-error").textContent = "";
+  $("#modal-submit").textContent = label;
+  $("#modal-submit").className = "button " + (danger ? "danger-button" : "primary");
+  $("#modal-submit").disabled = false;
   modalSubmit = submit;
-  $('#modal').showModal();
-  requestAnimationFrame(() => $('#modal-body input, #modal-body select')?.focus());
+  $("#modal").showModal();
+  requestAnimationFrame(() => $("#modal-body input, #modal-body select")?.focus());
 }
-function clearModalSecrets() { $('#modal-body').querySelectorAll('input[type="password"]').forEach(input=>{input.value='';}); }
-$('#modal').addEventListener('close',clearModalSecrets);
-function confirmAction(title, text, submit, label = 'Delete') {
-  showModal(title, '<p>' + e(text) + '</p>', submit, label, true);
+function clearModalSecrets() {
+  $("#modal-body")
+    .querySelectorAll('input[type="password"]')
+    .forEach((input) => {
+      input.value = "";
+    });
+}
+$("#modal").addEventListener("close", clearModalSecrets);
+function confirmAction(title, text, submit, label = "Delete") {
+  showModal(title, "<p>" + e(text) + "</p>", submit, label, true);
 }
 function collectionOptions(value = null) {
-  return '<option value="">Standalone playlist</option>' + state.collections.map(c => '<option value="' + e(c.id) + '" ' + (value === c.id ? 'selected' : '') + '>' + e(c.name) + '</option>').join('');
+  return (
+    '<option value="">Standalone playlist</option>' +
+    state.collections
+      .map(
+        (c) =>
+          '<option value="' +
+          e(c.id) +
+          '" ' +
+          (value === c.id ? "selected" : "") +
+          ">" +
+          e(c.name) +
+          "</option>",
+      )
+      .join("")
+  );
 }
 function playlistEditor(list) {
-  showModal(list ? 'Edit playlist' : 'Create a playlist',
-    '<label class="field-label" for="list-name">Playlist name</label><input id="list-name" name="name" class="field" required maxlength="80" placeholder="e.g. Late night sessions" value="' + e(list?.name) + '"><label class="field-label" for="list-collection">Collection</label><select name="collectionId" id="list-collection">' + collectionOptions(list?.collectionId ?? (state.collections.some(c => c.id === libraryFilter) ? libraryFilter : null)) + '</select>',
-    async data => {
-      const result = await mutate(list ? listPath(list.id) : '/api/playlists', { name:data.get('name'), collectionId:data.get('collectionId') || null }, list ? 'PATCH' : 'POST');
-      if (!list) { playlistId = result.playlist.id; location.hash = 'library'; render(true); }
-    }, list ? 'Save changes' : 'Create playlist');
+  showModal(
+    list ? "Edit playlist" : "Create a playlist",
+    '<label class="field-label" for="list-name">Playlist name</label><input id="list-name" name="name" class="field" required maxlength="80" placeholder="e.g. Late night sessions" value="' +
+      e(list?.name) +
+      '"><label class="field-label" for="list-collection">Collection</label><select name="collectionId" id="list-collection">' +
+      collectionOptions(
+        list?.collectionId ??
+          (state.collections.some((c) => c.id === libraryFilter) ? libraryFilter : null),
+      ) +
+      "</select>",
+    async (data) => {
+      const result = await mutate(
+        list ? listPath(list.id) : "/api/playlists",
+        { name: data.get("name"), collectionId: data.get("collectionId") || null },
+        list ? "PATCH" : "POST",
+      );
+      if (!list) {
+        playlistId = result.playlist.id;
+        location.hash = "library";
+        render(true);
+      }
+    },
+    list ? "Save changes" : "Create playlist",
+  );
 }
 function collectionEditor(collection) {
-  showModal(collection ? 'Rename collection' : 'Create a collection',
-    '<p>Group your playlists by mood, genre, or occasion.</p><label class="field-label" for="collection-name">Collection name</label><input class="field" id="collection-name" name="name" required maxlength="80" placeholder="e.g. Gaming BGM" value="' + e(collection?.name) + '">',
-    data => mutate('/api/collections' + (collection ? '/' + encodeURIComponent(collection.id) : ''), { name:data.get('name') }, collection ? 'PATCH' : 'POST'),
-    collection ? 'Rename' : 'Create collection');
+  showModal(
+    collection ? "Rename collection" : "Create a collection",
+    '<p>Group your playlists by mood, genre, or occasion.</p><label class="field-label" for="collection-name">Collection name</label><input class="field" id="collection-name" name="name" required maxlength="80" placeholder="e.g. Gaming BGM" value="' +
+      e(collection?.name) +
+      '">',
+    (data) =>
+      mutate(
+        "/api/collections" + (collection ? "/" + encodeURIComponent(collection.id) : ""),
+        { name: data.get("name") },
+        collection ? "PATCH" : "POST",
+      ),
+    collection ? "Rename" : "Create collection",
+  );
 }
 function saveTrack(track) {
-  if (!track) throw new Error('No track selected');
-  showModal('Save to a playlist',
-    '<p>' + e(track.title) + '</p>' + (state.playlists.length ? '<label class="field-label" for="save-playlist">Choose playlist</label><select name="playlist" id="save-playlist"><option value="">Create a new playlist…</option>' + state.playlists.map(p => '<option value="' + e(p.id) + '">' + e(p.name) + '</option>').join('') + '</select>' : '') + '<label class="field-label" for="new-list-name">New playlist name (if creating)</label><input class="field" id="new-list-name" name="name" maxlength="80" placeholder="e.g. Favorites for Friday">',
-    async data => {
-      let id = data.get('playlist');
+  if (!track) throw new Error("No track selected");
+  showModal(
+    "Save to a playlist",
+    "<p>" +
+      e(track.title) +
+      "</p>" +
+      (state.playlists.length
+        ? '<label class="field-label" for="save-playlist">Choose playlist</label><select name="playlist" id="save-playlist"><option value="">Create a new playlist…</option>' +
+          state.playlists
+            .map((p) => '<option value="' + e(p.id) + '">' + e(p.name) + "</option>")
+            .join("") +
+          "</select>"
+        : "") +
+      '<label class="field-label" for="new-list-name">New playlist name (if creating)</label><input class="field" id="new-list-name" name="name" maxlength="80" placeholder="e.g. Favorites for Friday">',
+    async (data) => {
+      let id = data.get("playlist");
       if (!id) {
-        if (!String(data.get('name') || '').trim()) throw new Error('Name your new playlist or choose an existing one.');
-        id = (await mutate('/api/playlists', { name:data.get('name') })).playlist.id;
+        if (!String(data.get("name") || "").trim())
+          throw new Error("Name your new playlist or choose an existing one.");
+        id = (await mutate("/api/playlists", { name: data.get("name") })).playlist.id;
       }
-      await mutate(listPath(id) + '/add', { tracks:[track] });
-    }, 'Save track');
+      await mutate(listPath(id) + "/add", { tracks: [track] });
+    },
+    "Save track",
+  );
 }
 function stationEditor(station) {
-  showModal(station ? 'Edit radio station' : 'Add a radio station',
-    '<label class="field-label" for="station-name">Station name</label><input class="field" id="station-name" name="name" required maxlength="80" placeholder="e.g. Late night jazz" value="' + e(station?.name) + '"><label class="field-label" for="station-url">Stream URL</label><input class="field" id="station-url" name="url" type="url" required placeholder="https://station.example.com/live" value="' + e(station?.url) + '"><p class="small subtle">HTTP, Icecast and SHOUTcast streams work.</p>',
-    data => mutate('/api/radio-stations' + (station ? '/' + encodeURIComponent(station.id) : ''), { name:data.get('name'), url:data.get('url') }, station ? 'PATCH' : 'POST'),
-    station ? 'Save station' : 'Add station');
+  showModal(
+    station ? "Edit radio station" : "Add a radio station",
+    '<label class="field-label" for="station-name">Station name</label><input class="field" id="station-name" name="name" required maxlength="80" placeholder="e.g. Late night jazz" value="' +
+      e(station?.name) +
+      '"><label class="field-label" for="station-url">Stream URL</label><input class="field" id="station-url" name="url" type="url" required placeholder="https://station.example.com/live" value="' +
+      e(station?.url) +
+      '"><p class="small subtle">HTTP, Icecast and SHOUTcast streams work.</p>',
+    (data) =>
+      mutate(
+        "/api/radio-stations" + (station ? "/" + encodeURIComponent(station.id) : ""),
+        { name: data.get("name"), url: data.get("url") },
+        station ? "PATCH" : "POST",
+      ),
+    station ? "Save station" : "Add station",
+  );
 }
 function reorderDialog(scope, index) {
-  const tracks = tracksFor(scope), track = tracks[index], expected = orderData(scope);
+  const tracks = tracksFor(scope),
+    track = tracks[index],
+    expected = orderData(scope);
   if (!track) return;
-  showModal('Move track', '<p>' + e(track.title) + '</p><label class="field-label" for="track-position">New position (1–' + tracks.length + ')</label><input class="field" id="track-position" name="position" type="number" min="1" max="' + tracks.length + '" value="' + (index + 1) + '" required>',
-    data => moveTrack(scope, index + 1, Number(data.get('position')), expected), 'Move track');
+  showModal(
+    "Move track",
+    "<p>" +
+      e(track.title) +
+      '</p><label class="field-label" for="track-position">New position (1–' +
+      tracks.length +
+      ')</label><input class="field" id="track-position" name="position" type="number" min="1" max="' +
+      tracks.length +
+      '" value="' +
+      (index + 1) +
+      '" required>',
+    (data) => moveTrack(scope, index + 1, Number(data.get("position")), expected),
+    "Move track",
+  );
 }
 function moveTrack(scope, from, to, expected = orderData(scope)) {
-  if (scope === 'queue') return action('move', { from, to, ...expected });
-  return mutate(listPath(scope) + '/move', { from, to, ...expected });
+  if (scope === "queue") return action("move", { from, to, ...expected });
+  return mutate(listPath(scope) + "/move", { from, to, ...expected });
 }
 
-function hero(b) {
-  const t = currentTrack(), isPaused = paused(b), idle = !t;
-  const label = b.autoPaused ? 'PAUSED · NO LISTENERS' : isPaused ? 'PLAYBACK PAUSED' : t ? 'ON THE AIR' : 'READY WHEN YOU ARE';
-  return '<section class="hero" aria-label="Now playing">' + art(t, 'hero-art') +
-    '<div class="hero-copy"><div class="eyebrow"><span class="status-dot ' + (t && !isPaused ? 'on' : '') + '"></span>' + label + '</div><h2>' + e(t?.title || 'Your channel.\nYour soundtrack.') + '</h2><div class="artist">' + e(t?.artist || (idle ? 'Good music sounds better together.' : source(t))) + '</div><div class="hero-meta">' +
-    (t ? '<span>' + (b.track ? duration(b.track.duration) : 'LIVE STREAM') + '</span><span>·</span><span>' + e(b.track?.auto ? 'From your idle playlist' : b.track ? 'Requested by ' + (b.track.requestedBy || 'web') : 'Radio fallback') + '</span>' : '<span>YouTube</span><span>·</span><span>SoundCloud</span><span>·</span><span>Live radio</span>') +
-    '</div><div class="hero-actions">' + (idle ? '<a href="#search" class="button primary">' + icon('plus') + 'Find your first track</a>' : button(isPaused ? 'Resume' : 'Pause', isPaused ? 'play' : 'pause', 'toggle-play')) +
-    (t ? ib('next', 'Skip track', 'skip', !b.track ? 'disabled' : '') + ib('library', 'Save to playlist', 'save-current') : '') + '</div></div><div class="hero-indicator ' + (idle || isPaused ? 'paused' : '') + '" aria-hidden="true"><i></i><i></i><i></i><i></i></div></section>';
-}
-function queueSection(b, full = false) {
-  const offset = full ? Math.min(pages.get('queue')||0,Math.max(0,Math.ceil(b.queue.length/PAGE_SIZE)-1))*PAGE_SIZE : 0;
-  const tracks = full ? b.queue.slice(offset,offset+PAGE_SIZE) : b.queue.slice(0,5);
-  let wait = b.track ? (b.track.duration ? Math.max(0,b.track.duration-b.elapsed) : null) : 0;
-  const estimates = b.queue.map(t=>{ const estimate=wait; wait=wait===null||!t.duration?null:wait+t.duration; return estimate; });
-  return '<section><div class="section-heading"><h2>Up next <span class="count-badge">' + b.queue.length + '</span></h2>' +
-    (full ? '<div class="heading-actions">' + button('Save queue', 'library', 'save-queue', b.queue.length || b.track ? '' : 'disabled', 'secondary') + button('Clear queue', 'trash', 'clear-queue', b.queue.length ? '' : 'disabled', 'secondary') + '</div>' : '<a href="#queue" class="text-button">View queue ' + icon('arrow') + '</a>') +
-    '</div><div class="queue-tabs"><span class="queue-tab active"><span class="status-dot on"></span>Queued by users · ' + b.queue.length + '</span><span class="queue-tab">' + icon('repeat') + 'Idle autoplay ' + (b.track?.auto || (!b.track && b.radio) ? '· Active' : '· Standby') + '</span></div>' +
-    trackTable(tracks, 'queue', { queue:true, offset, estimates }) + (full ? pageControls('queue',b.queue.length) : '') + '<div class="queue-footer">' + icon('repeat') + '<span>' + e(b.radio ? 'Radio plays when the queue is empty.' : b.defaultPlaylist.size ? (b.defaultPlaylist.name || 'Default playlist') + ' takes over when the queue is empty.' : 'Keep the music going with a default idle playlist.') + '</span><a href="#library">Manage playlists ' + icon('arrow') + '</a></div>' +
-    (full && b.track?.auto ? '<div class="notice">Auto-playing from <strong>' + e(b.defaultPlaylist.name || 'Default playlist') + '</strong>. User requests play immediately and take priority.</div>' : '') +
-    (full ? '<p class="small subtle">Drag a row to reorder, or select its number to choose a position. “Play next” and “Move to top” place a track directly after the current song.</p>' : '') + '</section>';
-}
-function playlistsSection(b) {
-  return '<section><div class="section-heading"><h2>Made for your moments</h2><a href="#library" class="text-button">Your library ' + icon('arrow') + '</a></div><div class="library-cards">' + state.playlists.slice(0, 3).map((p,i) => playlistCard(p,i,state.defaults[b.name] === p.id)).join('') + (state.playlists.length < 3 ? '<button class="playlist-card new-playlist-card" data-action="new-playlist">' + icon('plus') + '<span>Create a playlist</span></button>' : '') + '</div></section>';
-}
-function dashboard(b) {
-  return heading('Let the good tracks roll.', 'A little music. A better channel. You’re in control.', '<a href="#search" class="button secondary">' + icon('download') + 'Import music</a><a href="#search" class="button primary">' + icon('plus') + 'Add to queue</a>', 'YOUR CHANNEL’S SOUNDTRACK') +
-    '<div class="overview-layout"><div class="content-stack">' + hero(b) + queueSection(b) + playlistsSection(b) + '</div><aside class="overview-aside">' + botCard(b) + commands(state.commandPrefix,b.platform) + '<p class="aside-note">' + icon('shield') + '<span>Built for your community.<br>Music streams directly to '+platformName(b)+'.</span></p></aside></div>';
-}
-function library(b) {
-  const list = playlist();
-  if (list) {
-    if (playlistErrors.has(list.id)) return heading(list.name,'Could not load this page.') + '<div class="notice">'+e(playlistErrors.get(list.id))+'</div>'+button('Retry loading','repeat','retry-playlist','data-id="'+e(list.id)+'"');
-    const meta=state.playlists.find(p=>p.id===list.id);
-    pages.set(list.id,Math.min(pages.get(list.id)||0,Math.max(0,Math.ceil(trackCount(meta)/PAGE_SIZE)-1)));
-    if (list.version!==meta?.version || !playlistCache.has(list.id) || list.offset!==(pages.get(list.id)||0)*PAGE_SIZE || list.filter!==JSON.stringify(filterFor(list.id))) {
-      void ensurePlaylist(list.id);
-      return heading(list.name,'Loading playlist tracks?') + '<div class="loading">Loading tracks?</div>';
-    }
-    return playlistDetail(b,list);
-  }
-  const favorites = libraryFilter === 'favorites', collection = state.collections.find(c => c.id === libraryFilter);
-  const lists = state.playlists.filter(p => libraryFilter === 'all' || (libraryFilter === 'standalone' ? !p.collectionId : p.collectionId === libraryFilter));
-  return heading('A home for every mood.', 'Collect the tracks you love. Keep your channel’s soundtrack close.', button('New collection', 'folder', 'new-collection', '', 'secondary') + button('New playlist', 'plus', 'new-playlist')) +
-    '<div class="library-toolbar">' + [['all','All playlists'],['standalone','Standalone'],['favorites','Favorites'],...state.collections.map(c => [c.id,c.name])].map(([id,name]) => '<button class="filter-button ' + (libraryFilter === id ? 'active' : '') + '" data-action="filter" data-id="' + e(id) + '" aria-pressed="' + (libraryFilter === id) + '">' + e(name) + '</button>').join('') + '</div>' +
-    (collection ? '<div class="collection-heading">' + icon('folder') + '<h2>' + e(collection.name) + '</h2>' + ib('edit','Rename collection','rename-collection','data-id="' + e(collection.id) + '"') + ib('trash','Delete collection','delete-collection','data-id="' + e(collection.id) + '"','danger') + '</div>' : '') +
-    (favorites ? '<div class="section-heading"><h2>Favorite tracks <span class="count-badge">' + state.favorites.length + '</span></h2></div>' + trackTable(state.favorites,'favorites',{ editable:false }) : '<div class="library-cards library-grid">' + lists.map((p,i) => playlistCard(p,i,state.defaults[b.name] === p.id)).join('') + '<button class="playlist-card new-playlist-card" data-action="new-playlist">' + icon('plus') + '<span>Create a playlist</span></button></div>') +
-    '<section class="card import-card"><h3>' + icon('download') + ' Bring your playlist with you</h3><p>Import every track from a public YouTube playlist into your library.</p><form id="quick-import" class="inline-form"><input class="field" name="url" type="url" required placeholder="https://www.youtube.com/playlist?list=…" aria-label="Public playlist URL">' + '<button class="button secondary" type="submit">' + icon('download') + 'Import playlist</button></form></section>';
-}
-function playlistDetail(b,list) {
-  const isDefault = state.defaults[b.name] === list.id;
-  const selection=selectionFor(list), filter=filterFor(list.id);
-  return '<button class="text-button" data-action="library-back" style="margin-bottom:22px">' + icon('back') + 'Back to your library</button><div class="playlist-header">' + art(list.tracks[0],'playlist-cover') + '<div><div class="intro-eyebrow">' + e(state.collections.find(c => c.id === list.collectionId)?.name || 'STANDALONE PLAYLIST') + '</div><h1>' + e(list.name) + '</h1><p class="small subtle">' + trackCount(list) + ' tracks · ' + time(state.playlists.find(p=>p.id===list.id)?.totalDuration || 0) + '</p><div class="heading-actions">' +
-    button('Play now','play','play-playlist-now','data-id="' + e(list.id) + '" title="Clear the queue and play this playlist" ' + (!trackCount(list) ? 'disabled' : '')) +
-    button('Add to queue','plus','queue-playlist','data-id="' + e(list.id) + '" ' + (!trackCount(list) ? 'disabled' : ''),'secondary') +
-    button(isDefault ? 'Idle playlist · On' : 'Set as idle playlist','repeat','default-playlist','data-id="' + e(list.id) + '" ' + (!trackCount(list) && !isDefault ? 'disabled' : ''),'secondary') +
-    ib('edit','Edit playlist','edit-playlist','data-id="' + e(list.id) + '"') + ib('trash','Delete playlist','delete-playlist','data-id="' + e(list.id) + '"','danger') +
-    '</div></div></div>' + (isDefault ? '<div class="notice">This playlist automatically plays when user requests finish. Radio fallback takes priority if enabled.</div>' : '') +
-    playlistTools(list,filter,selection)+trackTable(list.tracks,list.id,{offset:list.offset||0,positions:list.positions,selectable:state.viewer?.role!=='listener',selected:selection.allMatching?list.positions.filter(i=>!selection.excluded.includes(i)):selection.indices}) + pageControls(list.id,list.total) + '<section class="card import-card"><h3>Add a track or import a playlist</h3><p>Paste a YouTube or SoundCloud URL, a public playlist, or search words.</p><form id="playlist-import" class="inline-form"><input class="field" name="input" required placeholder="Paste a link or search for a song…" aria-label="Track or playlist to import"><label class="check-label"><input type="checkbox" name="skipDuplicates" checked> Skip duplicates</label><button class="button primary" type="submit">' + icon('plus') + 'Add music</button></form></section>';
-}
-function searchView() {
-  return heading('Find your next favorite.', 'Search a little. Discover a lot. Set the mood for your channel.') +
-    '<section class="card search-panel"><div class="search-toggles"><div class="source-toggle" aria-label="Search source">' + ['youtube','soundcloud'].map(s => '<button data-action="search-source" data-id="' + s + '" class="' + (searchSource===s?'active':'') + '" aria-pressed="' + (searchSource===s) + '">' + icon(s) + (s==='youtube'?'YouTube':'SoundCloud') + '</button>').join('') + '</div><div class="source-toggle" aria-label="Search for">' + [['tracks','music','Songs'],['playlists','library','Playlists']].map(([type,ic,label]) => '<button data-action="search-type" data-id="' + type + '" class="' + (searchType===type?'active':'') + '" aria-pressed="' + (searchType===type) + '"' + (type==='playlists'&&searchSource!=='youtube'?' disabled title="Playlist search is available for YouTube"':'') + '>' + icon(ic) + label + '</button>').join('') + '</div></div><form id="search-form"><div class="search-input-wrap">' + icon('search') + '<input id="search-input" type="search" name="query" autocomplete="off" maxlength="1000" placeholder="Search for a track, artist, or paste a link…" aria-label="Search music" value="' + e(query) + '"><button class="button primary" type="submit">Search</button></div></form><p class="search-hint">Your next great find is a search away. Public YouTube and SoundCloud links work too.</p></section><div id="search-results">' + searchResultsMarkup() + '</div>';
-}
-function radioView(b) {
-  const onAir = b.radio && !b.track && !paused(b);
-  const status = !b.radio ? '' : '<section class="card card-padding radio-now"><div class="bot-avatar">' + icon('radio') + '</div><div><div class="eyebrow">' + (onAir ? 'ON THE AIR' : b.track ? 'PLAYS WHEN THE QUEUE IS EMPTY' : 'RADIO PAUSED') + '</div><h2>' + e(b.radio.name) + '</h2><p class="small subtle">' + e(b.radioTitle ? '♪ ' + b.radioTitle : b.radio.url) + '</p></div>' + button('Turn radio off','stop','radio-off','','secondary') + '</section>';
-  const stations = state.radioStations.map(r => {
-    const active = b.radio?.url === r.url;
-    return '<article class="card station-card ' + (active ? 'active' : '') + '"><div class="station-head"><div class="bot-avatar">' + icon('radio') + '</div><div class="station-copy"><h3>' + e(r.name) + '</h3><p title="' + e(r.url) + '">' + e(r.url) + '</p></div>' + (active ? '<span class="tag green">On air</span>' : '') + '</div><div class="result-actions">' +
-      (active ? button('Turn off','stop','radio-off','','secondary') : button('Tune in','play','play-station','data-id="' + e(r.id) + '"')) +
-      ib('edit','Edit station','edit-station','data-id="' + e(r.id) + '"') + ib('trash','Delete station','delete-station','data-id="' + e(r.id) + '"','danger') + '</div></article>';
-  }).join('');
-  return heading('Tune into something good.', 'Save live streams for this server. A station plays whenever the queue is empty.', button('Add station','plus','new-station')) + status +
-    '<div class="section-heading"><h2>Your stations <span class="count-badge">' + state.radioStations.length + '</span></h2></div>' +
-    (state.radioStations.length ? '<div class="station-grid">' + stations + '</div>' : empty('No stations yet', 'Add an HTTP, Icecast or SHOUTcast stream to get started.', button('Add station','plus','new-station','','secondary'))) +
-    '<p class="small subtle">Tuning in replaces the idle playlist right away. Songs people request still play first. In chat: <code>' + e(state.commandPrefix) + 'radio &lt;station&gt;</code></p>';
-}
-function searchResultsMarkup() {
-  if (searchStatus === 'loading') return '<div class="loading" aria-live="polite">Searching ' + (searchSource==='youtube'?'YouTube':'SoundCloud') + '…</div>';
-  if (searchStatus === 'error') return '<div class="notice" role="alert">' + e(searchError) + '</div>';
-  if (searchStatus === 'idle') return empty('There’s a whole world of music out there', 'Search by track, artist, or the song you can’t get out of your head.');
-  const playlists = searchType === 'playlists';
-  if (!searchResults.length) return playlists ? empty('No playlists found', 'Try other words, or paste a public playlist link.') : empty('No tracks found', 'Try another artist, title, or a public media link.');
-  return '<div class="section-heading"><h2>' + (playlists ? 'Playlists' : 'Search results') + ' <span class="count-badge">' + searchResults.length + '</span></h2></div><div class="results-grid">' + searchResults.map(playlists ? playlistResultCard : resultCard).join('') + '</div>' +
-    (searchHasMore ? '<div class="search-more">' + button(searchMoreLoading ? 'Loading more…' : 'Show more results', searchMoreLoading ? 'clock' : 'plus', 'search-more', searchMoreLoading ? 'disabled aria-busy="true"' : '', 'secondary') + '</div>' : '');
-}
-function healthCard(b) {
-  return '<section class="card card-padding health-card"><div class="card-title"><h2>Bot health</h2><span class="tag green">Live</span></div><label for="audio-level" class="field-label">Output level (dBFS)</label><meter id="audio-level" class="audio-meter" min="-60" max="0" low="-48" high="-6" optimum="-18" value="-60">-60 dB</meter><div id="health-values"></div><div class="setting-line"><div>Prepare the next track<p>Prebuffer one upcoming song during the last 15 seconds. Uses extra CPU and memory.</p></div><button class="switch" data-action="prebuffer" role="switch" aria-label="Prepare next track" aria-checked="' + !!b.health?.prebufferEnabled + '"></button></div><div id="prebuffer-status" class="small subtle"></div></section>';
-}
 function renderBackground() {
-  const b=bot(); if(!b) return;
-  const h=b.health||{}, system=state.system||{}, container=$('#health-values');
-  if(container) {
-    const metrics=[
-      ['Server uptime',time(Math.floor(system.uptime||0))], ['Node process memory',(system.memoryMB||0)+' MB'], ['Process ID',system.pid||'—'],
-      ['Reconnects',h.reconnectCount||0], ['Audio buffer',Number(h.bufferedSeconds||0).toFixed(1)+'s'],
-      ['Buffer underruns',h.underruns||0], ['Event loop delay',(system.eventLoopLagMs??'—')+' ms'],
-      ['Playback recovery',h.retrying?'Retrying ('+h.retryAttempt+'/2)':h.restoredCheckpoint?'Checkpoint restored':'Ready'],
-      ['Checkpoint',!h.checkpoint?'Not enabled':h.checkpoint.error?'Save failed':h.checkpoint.pending?'Saving…':h.checkpoint.lastSavedAt?'Saved '+new Date(h.checkpoint.lastSavedAt).toLocaleTimeString():'Waiting'],
-      ['Media lookups',(system.media?.active||0)+' active · '+(system.media?.queued||0)+' queued'],
-      ['Event loop p99',(system.eventLoopP99Ms??'—')+' ms'],['Audio profile',h.audioProfile||'high'],
-      ['Shared preparations',(h.prebufferSlots||0)+' / 2'],['Paused audio',h.parked?'Released; resumes from saved position':'Ready'],
+  const b = bot();
+  if (!b) return;
+  const h = b.health || {},
+    system = state.system || {},
+    container = $("#health-values");
+  if (container) {
+    const metrics = [
+      ["Server uptime", time(Math.floor(system.uptime || 0))],
+      ["Node process memory", (system.memoryMB || 0) + " MB"],
+      ["Process ID", system.pid || "—"],
+      ["Reconnects", h.reconnectCount || 0],
+      ["Audio buffer", Number(h.bufferedSeconds || 0).toFixed(1) + "s"],
+      ["Buffer underruns", h.underruns || 0],
+      ["Event loop delay", (system.eventLoopLagMs ?? "—") + " ms"],
+      [
+        "Playback recovery",
+        h.retrying
+          ? "Retrying (" + h.retryAttempt + "/2)"
+          : h.restoredCheckpoint
+            ? "Checkpoint restored"
+            : "Ready",
+      ],
+      [
+        "Checkpoint",
+        !h.checkpoint
+          ? "Not enabled"
+          : h.checkpoint.error
+            ? "Save failed"
+            : h.checkpoint.pending
+              ? "Saving…"
+              : h.checkpoint.lastSavedAt
+                ? "Saved " + new Date(h.checkpoint.lastSavedAt).toLocaleTimeString()
+                : "Waiting",
+      ],
+      [
+        "Media lookups",
+        (system.media?.active || 0) + " active · " + (system.media?.queued || 0) + " queued",
+      ],
+      ["Event loop p99", (system.eventLoopP99Ms ?? "—") + " ms"],
+      ["Audio profile", h.audioProfile || "high"],
+      ["Shared preparations", (h.prebufferSlots || 0) + " / 2"],
+      ["Paused audio", h.parked ? "Released; resumes from saved position" : "Ready"],
     ];
-    container.innerHTML='<dl class="detail-list">'+metrics.map(([label,value])=>'<dt>'+e(label)+'</dt><dd>'+e(value)+'</dd>').join('')+'</dl>'+
-      (b.lastDisconnect?'<p class="small subtle">Last disconnect: '+e(b.lastDisconnect.reason)+' · '+e(new Date(b.lastDisconnect.at).toLocaleString())+'</p>':'')+
-      (h.lastError?'<p class="small subtle">Last audio error: '+e(h.lastError)+'</p>':'');
-    if(system.libraryError) container.innerHTML+='<p class="notice">Library save failed: '+e(system.libraryError)+'</p>';
-    if(h.failoverReason) container.innerHTML+='<p class="small subtle">Radio fallback: '+e(h.failoverReason)+'</p>';
+    container.innerHTML =
+      '<dl class="detail-list">' +
+      metrics
+        .map(([label, value]) => "<dt>" + e(label) + "</dt><dd>" + e(value) + "</dd>")
+        .join("") +
+      "</dl>" +
+      (b.lastDisconnect
+        ? '<p class="small subtle">Last disconnect: ' +
+          e(b.lastDisconnect.reason) +
+          " · " +
+          e(new Date(b.lastDisconnect.at).toLocaleString()) +
+          "</p>"
+        : "") +
+      (h.lastError ? '<p class="small subtle">Last audio error: ' + e(h.lastError) + "</p>" : "");
+    if (system.libraryError)
+      container.innerHTML +=
+        '<p class="notice">Library save failed: ' + e(system.libraryError) + "</p>";
+    if (h.failoverReason)
+      container.innerHTML +=
+        '<p class="small subtle">Radio fallback: ' + e(h.failoverReason) + "</p>";
   }
-  const toggle=$('[data-action="prebuffer"]');
-  if(toggle) toggle.setAttribute('aria-checked',String(!!h.prebufferEnabled));
-  if($('#prebuffer-status')) $('#prebuffer-status').textContent='Next track: '+(h.prebufferStatus||'off')+' · '+(h.activeProcesses||0)+' audio processes';
+  const toggle = $('[data-action="prebuffer"]');
+  if (toggle) toggle.setAttribute("aria-checked", String(!!h.prebufferEnabled));
+  if ($("#prebuffer-status"))
+    $("#prebuffer-status").textContent =
+      "Next track: " +
+      (h.prebufferStatus || "off") +
+      " · " +
+      (h.activeProcesses || 0) +
+      " audio processes";
   notifications.update(state);
-  const meter=$('#audio-level');
-  if(meter){ meter.value=Math.max(-60,b.health?.level?.rmsDb ?? -60); meter.textContent=(b.health?.level?.rmsDb ?? -96).toFixed(1)+' dB'; }
-}
-function settings(b) {
-  ensureAccess();
-  if(!auditData)void loadManagement();
-  return heading('Keep your channel in tune.', 'Manage your bots, choose their channels, and dial in the sound.') + instancesCard(b) + discordConnectionCard(b) +
-    '<section class="card import-card"><h3>Bot name</h3><p>This fixed name is shown in '+platformName(b)+'. It stays the same when songs change.</p><form id="nickname-form" class="inline-form"><label class="field-label" for="bot-nickname" style="align-self:center;margin:0">'+platformName(b)+' name</label><input class="field" id="bot-nickname" name="nickname" required maxlength="30" value="' + e(b.nickname || 'radiospeak') + '" placeholder="radiospeak"><button class="button primary" type="submit">' + icon('check') + 'Save name</button></form></section>' +
-    healthCard(b) + '<div class="settings-grid">' + botCard(b) + '<section class="card card-padding"><div class="card-title"><h2>Playback & output</h2>' + icon('headphones') + '</div><div class="setting-line"><div>Shuffle queue<p>Randomize queued and newly added tracks</p></div><button class="switch" role="switch" aria-label="Shuffle queue" aria-checked="' + b.shuffle + '" data-action="shuffle"></button></div><div class="setting-line"><div>Repeat mode<p>Applies to tracks requested by users</p></div><select data-control="repeat" aria-label="Repeat mode">' + ['off','all','one'].map(m => '<option value="' + m + '" ' + (b.loop===m?'selected':'') + '>' + ({off:'Off',all:'Repeat all',one:'Repeat one'}[m]) + '</option>').join('') + '</select></div><div class="setting-line"><div>Default idle playlist<p>Used when the queue is empty and radio is off</p></div><select data-control="default" aria-label="Default idle playlist"><option value="">None</option>' + state.playlists.map(p => '<option value="' + e(p.id) + '" ' + (state.defaults[b.name]===p.id?'selected':'') + (!trackCount(p)?' disabled':'') + '>' + e(p.name) + '</option>').join('') + '</select></div><dl class="detail-list"><dt>Output</dt><dd>'+platformName(b)+' / Opus</dd><dt>Bot gain</dt><dd>' + b.volume + '%</dd><dt>Listener auto-pause</dt><dd>' + (b.autoPaused?'Paused · empty channel':'Ready') + '</dd><dt>Radio fallback</dt><dd>' + e(b.radio?.name || 'Off') + '</dd></dl>' + (b.radio ? button('Turn radio off','stop','radio-off','','secondary') : '') + '</section>' + commands(state.commandPrefix,b.platform) + '<section class="card card-padding"><h3>Your listeners</h3><p class="small subtle">People in the current channel who can hear the bot.</p>' + (b.listeners.length ? b.listeners.map(n => '<div class="listeners-row"><span>' + e(n) + '</span><span class="tag green">Listening</span></div>').join('') : '<p class="small subtle">No listeners in this channel yet.</p>') + '</section></div>';
+  const meter = $("#audio-level");
+  if (meter) {
+    meter.value = Math.max(-60, b.health?.level?.rmsDb ?? -60);
+    meter.textContent = (b.health?.level?.rmsDb ?? -96).toFixed(1) + " dB";
+  }
 }
 
-function dock(b) {
-  const t = currentTrack(), isPaused = paused(b), liked = state.favorites.some(f => f.url === t?.url), canStart = t || b.queue.length || b.defaultPlaylist.size;
-  return '<div class="dock-track">' + art(t,'dock-art') + '<div class="dock-info"><div class="dock-title" title="' + e(t?.title || 'Nothing playing yet') + '"><span>' + e(t?.title || 'Nothing playing yet') + '</span></div><div class="dock-artist">' + e(t?.artist || (t ? source(t) : 'Your next track is waiting')) + '</div></div>' +
-    ib('heart', liked ? 'Remove from favorites' : 'Favorite current track', 'favorite-current', 'aria-pressed="' + liked + '" ' + (!t?'disabled':''),'dock-heart ' + (liked?'active':'')) +
-    ib('trash', b.currentPlaylist ? 'Delete this song from ' + b.currentPlaylist.name : b.track ? 'Only songs from a saved playlist can be deleted' : 'Nothing to delete', 'delete-current', !b.currentPlaylist ? 'disabled' : '', 'dock-delete danger') + '</div><div class="dock-center"><div class="transport">' +
-    ib('shuffle','Shuffle queue','shuffle','aria-pressed="' + b.shuffle + '"','shuffle-button ' + (b.shuffle?'active':'')) +
-    ib('previous','Previous track','previous',b.canGoBack?'':'disabled') +
-    '<button class="dock-play" data-action="toggle-play" aria-label="' + (t && !isPaused?'Pause':'Play') + '" ' + (!canStart?'disabled':'') + '>' + icon(t && !isPaused?'pause':'play') + '</button>' +
-    ib('stop','Stop playback and clear queue','stop',!t&&!b.queue.length?'disabled':'','stop-button') +
-    ib('next','Next track','skip',!b.track?'disabled':'') +
-    '<button class="icon-button repeat-button ' + (b.loop!=='off'?'active':'') + '" data-action="repeat" aria-label="Repeat: ' + b.loop + '" title="Repeat: ' + b.loop + '" aria-pressed="' + (b.loop!=='off') + '">' + icon('repeat') + (b.loop==='one'?'<span class="repeat-one">1</span>':'') + '</button></div>' +
-    '<div class="timeline"><span id="elapsed">' + time(b.elapsed) + '</span><input id="seek" type="range" min="0" max="' + (b.track?.duration||1) + '" value="' + b.elapsed + '" aria-label="Playback position" ' + (!b.track?.duration?'disabled':'') + '><span>' + (t ? duration(b.track?.duration) : '0:00') + '</span></div></div>' +
-    '<div class="dock-right"><div class="volume-controls">' + ib(b.volume?'volume':'mute',b.volume?'Mute bot':'Unmute bot','mute','aria-pressed="' + (b.volume===0) + '"') + '<input type="range" id="volume" min="0" max="100" value="' + b.volume + '" aria-label="Bot volume gain" aria-valuetext="' + b.volume + '%" title="Bot volume: ' + b.volume + '%" style="--fill:' + b.volume + '%"><span class="volume-number" id="volume-number">' + b.volume + '</span></div><div class="output-info"><div class="output-label">' + platformIcon(b) + platformName(b) + '</div><div class="small">' + e(b.radio ? 'Radio fallback · ' + (!b.track ? 'Active' : 'Ready') : b.defaultPlaylist.size ? 'Idle playlist · ' + (b.track?.auto ? 'Active' : 'Ready') : b.channel || 'Not connected') + '</div></div></div>';
-}
-
-const instanceSummaries = () => state.bots.map(x => [x.platform,x.serverName,x.connectionError,x.discord,x.name, x.nickname, x.connected, x.channel, x.removable, nowLine(x)]);
-const nowLine = x => x.track ? 'Playing ' + x.track.title : x.radio ? 'Radio · ' + (x.radioTitle || x.radio.name) : 'Idle';
-const instanceAvatar = x => '<span class="switcher-avatar" title="'+platformName(x)+'">' + platformIcon(x) + '<span class="status-dot ' + (x.connected ? 'on' : '') + '"></span></span>';
+const instanceSummaries = () =>
+  state.bots.map((x) => [
+    x.platform,
+    x.serverName,
+    x.connectionError,
+    x.discord,
+    x.name,
+    x.nickname,
+    x.connected,
+    x.channel,
+    x.removable,
+    nowLine(x),
+  ]);
+const nowLine = (x) =>
+  x.track
+    ? "Playing " + x.track.title
+    : x.radio
+      ? "Radio · " + (x.radioTitle || x.radio.name)
+      : "Idle";
+const instanceAvatar = (x) =>
+  '<span class="switcher-avatar" title="' +
+  platformName(x) +
+  '">' +
+  platformIcon(x) +
+  '<span class="status-dot ' +
+  (x.connected ? "on" : "") +
+  '"></span></span>';
 function renderSwitcher(b) {
-  const keep = $('#bot-switcher').contains(document.activeElement) ? { ...document.activeElement.dataset } : null;
-  $('#switcher-button').innerHTML = instanceAvatar(b) + '<span class="switcher-text"><strong>' + e(b.nickname || b.name) + '</strong><small>'+platformName(b)+' / ' + e(b.connected ? b.channel || 'Connected' : 'Offline') + '</small></span>' + icon('chevron');
-  $('#switcher-button').title = 'Bot instance: ' + (b.nickname || b.name);
-  $('#switcher-menu').innerHTML = '<div class="switcher-label"><span>BOT INSTANCES</span><span>' + state.bots.length + '</span></div>' +
-    state.bots.map(x => '<button type="button" class="switcher-item" role="menuitemradio" aria-checked="' + (x.name === b.name) + '" data-action="switch-bot" data-id="' + e(x.name) + '">' + instanceAvatar(x) +
-      '<span class="switcher-text"><strong>' + e(x.nickname || x.name) + '</strong><small>'+platformName(x)+' / ' + e(x.connected ? x.channel || 'Connected' : 'Offline') + '</small><small class="switcher-now">' + e(nowLine(x)) + '</small></span>' + (x.name === b.name ? icon('check') : '') + '</button>').join('') +
-    '<div class="switcher-footer">' + button('Add instance', 'plus', 'new-instance', state.bots.length >= state.maxInstances ? 'disabled' : '', 'secondary') + '<a class="button secondary" href="#settings" data-action="close-switcher">' + icon('settings') + 'Manage</a></div>';
-  if (keep?.action) [...$('#bot-switcher').querySelectorAll('[data-action]')].find(el => el.dataset.action === keep.action && el.dataset.id === keep.id)?.focus({ preventScroll: true });
+  const keep = $("#bot-switcher").contains(document.activeElement)
+    ? { ...document.activeElement.dataset }
+    : null;
+  $("#switcher-button").innerHTML =
+    instanceAvatar(b) +
+    '<span class="switcher-text"><strong>' +
+    e(b.nickname || b.name) +
+    "</strong><small>" +
+    platformName(b) +
+    " / " +
+    e(b.connected ? b.channel || "Connected" : "Offline") +
+    "</small></span>" +
+    icon("chevron");
+  $("#switcher-button").title = "Bot instance: " + (b.nickname || b.name);
+  $("#switcher-menu").innerHTML =
+    '<div class="switcher-label"><span>BOT INSTANCES</span><span>' +
+    state.bots.length +
+    "</span></div>" +
+    state.bots
+      .map(
+        (x) =>
+          '<button type="button" class="switcher-item" role="menuitemradio" aria-checked="' +
+          (x.name === b.name) +
+          '" data-action="switch-bot" data-id="' +
+          e(x.name) +
+          '">' +
+          instanceAvatar(x) +
+          '<span class="switcher-text"><strong>' +
+          e(x.nickname || x.name) +
+          "</strong><small>" +
+          platformName(x) +
+          " / " +
+          e(x.connected ? x.channel || "Connected" : "Offline") +
+          '</small><small class="switcher-now">' +
+          e(nowLine(x)) +
+          "</small></span>" +
+          (x.name === b.name ? icon("check") : "") +
+          "</button>",
+      )
+      .join("") +
+    '<div class="switcher-footer">' +
+    button(
+      "Add instance",
+      "plus",
+      "new-instance",
+      state.bots.length >= state.maxInstances ? "disabled" : "",
+      "secondary",
+    ) +
+    '<a class="button secondary" href="#settings" data-action="close-switcher">' +
+    icon("settings") +
+    "Manage</a></div>";
+  if (keep?.action)
+    [...$("#bot-switcher").querySelectorAll("[data-action]")]
+      .find((el) => el.dataset.action === keep.action && el.dataset.id === keep.id)
+      ?.focus({ preventScroll: true });
 }
-function toggleSwitcher(open = $('#switcher-menu').hidden) {
-  $('#switcher-menu').hidden = !open;
-  $('#switcher-button').setAttribute('aria-expanded', String(open));
+function toggleSwitcher(open = $("#switcher-menu").hidden) {
+  $("#switcher-menu").hidden = !open;
+  $("#switcher-button").setAttribute("aria-expanded", String(open));
   if (open) $('#switcher-menu [aria-checked="true"]')?.focus();
 }
 function selectBot(name) {
   botName = name;
-  try { localStorage.setItem('radiospeak.bot', name); } catch {}
+  try {
+    localStorage.setItem("radiospeak.bot", name);
+  } catch {}
   receivedAt = Date.now();
   toggleSwitcher(false);
   render(true);
 }
 function instancesCard(b) {
-  return '<section class="card card-padding instances-card"><div class="card-title"><h2>Bot instances <span class="count-badge">' + state.bots.length + '</span></h2>' + button('Add instance', 'plus', 'new-instance', state.bots.length >= state.maxInstances ? 'disabled' : '') + '</div>' +
+  return (
+    '<section class="card card-padding instances-card"><div class="card-title"><h2>Bot instances <span class="count-badge">' +
+    state.bots.length +
+    "</span></h2>" +
+    button(
+      "Add instance",
+      "plus",
+      "new-instance",
+      state.bots.length >= state.maxInstances ? "disabled" : "",
+    ) +
+    "</div>" +
     '<p class="small subtle">Each Discord or TeamSpeak instance has a separate voice channel, queue, volume and idle playlist. Switch between them here or from the top bar.</p>' +
-    state.bots.map(x => '<div class="instance-row ' + (x.name === b.name ? 'current' : '') + '">' + instanceAvatar(x) + '<div class="switcher-text"><strong>' + e(x.nickname || x.name) + ' <span class="instance-id">' + e(x.name) + '</span></strong>'+platformBadge(x)+'<small>' + e(x.connected ? x.channel || 'Connected' : 'Offline') + ' · ' + e(nowLine(x)) + '</small></div><div class="instance-actions">' +
-      (x.name === b.name ? '<span class="tag green">Selected</span>' : button('Switch', 'arrow', 'switch-bot', 'data-id="' + e(x.name) + '"', 'secondary')) +
-      (x.platform==='discord'&&x.removable?ib('settings','Edit Discord connection','edit-connection','data-id="'+e(x.name)+'"'):'') + (x.removable ? ib('trash', 'Remove ' + (x.nickname || x.name), 'delete-instance', 'data-id="' + e(x.name) + '"', 'danger') : '<span class="tag" title="Defined in the server configuration">Config</span>') + '</div></div>').join('') + '</section>';
+    state.bots
+      .map(
+        (x) =>
+          '<div class="instance-row ' +
+          (x.name === b.name ? "current" : "") +
+          '">' +
+          instanceAvatar(x) +
+          '<div class="switcher-text"><strong>' +
+          e(x.nickname || x.name) +
+          ' <span class="instance-id">' +
+          e(x.name) +
+          "</span></strong>" +
+          platformBadge(x) +
+          "<small>" +
+          e(x.connected ? x.channel || "Connected" : "Offline") +
+          " · " +
+          e(nowLine(x)) +
+          '</small></div><div class="instance-actions">' +
+          (x.name === b.name
+            ? '<span class="tag green">Selected</span>'
+            : button("Switch", "arrow", "switch-bot", 'data-id="' + e(x.name) + '"', "secondary")) +
+          (x.platform === "discord" && x.removable
+            ? ib(
+                "settings",
+                "Edit Discord connection",
+                "edit-connection",
+                'data-id="' + e(x.name) + '"',
+              )
+            : "") +
+          (x.removable
+            ? ib(
+                "trash",
+                "Remove " + (x.nickname || x.name),
+                "delete-instance",
+                'data-id="' + e(x.name) + '"',
+                "danger",
+              )
+            : '<span class="tag" title="Defined in the server configuration">Config</span>') +
+          "</div></div>",
+      )
+      .join("") +
+    "</section>"
+  );
 }
 function syncPlatformFields() {
-  const platform=$('#instance-platform')?.value||'teamspeak';
-  document.querySelectorAll('#modal-body [data-platform-fields]').forEach(block=>{const hidden=block.dataset.platformFields!==platform;block.hidden=hidden;block.querySelectorAll('input,select').forEach(el=>{el.disabled=hidden;});});
+  const platform = $("#instance-platform")?.value || "teamspeak";
+  document.querySelectorAll("#modal-body [data-platform-fields]").forEach((block) => {
+    const hidden = block.dataset.platformFields !== platform;
+    block.hidden = hidden;
+    block.querySelectorAll("input,select").forEach((el) => {
+      el.disabled = hidden;
+    });
+  });
 }
 function instanceEditor() {
-  const channels=state.bots.find(b=>b.platform!=='discord'&&b.connected)?.channels||[];
-  showModal('Add a bot instance',
-    '<label class="field-label" for="instance-platform">Platform</label><select class="field" id="instance-platform" name="platform"><option value="teamspeak">TeamSpeak</option><option value="discord" '+(bot()?.platform==='discord'?'selected':'')+'>Discord</option></select><p class="small subtle">Each instance has its own queue, volume and idle playlist.</p><label class="field-label" for="instance-nickname">Bot name</label><input class="field" id="instance-nickname" name="nickname" required maxlength="30" placeholder="e.g. Lobby Radio">'+
-    '<label class="field-label" for="instance-id">Instance ID</label><input class="field" id="instance-id" name="name" required maxlength="24" pattern="[A-Za-z0-9][A-Za-z0-9_\\-]*" placeholder="e.g. lobby-radio"><p class="small subtle">Used in logs and file names: letters, numbers, - and _.</p><div data-platform-fields="teamspeak"><p>A new TeamSpeak client joins the configured server with its own persistent identity.</p><label class="field-label" for="instance-channel">Channel</label><select id="instance-channel" name="channelId"><option value="">Server default (choose later)</option>'+channels.map(c=>'<option value="'+e(c.id)+'">'+e(c.name)+'</option>').join('')+'</select></div><div data-platform-fields="discord" hidden>'+discordFields(null)+'</div>',
-    async data=>{
-      const platform=data.get('platform');
-      const result=await mutate('/api/bots',{name:data.get('name'),nickname:data.get('nickname'),platform,channelId:data.get('channelId')||undefined,...(platform==='discord'?{guildId:data.get('guildId'),token:data.get('token')}:{})});
+  const channels = state.bots.find((b) => b.platform !== "discord" && b.connected)?.channels || [];
+  showModal(
+    "Add a bot instance",
+    '<label class="field-label" for="instance-platform">Platform</label><select class="field" id="instance-platform" name="platform"><option value="teamspeak">TeamSpeak</option><option value="discord" ' +
+      (bot()?.platform === "discord" ? "selected" : "") +
+      '>Discord</option></select><p class="small subtle">Each instance has its own queue, volume and idle playlist.</p><label class="field-label" for="instance-nickname">Bot name</label><input class="field" id="instance-nickname" name="nickname" required maxlength="30" placeholder="e.g. Lobby Radio">' +
+      '<label class="field-label" for="instance-id">Instance ID</label><input class="field" id="instance-id" name="name" required maxlength="24" pattern="[A-Za-z0-9][A-Za-z0-9_\\-]*" placeholder="e.g. lobby-radio"><p class="small subtle">Used in logs and file names: letters, numbers, - and _.</p><div data-platform-fields="teamspeak"><p>A new TeamSpeak client joins the configured server with its own persistent identity.</p><label class="field-label" for="instance-channel">Channel</label><select id="instance-channel" name="channelId"><option value="">Server default (choose later)</option>' +
+      channels.map((c) => '<option value="' + e(c.id) + '">' + e(c.name) + "</option>").join("") +
+      '</select></div><div data-platform-fields="discord" hidden>' +
+      discordFields(null) +
+      "</div>",
+    async (data) => {
+      const platform = data.get("platform");
+      const result = await mutate("/api/bots", {
+        name: data.get("name"),
+        nickname: data.get("nickname"),
+        platform,
+        channelId: data.get("channelId") || undefined,
+        ...(platform === "discord"
+          ? { guildId: data.get("guildId"), token: data.get("token") }
+          : {}),
+      });
       selectBot(result.bot);
-    },'Add instance');
+    },
+    "Add instance",
+  );
   syncPlatformFields();
 }
 function connectionEditor(id) {
-  const target=state.bots.find(b=>b.name===id);if(!target)return;
-  showModal('Discord connection',discordFields(target,false),data=>mutate('/api/bots/'+encodeURIComponent(id)+'/connection',{token:data.get('token'),guildId:data.get('guildId'),channelId:data.get('channelId')}),'Save & reconnect');
+  const target = state.bots.find((b) => b.name === id);
+  if (!target) return;
+  showModal(
+    "Discord connection",
+    discordFields(target, false),
+    (data) =>
+      mutate("/api/bots/" + encodeURIComponent(id) + "/connection", {
+        token: data.get("token"),
+        guildId: data.get("guildId"),
+        channelId: data.get("channelId"),
+      }),
+    "Save & reconnect",
+  );
 }
 
 function renderChrome(b) {
-  const signature = JSON.stringify([b.name,b.nickname,b.connected,b.channel,b.track?.url,b.userPaused,b.autoPaused,b.queue.length,state.collections,state.playlists.map(p=>p.collectionId),state.favorites.length,b.listeners,b.channels,b.normalization,b.defaultPlaylist,b.radio,instanceSummaries()]);
+  const signature = JSON.stringify([
+    b.name,
+    b.nickname,
+    b.connected,
+    b.channel,
+    b.track?.url,
+    b.userPaused,
+    b.autoPaused,
+    b.queue.length,
+    state.collections,
+    state.playlists.map((p) => p.collectionId),
+    state.favorites.length,
+    b.listeners,
+    b.channels,
+    b.normalization,
+    b.defaultPlaylist,
+    b.radio,
+    instanceSummaries(),
+  ]);
   if (signature === renderedChrome) return;
   renderedChrome = signature;
-  $('#sign-out').hidden = !state.authEnabled;
-  const status = !b.connected?'Offline':paused(b)?'Paused':currentTrack()?'Playing':'Connected · Idle';
-  $('#connection').innerHTML = '<span class="status-dot ' + (b.connected?'on':'') + '"></span>' + status;
-  $('#queue-badge').textContent = b.queue.length;
-  $('#favorite-count').textContent = state.favorites.length;
-  $('#sidebar-bot').textContent = b.nickname || b.name;
-  $('#sidebar-channel').textContent = b.channel || 'Not connected';
-  $('#sidebar-dot').className = 'status-dot ' + (b.connected?'on':'');
-  $('#sidebar-collections').innerHTML = state.collections.length ? state.collections.map(c => '<button class="collection-link" data-action="collection" data-id="' + e(c.id) + '">' + icon('folder') + '<span class="name">' + e(c.name) + '</span><span class="small subtle" style="margin-left:auto">' + state.playlists.filter(p=>p.collectionId===c.id).length + '</span></button>').join('') : '<p class="subtle small">A home for every mood.</p>';
+  $("#sign-out").hidden = !state.authEnabled;
+  const status = !b.connected
+    ? "Offline"
+    : paused(b)
+      ? "Paused"
+      : currentTrack()
+        ? "Playing"
+        : "Connected · Idle";
+  $("#connection").innerHTML =
+    '<span class="status-dot ' + (b.connected ? "on" : "") + '"></span>' + status;
+  $("#queue-badge").textContent = b.queue.length;
+  $("#favorite-count").textContent = state.favorites.length;
+  $("#sidebar-bot").textContent = b.nickname || b.name;
+  $("#sidebar-channel").textContent = b.channel || "Not connected";
+  $("#sidebar-dot").className = "status-dot " + (b.connected ? "on" : "");
+  $("#sidebar-collections").innerHTML = state.collections.length
+    ? state.collections
+        .map(
+          (c) =>
+            '<button class="collection-link" data-action="collection" data-id="' +
+            e(c.id) +
+            '">' +
+            icon("folder") +
+            '<span class="name">' +
+            e(c.name) +
+            '</span><span class="small subtle" style="margin-left:auto">' +
+            state.playlists.filter((p) => p.collectionId === c.id).length +
+            "</span></button>",
+        )
+        .join("")
+    : '<p class="subtle small">A home for every mood.</p>';
   renderSwitcher(b);
-  $('#statusbar').innerHTML = '<span><span class="status-dot ' + (b.connected?'on':'') + '"></span>' + (b.connected?'Connected to '+platformName(b):platformName(b)+' bot offline') + '</span><span>' + icon('headphones') + channelSelect(b,'Move bot to channel') + '</span><span>' + icon('users') + b.listeners.length + ' listeners</span><button data-action="normalization" aria-pressed="' + b.normalization + '">' + icon('check') + 'Normalization ' + (b.normalization?'on':'off') + '</button><span class="status-end">Made for listening, together.</span>';
+  $("#statusbar").innerHTML =
+    '<span><span class="status-dot ' +
+    (b.connected ? "on" : "") +
+    '"></span>' +
+    (b.connected ? "Connected to " + platformName(b) : platformName(b) + " bot offline") +
+    "</span><span>" +
+    icon("headphones") +
+    channelSelect(b, "Move bot to channel") +
+    "</span><span>" +
+    icon("users") +
+    b.listeners.length +
+    ' listeners</span><button data-action="normalization" aria-pressed="' +
+    b.normalization +
+    '">' +
+    icon("check") +
+    "Normalization " +
+    (b.normalization ? "on" : "off") +
+    '</button><span class="status-end">Made for listening, together.</span>';
 }
 function render(force = false) {
   const actual = bot();
-  const b = actual ? { ...actual, volume: volumeControl.get(actual.name) ?? requestedVolumes.get(actual.name) ?? actual.volume } : actual;
+  const b = actual
+    ? {
+        ...actual,
+        volume:
+          volumeControl.get(actual.name) ?? requestedVolumes.get(actual.name) ?? actual.volume,
+      }
+    : actual;
   if (!b) return;
   botName = b.name;
   renderChrome(b);
-  if (!state.playlists.some(p=>p.id===playlistId)) playlistId = null;
-  if (!['all','standalone','favorites'].includes(libraryFilter) && !state.collections.some(c=>c.id===libraryFilter)) libraryFilter = 'all';
-  const bWithoutProgress = {...b}; delete bWithoutProgress.elapsed;
+  if (!state.playlists.some((p) => p.id === playlistId)) playlistId = null;
+  if (
+    !["all", "standalone", "favorites"].includes(libraryFilter) &&
+    !state.collections.some((c) => c.id === libraryFilter)
+  )
+    libraryFilter = "all";
+  const bWithoutProgress = { ...b };
+  delete bWithoutProgress.elapsed;
   delete bWithoutProgress.health;
-  const signature = JSON.stringify([activeView,playlistId,libraryFilter,[...pages],bWithoutProgress,state.playlists,state.collections,state.defaults,state.favorites,state.radioStations,state.schedules,state.viewer?.role,instanceSummaries(),searchSource,searchType]);
+  const signature = JSON.stringify([
+    activeView,
+    playlistId,
+    libraryFilter,
+    [...pages],
+    bWithoutProgress,
+    state.playlists,
+    state.collections,
+    state.defaults,
+    state.favorites,
+    state.radioStations,
+    state.schedules,
+    state.viewer?.role,
+    instanceSummaries(),
+    searchSource,
+    searchType,
+  ]);
   const active = document.activeElement;
-  const editing = $('#view').contains(active) && /INPUT|SELECT|TEXTAREA/.test(active.tagName);
+  const editing = $("#view").contains(active) && /INPUT|SELECT|TEXTAREA/.test(active.tagName);
   if ((force || signature !== renderedView) && !dragging && (!editing || force)) {
-    const focusId = active?.id, selection = active?.tagName === 'INPUT' && active.type==='search' ? [active.selectionStart,active.selectionEnd] : null;
-    const focusData = $('#view').contains(active) ? {...active.dataset} : null;
+    const focusId = active?.id,
+      selection =
+        active?.tagName === "INPUT" && active.type === "search"
+          ? [active.selectionStart, active.selectionEnd]
+          : null;
+    const focusData = $("#view").contains(active) ? { ...active.dataset } : null;
     renderedView = signature;
-    viewTracks = new Map([['queue', [...b.queue]]]);
+    viewTracks = new Map([["queue", [...b.queue]]]);
     viewVersions.clear();
-    for (const [id,detail] of playlistCache) {
-      const sparse=Array(detail.trackCount ?? detail.total);
-      detail.tracks.forEach((t,i)=>{sparse[detail.positions?.[i] ?? detail.offset+i]=t;});
-      viewTracks.set(id,sparse);viewVersions.set(id,detail.version);
+    for (const [id, detail] of playlistCache) {
+      const sparse = Array(detail.trackCount ?? detail.total);
+      detail.tracks.forEach((t, i) => {
+        sparse[detail.positions?.[i] ?? detail.offset + i] = t;
+      });
+      viewTracks.set(id, sparse);
+      viewVersions.set(id, detail.version);
     }
-    $('#view').innerHTML =
-      ({dashboard,queue:b=>heading('Good things are up next.', 'Your channel’s requests, in the order you want to hear them.', '<a href="#search" class="button primary">' + icon('plus') + 'Add tracks</a>') + hero(b) + '<div style="margin-top:28px">' + queueSection(b,true) + '</div>',library,search:searchView,radio:radioView,history:historyView,settings:b=>settings(b)+operationsMarkup(state,b)+(state.viewer?.role==='admin'?managementMarkup(auditData)+accessMarkup(accessData):'')}[activeView] || dashboard)(b);
+    $("#view").innerHTML = (
+      {
+        dashboard,
+        queue: (b) =>
+          heading(
+            "Good things are up next.",
+            "Your channel’s requests, in the order you want to hear them.",
+            '<a href="#search" class="button primary">' + icon("plus") + "Add tracks</a>",
+          ) +
+          hero(b) +
+          '<div style="margin-top:28px">' +
+          queueSection(b, true) +
+          "</div>",
+        library,
+        search: searchView,
+        radio: radioView,
+        history: historyView,
+        settings: (b) =>
+          settings(b) +
+          operationsMarkup(state, b) +
+          (state.viewer?.role === "admin"
+            ? managementMarkup(auditData) + accessMarkup(accessData)
+            : ""),
+      }[activeView] || dashboard
+    )(b);
     if (focusId && document.getElementById(focusId)) {
-      document.getElementById(focusId).focus({preventScroll:true});
+      document.getElementById(focusId).focus({ preventScroll: true });
       if (selection) document.getElementById(focusId).setSelectionRange(...selection);
     } else if (focusData?.action) {
-      [...$('#view').querySelectorAll('[data-action]')].find(el =>
-        ['action','id','scope','index'].every(key=>el.dataset[key]===focusData[key]))?.focus({preventScroll:true});
+      [...$("#view").querySelectorAll("[data-action]")]
+        .find((el) =>
+          ["action", "id", "scope", "index"].every((key) => el.dataset[key] === focusData[key]),
+        )
+        ?.focus({ preventScroll: true });
     }
   }
-  const dockSignature = JSON.stringify([b.name,b.track,b.currentPlaylist,b.radio,b.radioTitle,b.userPaused,b.autoPaused,b.loop,b.shuffle,b.canGoBack,b.volume,state.favorites.map(t=>t.url),b.defaultPlaylist,state.viewer?.role]);
-  if (dockSignature !== renderedDock && !sliderActive && !$('#player-dock').contains(document.activeElement)) {
+  const dockSignature = JSON.stringify([
+    b.name,
+    b.track,
+    b.currentPlaylist,
+    b.radio,
+    b.radioTitle,
+    b.userPaused,
+    b.autoPaused,
+    b.loop,
+    b.shuffle,
+    b.canGoBack,
+    b.volume,
+    state.favorites.map((t) => t.url),
+    b.defaultPlaylist,
+    state.viewer?.role,
+  ]);
+  if (
+    dockSignature !== renderedDock &&
+    !sliderActive &&
+    !$("#player-dock").contains(document.activeElement)
+  ) {
     renderedDock = dockSignature;
-    $('#player-dock').innerHTML = dock(b);
-    const title = $('.dock-title'), text = $('.dock-title>span');
+    $("#player-dock").innerHTML = dock(b);
+    const title = $(".dock-title"),
+      text = $(".dock-title>span");
     if (text && text.scrollWidth > title.clientWidth) {
-      title.style.setProperty('--marquee-distance', (title.clientWidth - text.scrollWidth - 10) + 'px');
-      title.classList.add('is-long');
+      title.style.setProperty(
+        "--marquee-distance",
+        title.clientWidth - text.scrollWidth - 10 + "px",
+      );
+      title.classList.add("is-long");
     }
   } else if (dockSignature !== renderedDock && !sliderActive) {
     // Keep the focused transport button usable while updating its labels and state.
     const focusedAction = document.activeElement?.dataset.action;
-    if (focusedAction && document.activeElement.closest('#player-dock')) {
+    if (focusedAction && document.activeElement.closest("#player-dock")) {
       renderedDock = dockSignature;
-      $('#player-dock').innerHTML = dock(b);
-      [...$('#player-dock').querySelectorAll('[data-action]')].find(el=>el.dataset.action===focusedAction)?.focus({preventScroll:true});
+      $("#player-dock").innerHTML = dock(b);
+      [...$("#player-dock").querySelectorAll("[data-action]")]
+        .find((el) => el.dataset.action === focusedAction)
+        ?.focus({ preventScroll: true });
     }
   }
   updateProgress();
@@ -504,387 +1117,982 @@ function render(force = false) {
   enforcePermissions();
 }
 function updateProgress() {
-  const b = bot(), seek = $('#seek');
+  const b = bot(),
+    seek = $("#seek");
   if (!b || !seek || sliderActive || document.activeElement === seek) return;
-  const extra = !paused(b) && b.track ? Math.min(1.5,(Date.now()-receivedAt)/1000) : 0;
-  const elapsed = Math.min(b.track?.duration || Infinity,b.elapsed+extra);
+  const extra = !paused(b) && b.track ? Math.min(1.5, (Date.now() - receivedAt) / 1000) : 0;
+  const elapsed = Math.min(b.track?.duration || Infinity, b.elapsed + extra);
   seek.value = elapsed;
-  seek.style.setProperty('--fill', b.track?.duration ? (elapsed/b.track.duration*100)+'%' : '0%');
-  seek.setAttribute('aria-valuetext', time(Math.floor(elapsed)) + ' of ' + (b.track?.duration?duration(b.track.duration):'live stream'));
-  $('#elapsed').textContent = time(Math.floor(elapsed));
-  let wait=b.track?(b.track.duration?Math.max(0,b.track.duration-elapsed):null):0;
-  const estimates=b.queue.map(t=>{const estimate=wait;wait=wait===null||!t.duration?null:wait+t.duration;return estimate;});
-  document.querySelectorAll('[data-eta-index]').forEach(el=>{
-    const estimate=estimates[Number(el.dataset.etaIndex)];
-    el.textContent=b.loop==='one'&&!b.track?.auto?' · after repeat is off':estimate===null?' · time unavailable':estimate===undefined?'':' · ~'+time(Math.ceil(estimate))+(paused(b)?' after resume':' until play');
+  seek.style.setProperty(
+    "--fill",
+    b.track?.duration ? (elapsed / b.track.duration) * 100 + "%" : "0%",
+  );
+  seek.setAttribute(
+    "aria-valuetext",
+    time(Math.floor(elapsed)) +
+      " of " +
+      (b.track?.duration ? duration(b.track.duration) : "live stream"),
+  );
+  $("#elapsed").textContent = time(Math.floor(elapsed));
+  let wait = b.track ? (b.track.duration ? Math.max(0, b.track.duration - elapsed) : null) : 0;
+  const estimates = b.queue.map((t) => {
+    const estimate = wait;
+    wait = wait === null || !t.duration ? null : wait + t.duration;
+    return estimate;
+  });
+  document.querySelectorAll("[data-eta-index]").forEach((el) => {
+    const estimate = estimates[Number(el.dataset.etaIndex)];
+    el.textContent =
+      b.loop === "one" && !b.track?.auto
+        ? " · after repeat is off"
+        : estimate === null
+          ? " · time unavailable"
+          : estimate === undefined
+            ? ""
+            : " · ~" + time(Math.ceil(estimate)) + (paused(b) ? " after resume" : " until play");
   });
 }
 function navigate() {
-  activeView = location.hash.slice(1) in views ? location.hash.slice(1) : 'dashboard';
-  $('#breadcrumb').textContent = views[activeView];
-  document.title = views[activeView] + ' · radiospeak';
-  document.querySelectorAll('nav a').forEach(a=>{
-    const active = a.dataset.view===activeView;
-    a.classList.toggle('active',active);
-    if(active) a.setAttribute('aria-current','page'); else a.removeAttribute('aria-current');
+  activeView = location.hash.slice(1) in views ? location.hash.slice(1) : "dashboard";
+  $("#breadcrumb").textContent = views[activeView];
+  document.title = views[activeView] + " · radiospeak";
+  document.querySelectorAll("nav a").forEach((a) => {
+    const active = a.dataset.view === activeView;
+    a.classList.toggle("active", active);
+    if (active) a.setAttribute("aria-current", "page");
+    else a.removeAttribute("aria-current");
   });
-  $('#sidebar').classList.remove('open');
-  $('[data-action="menu"]').setAttribute('aria-expanded','false');
+  $("#sidebar").classList.remove("open");
+  $('[data-action="menu"]').setAttribute("aria-expanded", "false");
   render(true);
 }
 
-const searchUrl = page => '/api/search?q=' + encodeURIComponent(query.trim()) + '&source=' + searchSource + '&type=' + searchType + '&page=' + page;
+const searchUrl = (page) =>
+  "/api/search?q=" +
+  encodeURIComponent(query.trim()) +
+  "&source=" +
+  searchSource +
+  "&type=" +
+  searchType +
+  "&page=" +
+  page;
 /** Appends the next page of results, skipping any already shown. */
 async function loadMoreResults() {
   if (searchMoreLoading || !searchHasMore) return;
   const controller = searchController;
-  searchMoreLoading = true; if ($('#search-results')) $('#search-results').innerHTML = searchResultsMarkup();
+  searchMoreLoading = true;
+  if ($("#search-results")) $("#search-results").innerHTML = searchResultsMarkup();
   try {
-    const results = await request(searchUrl(searchPage + 1), undefined, 'GET', controller?.signal);
+    const results = await request(searchUrl(searchPage + 1), undefined, "GET", controller?.signal);
     if (searchController !== controller) return;
-    const shown = new Set(searchResults.map(t => t.url));
-    searchResults = [...searchResults, ...results.filter(t => !shown.has(t.url))];
+    const shown = new Set(searchResults.map((t) => t.url));
+    searchResults = [...searchResults, ...results.filter((t) => !shown.has(t.url))];
     searchPage++;
     searchHasMore = results.length >= SEARCH_PAGE && searchPage < SEARCH_PAGES;
   } catch (error) {
-    if (searchController === controller && error.name !== 'AbortError') toast(error.message, true);
+    if (searchController === controller && error.name !== "AbortError") toast(error.message, true);
   } finally {
     searchMoreLoading = false;
-    if (searchController === controller && $('#search-results')) { $('#search-results').innerHTML = searchResultsMarkup(); paintEnqueueButtons(); enforcePermissions(); }
+    if (searchController === controller && $("#search-results")) {
+      $("#search-results").innerHTML = searchResultsMarkup();
+      paintEnqueueButtons();
+      enforcePermissions();
+    }
   }
 }
 /** Previews a public playlist, then imports it into a new library playlist. */
 async function importPlaylist(url) {
-  const preview=await request('/api/imports/preview',{input:url});
-  let importedId=null;
-  showModal('Import a public playlist','<p>'+e(preview.total?preview.total+' entries found.':'Preview loaded; the provider has not reported the total.')+' Imports run in batches of up to '+preview.batchLimit+' entries. Continue larger playlists from Notifications (the bell at the top right).</p><details><summary>Preview '+preview.tracks.length+' tracks</summary><ol>'+preview.tracks.map(t=>'<li>'+e(t.title)+'</li>').join('')+'</ol></details><label class="field-label" for="import-target">Import into</label><select id="import-target" name="target"><option value="">A new playlist</option>'+state.playlists.map(p=>'<option value="'+e(p.id)+'">'+e(p.name)+' ('+trackCount(p)+' tracks)</option>').join('')+'</select><div class="import-new"><label class="field-label" for="import-name">New playlist name</label><input class="field" id="import-name" name="name" required maxlength="80" value="'+e(preview.name)+'" placeholder="e.g. Weekend rotation"></div><label class="check-label"><input type="checkbox" name="skipDuplicates" checked> Skip duplicate tracks</label>',async d=>{
-    // An existing playlist, or a new one created once even if the import is retried.
-    const target=String(d.get('target')||'');
-    if(!target&&!importedId) importedId=(await mutate('/api/playlists',{name:d.get('name'),collectionId:state.collections.some(c=>c.id===libraryFilter)?libraryFilter:null})).playlist.id;
-    // Keep the playlist selected even if the provider rejects the import.
-    playlistId=target||importedId;location.hash='library';render(true);
-    await mutate('/api/imports',{playlistId,input:url,skipDuplicates:d.get('skipDuplicates')==='on'});
-  },'Import playlist');
+  const preview = await request("/api/imports/preview", { input: url });
+  let importedId = null;
+  showModal(
+    "Import a public playlist",
+    "<p>" +
+      e(
+        preview.total
+          ? preview.total + " entries found."
+          : "Preview loaded; the provider has not reported the total.",
+      ) +
+      " Imports run in batches of up to " +
+      preview.batchLimit +
+      " entries. Continue larger playlists from Notifications (the bell at the top right).</p><details><summary>Preview " +
+      preview.tracks.length +
+      " tracks</summary><ol>" +
+      preview.tracks.map((t) => "<li>" + e(t.title) + "</li>").join("") +
+      '</ol></details><label class="field-label" for="import-target">Import into</label><select id="import-target" name="target"><option value="">A new playlist</option>' +
+      state.playlists
+        .map(
+          (p) =>
+            '<option value="' +
+            e(p.id) +
+            '">' +
+            e(p.name) +
+            " (" +
+            trackCount(p) +
+            " tracks)</option>",
+        )
+        .join("") +
+      '</select><div class="import-new"><label class="field-label" for="import-name">New playlist name</label><input class="field" id="import-name" name="name" required maxlength="80" value="' +
+      e(preview.name) +
+      '" placeholder="e.g. Weekend rotation"></div><label class="check-label"><input type="checkbox" name="skipDuplicates" checked> Skip duplicate tracks</label>',
+    async (d) => {
+      // An existing playlist, or a new one created once even if the import is retried.
+      const target = String(d.get("target") || "");
+      if (!target && !importedId)
+        importedId = (
+          await mutate("/api/playlists", {
+            name: d.get("name"),
+            collectionId: state.collections.some((c) => c.id === libraryFilter)
+              ? libraryFilter
+              : null,
+          })
+        ).playlist.id;
+      // Keep the playlist selected even if the provider rejects the import.
+      playlistId = target || importedId;
+      location.hash = "library";
+      render(true);
+      await mutate("/api/imports", {
+        playlistId,
+        input: url,
+        skipDuplicates: d.get("skipDuplicates") === "on",
+      });
+    },
+    "Import playlist",
+  );
 }
 async function search() {
   clearTimeout(searchTimer);
   searchController?.abort();
-  if (!query.trim()) { searchStatus='idle';searchResults=[]; $('#search-results') && ($('#search-results').innerHTML=searchResultsMarkup()); return; }
-  const controller = new AbortController(); searchController = controller;
-  const timeout = setTimeout(()=>controller.abort(new Error('Search timed out. Please try again.')),95000);
-  searchStatus='loading'; if($('#search-results')) $('#search-results').innerHTML=searchResultsMarkup();
+  if (!query.trim()) {
+    searchStatus = "idle";
+    searchResults = [];
+    $("#search-results") && ($("#search-results").innerHTML = searchResultsMarkup());
+    return;
+  }
+  const controller = new AbortController();
+  searchController = controller;
+  const timeout = setTimeout(
+    () => controller.abort(new Error("Search timed out. Please try again.")),
+    95000,
+  );
+  searchStatus = "loading";
+  if ($("#search-results")) $("#search-results").innerHTML = searchResultsMarkup();
   try {
-    const results = await request(searchUrl(1),undefined,'GET',controller.signal);
-    if (searchController!==controller) return;
-    searchResults = results;searchStatus='done';searchPage=1;searchHasMore=results.length>=SEARCH_PAGE;
-  } catch(error) {
-    if (searchController!==controller || error.name==='AbortError') return;
-    searchError=error.message;searchStatus='error';
+    const results = await request(searchUrl(1), undefined, "GET", controller.signal);
+    if (searchController !== controller) return;
+    searchResults = results;
+    searchStatus = "done";
+    searchPage = 1;
+    searchHasMore = results.length >= SEARCH_PAGE;
+  } catch (error) {
+    if (searchController !== controller || error.name === "AbortError") return;
+    searchError = error.message;
+    searchStatus = "error";
   } finally {
     clearTimeout(timeout);
-    if(searchController===controller && $('#search-results')) {$('#search-results').innerHTML=searchResultsMarkup();paintEnqueueButtons();enforcePermissions();}
+    if (searchController === controller && $("#search-results")) {
+      $("#search-results").innerHTML = searchResultsMarkup();
+      paintEnqueueButtons();
+      enforcePermissions();
+    }
   }
 }
 
-document.addEventListener('click', async event => {
-  const el = event.target.closest('[data-action]');
+document.addEventListener("click", async (event) => {
+  const el = event.target.closest("[data-action]");
   // Clicking anywhere outside the instance switcher closes it.
-  if (!$('#switcher-menu').hidden && !event.target.closest('#bot-switcher')) toggleSwitcher(false);
+  if (!$("#switcher-menu").hidden && !event.target.closest("#bot-switcher")) toggleSwitcher(false);
   if (!el || el.disabled) return;
-  const {action:kind,id,scope} = el.dataset, index=Number(el.dataset.index), b=bot();
-  if (kind === 'reload-panel') { location.reload(); return; }
-  if (kind === 'toggle-switcher') { toggleSwitcher(); return; }
-  if (kind === 'close-switcher') { toggleSwitcher(false); return; }
-  if (kind === 'switch-bot') { selectBot(id); return; }
-  if (kind === 'sign-out') {
-    connection.stop();
-    try { await request('/api/logout', {}); } catch {}
-    location.replace('/login');
+  const { action: kind, id, scope } = el.dataset,
+    index = Number(el.dataset.index),
+    b = bot();
+  if (kind === "reload-panel") {
+    location.reload();
     return;
   }
-  if(kind==='notifications-read')return;
-  if (panelNeedsReload && kind !== 'close-modal') { toast('Reload the panel to use the updated controls.',true); return; }
+  if (kind === "toggle-switcher") {
+    toggleSwitcher();
+    return;
+  }
+  if (kind === "close-switcher") {
+    toggleSwitcher(false);
+    return;
+  }
+  if (kind === "switch-bot") {
+    selectBot(id);
+    return;
+  }
+  if (kind === "sign-out") {
+    connection.stop();
+    try {
+      await request("/api/logout", {});
+    } catch {}
+    location.replace("/login");
+    return;
+  }
+  if (kind === "notifications-read") return;
+  if (panelNeedsReload && kind !== "close-modal") {
+    toast("Reload the panel to use the updated controls.", true);
+    return;
+  }
   try {
-    switch(kind) {
-      case 'export-library': {
-        const archive=await request('/api/transfer');const url=URL.createObjectURL(new Blob([JSON.stringify(archive,null,2)],{type:'application/json'}));const link=document.createElement('a');link.href=url;link.download='radiospeak-'+new Date().toISOString().slice(0,10)+'.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);toast('Settings and playlists exported.');return;
+    switch (kind) {
+      case "export-library": {
+        const archive = await request("/api/transfer");
+        const url = URL.createObjectURL(
+          new Blob([JSON.stringify(archive, null, 2)], { type: "application/json" }),
+        );
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "radiospeak-" + new Date().toISOString().slice(0, 10) + ".json";
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        toast("Settings and playlists exported.");
+        return;
       }
-      case 'refresh-audit': await loadManagement();return;
-      case 'audit-page': await loadManagement(Number(el.dataset.offset));return;
-      case 'select-page': {const list=playlist();if(list){const selected=selectionFor(list);selected.allMatching=false;selected.indices=[...new Set([...selected.indices,...list.positions])];render(true);}return;}
-      case 'select-matches': {const list=playlist();if(list){selectionFor(list).allMatching=true;selectionFor(list).excluded=[];render(true);}return;}
-      case 'clear-selection': playlistSelections.delete(playlistId);render(true);return;
-      case 'delete-current': {
-        const t=b.track,list=b.currentPlaylist;
-        if(!t||!list) throw new Error('Only songs from a saved playlist can be deleted.');
-        return confirmAction('Delete this song?','“'+t.title+'” is removed from '+list.name+' and the next song starts.',()=>action('delete-current',{url:t.url}),'Delete song');
+      case "refresh-audit":
+        await loadManagement();
+        return;
+      case "audit-page":
+        await loadManagement(Number(el.dataset.offset));
+        return;
+      case "select-page": {
+        const list = playlist();
+        if (list) {
+          const selected = selectionFor(list);
+          selected.allMatching = false;
+          selected.indices = [...new Set([...selected.indices, ...list.positions])];
+          render(true);
+        }
+        return;
       }
-      case 'delete-selected': {
-        const list=playlist(),selection=selectionFor(list),count=selection.allMatching?list.total-selection.excluded.length:selection.indices.length;
-        if(!count)throw new Error('Select tracks first.');
-        return confirmAction('Delete '+count+' track'+(count===1?'':'s')+'?','They are removed from '+list.name+'. This cannot be undone.',async()=>{
-          await mutate(listPath(list.id)+'/bulk',{...selection,...filterFor(list.id),action:'remove',expectedVersion:list.version});playlistSelections.delete(list.id);render(true);
-        },'Delete tracks');
+      case "select-matches": {
+        const list = playlist();
+        if (list) {
+          selectionFor(list).allMatching = true;
+          selectionFor(list).excluded = [];
+          render(true);
+        }
+        return;
       }
-      case 'bulk-tracks': {
-        const list=playlist(),selection=selectionFor(list);if(!selection.allMatching&&!selection.indices.length)throw new Error('Select tracks first.');
-        const destinationOptions=state.playlists.filter(p=>p.id!==list.id).map(p=>'<option value="'+e(p.id)+'">'+e(p.name)+'</option>').join('');
-        return showModal('Edit selected tracks','<p>'+ (selection.allMatching?list.total-selection.excluded.length:selection.indices.length)+' tracks selected. Changes apply to the saved order across every page.</p><label>Action<select class="field" name="operation"><option value="copy">Copy to playlist</option><option value="move">Move to playlist</option><option value="remove">Remove selected tracks</option><option value="deduplicate">Remove duplicate copies (keep first occurrence)</option><option value="sort">Sort selected tracks in place</option></select></label><label>Destination (copy / move)<select class="field" name="destination">'+destinationOptions+'</select></label><label>Sort by<select class="field" name="sort"><option value="title">Title</option><option value="artist">Artist</option><option value="duration">Duration</option></select></label>',async data=>{
-          const destination=state.playlists.find(p=>p.id===data.get('destination'));await mutate(listPath(list.id)+'/bulk',{...selection,...filterFor(list.id),action:data.get('operation'),destination:destination?.id,destinationVersion:destination?.version,sort:data.get('sort'),expectedVersion:list.version});playlistSelections.delete(list.id);render(true);
-        },'Apply changes');
+      case "clear-selection":
+        playlistSelections.delete(playlistId);
+        render(true);
+        return;
+      case "delete-current": {
+        const t = b.track,
+          list = b.currentPlaylist;
+        if (!t || !list) throw new Error("Only songs from a saved playlist can be deleted.");
+        return confirmAction(
+          "Delete this song?",
+          "“" + t.title + "” is removed from " + list.name + " and the next song starts.",
+          () => action("delete-current", { url: t.url }),
+          "Delete song",
+        );
       }
-      case 'page': pages.set(scope,Math.max(0,Number(el.dataset.page)));renderedView='';render();return;
-      case 'retry-playlist': playlistErrors.delete(id);renderedView='';render();return;
-      case 'undo': await mutate('/api/bots/'+encodeURIComponent(el.dataset.bot)+'/undo',{token:el.dataset.token});return;
-      case 'prebuffer': await action('prebuffer',{enabled:!b.health?.prebufferEnabled});render(true);return;
-      case 'cancel-import': await mutate('/api/imports/'+encodeURIComponent(id)+'/cancel',{});return;
-      case 'dismiss-import': await mutate('/api/imports/'+encodeURIComponent(id),{},'DELETE');renderBackground();return;
-      case 'resume-import': await mutate('/api/imports/'+encodeURIComponent(id)+'/resume',{});return;
-      case 'retry-import': await mutate('/api/imports/'+encodeURIComponent(id)+'/retry',{});return;
-      case 'history-enqueue': {
-        const track=historyCache.get(b.name)?.entries.find(h=>h.id===id)?.track;
-        if(track)await enqueueControl.add(b,track);return;
+      case "delete-selected": {
+        const list = playlist(),
+          selection = selectionFor(list),
+          count = selection.allMatching
+            ? list.total - selection.excluded.length
+            : selection.indices.length;
+        if (!count) throw new Error("Select tracks first.");
+        return confirmAction(
+          "Delete " + count + " track" + (count === 1 ? "" : "s") + "?",
+          "They are removed from " + list.name + ". This cannot be undone.",
+          async () => {
+            await mutate(listPath(list.id) + "/bulk", {
+              ...selection,
+              ...filterFor(list.id),
+              action: "remove",
+              expectedVersion: list.version,
+            });
+            playlistSelections.delete(list.id);
+            render(true);
+          },
+          "Delete tracks",
+        );
       }
-      case 'edit-schedule': {
-        const schedule=state.schedules.find(s=>s.id===id);if(!schedule)return;
-        return showModal('Edit playlist schedule',scheduleFields(state,b,schedule),data=>mutate('/api/schedules/'+encodeURIComponent(id),scheduleData(data,b.name),'PATCH'));
+      case "bulk-tracks": {
+        const list = playlist(),
+          selection = selectionFor(list);
+        if (!selection.allMatching && !selection.indices.length)
+          throw new Error("Select tracks first.");
+        const destinationOptions = state.playlists
+          .filter((p) => p.id !== list.id)
+          .map((p) => '<option value="' + e(p.id) + '">' + e(p.name) + "</option>")
+          .join("");
+        return showModal(
+          "Edit selected tracks",
+          "<p>" +
+            (selection.allMatching
+              ? list.total - selection.excluded.length
+              : selection.indices.length) +
+            ' tracks selected. Changes apply to the saved order across every page.</p><label>Action<select class="field" name="operation"><option value="copy">Copy to playlist</option><option value="move">Move to playlist</option><option value="remove">Remove selected tracks</option><option value="deduplicate">Remove duplicate copies (keep first occurrence)</option><option value="sort">Sort selected tracks in place</option></select></label><label>Destination (copy / move)<select class="field" name="destination">' +
+            destinationOptions +
+            '</select></label><label>Sort by<select class="field" name="sort"><option value="title">Title</option><option value="artist">Artist</option><option value="duration">Duration</option></select></label>',
+          async (data) => {
+            const destination = state.playlists.find((p) => p.id === data.get("destination"));
+            await mutate(listPath(list.id) + "/bulk", {
+              ...selection,
+              ...filterFor(list.id),
+              action: data.get("operation"),
+              destination: destination?.id,
+              destinationVersion: destination?.version,
+              sort: data.get("sort"),
+              expectedVersion: list.version,
+            });
+            playlistSelections.delete(list.id);
+            render(true);
+          },
+          "Apply changes",
+        );
       }
-      case 'delete-schedule': return confirmAction('Remove schedule?','The saved playlist stays in your library.',()=>mutate('/api/schedules/'+encodeURIComponent(id),{},'DELETE'),'Remove');
-      case 'delete-account': return confirmAction('Remove '+id+'?','This account will be signed out and lose panel access.',async()=>{await mutate('/api/accounts/'+encodeURIComponent(id),{},'DELETE');accessData=null;render(true);},'Remove account');
-      case 'close-menu': $('#sidebar').classList.remove('open');$('[data-action="menu"]').setAttribute('aria-expanded','false');return;
-      case 'menu': {
-        const open=$('#sidebar').classList.toggle('open');el.setAttribute('aria-expanded',String(open));return;
+      case "page":
+        pages.set(scope, Math.max(0, Number(el.dataset.page)));
+        renderedView = "";
+        render();
+        return;
+      case "retry-playlist":
+        playlistErrors.delete(id);
+        renderedView = "";
+        render();
+        return;
+      case "undo":
+        await mutate("/api/bots/" + encodeURIComponent(el.dataset.bot) + "/undo", {
+          token: el.dataset.token,
+        });
+        return;
+      case "prebuffer":
+        await action("prebuffer", { enabled: !b.health?.prebufferEnabled });
+        render(true);
+        return;
+      case "cancel-import":
+        await mutate("/api/imports/" + encodeURIComponent(id) + "/cancel", {});
+        return;
+      case "dismiss-import":
+        await mutate("/api/imports/" + encodeURIComponent(id), {}, "DELETE");
+        renderBackground();
+        return;
+      case "resume-import":
+        await mutate("/api/imports/" + encodeURIComponent(id) + "/resume", {});
+        return;
+      case "retry-import":
+        await mutate("/api/imports/" + encodeURIComponent(id) + "/retry", {});
+        return;
+      case "history-enqueue": {
+        const track = historyCache.get(b.name)?.entries.find((h) => h.id === id)?.track;
+        if (track) await enqueueControl.add(b, track);
+        return;
       }
-      case 'close-modal': clearModalSecrets();$('#modal').close();return;
-      case 'edit-connection': return connectionEditor(id);
-      case 'new-instance': toggleSwitcher(false); return instanceEditor();
-      case 'delete-instance': {
-        const target=state.bots.find(x=>x.name===id);
-        return confirmAction('Remove '+(target?.nickname||id)+'?', 'The bot disconnects and its queue, channel and idle playlist settings are deleted. Saved playlists and radio stations are kept.',()=>mutate('/api/bots/'+encodeURIComponent(id),{},'DELETE'),'Remove instance');
+      case "edit-schedule": {
+        const schedule = state.schedules.find((s) => s.id === id);
+        if (!schedule) return;
+        return showModal("Edit playlist schedule", scheduleFields(state, b, schedule), (data) =>
+          mutate("/api/schedules/" + encodeURIComponent(id), scheduleData(data, b.name), "PATCH"),
+        );
       }
-      case 'new-collection': return collectionEditor();
-      case 'new-playlist': return playlistEditor();
-      case 'rename-collection': return collectionEditor(state.collections.find(c=>c.id===id));
-      case 'delete-collection': return confirmAction('Delete collection?', 'Its playlists will be kept as standalone playlists.', async()=>{await mutate('/api/collections/'+encodeURIComponent(id),{},'DELETE');libraryFilter='all';render(true);});
-      case 'collection': case 'filter': libraryFilter=id;playlistId=null;location.hash='library';render(true);return;
-      case 'favorites': libraryFilter='favorites';playlistId=null;location.hash='library';render(true);return;
-      case 'open-playlist': playlistId=id;location.hash='library';render(true);return;
-      case 'library-back': playlistId=null;render(true);return;
-      case 'edit-playlist': return playlistEditor(state.playlists.find(p=>p.id===id));
-      case 'delete-playlist': return confirmAction('Delete playlist?', 'This deletes the playlist and its saved tracks. If it is an idle playlist, that fallback will be disabled.',async()=>{await mutate(listPath(id),{},'DELETE');playlistId=null;render(true);});
-      case 'queue-playlist': await mutate(listPath(id)+'/play',{bot:b.name});return;
-      case 'play-playlist-now': await mutate(listPath(id)+'/play-now',{bot:b.name});return;
-      case 'default-playlist': await action('default',{playlistId:state.defaults[b.name]===id?null:id});return;
-      case 'toggle-play':
-        if(b.connectionPaused) {toast('Playback is held until the bot reconnects to '+platformName(b)+'.');return;}
-        if(b.autoPaused) {toast('Playback will resume when a listener joins the channel.');return;}
-        await action(currentTrack()?(b.userPaused?'resume':'pause'):'start');return;
-      case 'skip': await action(state.viewer?.role==='listener'?'vote-skip':'skip');return;
-      case 'previous': await action('previous');return;
-      case 'stop': return confirmAction('Stop playback?', 'This stops audio and clears user requests. Your saved playlists remain available.',()=>action('stop'),'Stop playback');
-      case 'shuffle': await action('shuffle',{enabled:!b.shuffle});return;
-      case 'repeat': await action('loop',{mode:({off:'all',all:'one',one:'off'})[b.loop]});return;
-      case 'normalization': await action('normalization',{enabled:!b.normalization});return;
-      case 'welcome': await action('welcome',{enabled:!b.welcomes});return;
-      case 'mute': {
+      case "delete-schedule":
+        return confirmAction(
+          "Remove schedule?",
+          "The saved playlist stays in your library.",
+          () => mutate("/api/schedules/" + encodeURIComponent(id), {}, "DELETE"),
+          "Remove",
+        );
+      case "delete-account":
+        return confirmAction(
+          "Remove " + id + "?",
+          "This account will be signed out and lose panel access.",
+          async () => {
+            await mutate("/api/accounts/" + encodeURIComponent(id), {}, "DELETE");
+            accessData = null;
+            render(true);
+          },
+          "Remove account",
+        );
+      case "close-menu":
+        $("#sidebar").classList.remove("open");
+        $('[data-action="menu"]').setAttribute("aria-expanded", "false");
+        return;
+      case "menu": {
+        const open = $("#sidebar").classList.toggle("open");
+        el.setAttribute("aria-expanded", String(open));
+        return;
+      }
+      case "close-modal":
+        clearModalSecrets();
+        $("#modal").close();
+        return;
+      case "edit-connection":
+        return connectionEditor(id);
+      case "new-instance":
+        toggleSwitcher(false);
+        return instanceEditor();
+      case "delete-instance": {
+        const target = state.bots.find((x) => x.name === id);
+        return confirmAction(
+          "Remove " + (target?.nickname || id) + "?",
+          "The bot disconnects and its queue, channel and idle playlist settings are deleted. Saved playlists and radio stations are kept.",
+          () => mutate("/api/bots/" + encodeURIComponent(id), {}, "DELETE"),
+          "Remove instance",
+        );
+      }
+      case "new-collection":
+        return collectionEditor();
+      case "new-playlist":
+        return playlistEditor();
+      case "rename-collection":
+        return collectionEditor(state.collections.find((c) => c.id === id));
+      case "delete-collection":
+        return confirmAction(
+          "Delete collection?",
+          "Its playlists will be kept as standalone playlists.",
+          async () => {
+            await mutate("/api/collections/" + encodeURIComponent(id), {}, "DELETE");
+            libraryFilter = "all";
+            render(true);
+          },
+        );
+      case "collection":
+      case "filter":
+        libraryFilter = id;
+        playlistId = null;
+        location.hash = "library";
+        render(true);
+        return;
+      case "favorites":
+        libraryFilter = "favorites";
+        playlistId = null;
+        location.hash = "library";
+        render(true);
+        return;
+      case "open-playlist":
+        playlistId = id;
+        location.hash = "library";
+        render(true);
+        return;
+      case "library-back":
+        playlistId = null;
+        render(true);
+        return;
+      case "edit-playlist":
+        return playlistEditor(state.playlists.find((p) => p.id === id));
+      case "delete-playlist":
+        return confirmAction(
+          "Delete playlist?",
+          "This deletes the playlist and its saved tracks. If it is an idle playlist, that fallback will be disabled.",
+          async () => {
+            await mutate(listPath(id), {}, "DELETE");
+            playlistId = null;
+            render(true);
+          },
+        );
+      case "queue-playlist":
+        await mutate(listPath(id) + "/play", { bot: b.name });
+        return;
+      case "play-playlist-now":
+        await mutate(listPath(id) + "/play-now", { bot: b.name });
+        return;
+      case "default-playlist":
+        await action("default", { playlistId: state.defaults[b.name] === id ? null : id });
+        return;
+      case "toggle-play":
+        if (b.connectionPaused) {
+          toast("Playback is held until the bot reconnects to " + platformName(b) + ".");
+          return;
+        }
+        if (b.autoPaused) {
+          toast("Playback will resume when a listener joins the channel.");
+          return;
+        }
+        await action(currentTrack() ? (b.userPaused ? "resume" : "pause") : "start");
+        return;
+      case "skip":
+        await action(state.viewer?.role === "listener" ? "vote-skip" : "skip");
+        return;
+      case "previous":
+        await action("previous");
+        return;
+      case "stop":
+        return confirmAction(
+          "Stop playback?",
+          "This stops audio and clears user requests. Your saved playlists remain available.",
+          () => action("stop"),
+          "Stop playback",
+        );
+      case "shuffle":
+        await action("shuffle", { enabled: !b.shuffle });
+        return;
+      case "repeat":
+        await action("loop", { mode: { off: "all", all: "one", one: "off" }[b.loop] });
+        return;
+      case "normalization":
+        await action("normalization", { enabled: !b.normalization });
+        return;
+      case "welcome":
+        await action("welcome", { enabled: !b.welcomes });
+        return;
+      case "mute": {
         const current = volumeControl.get(b.name) ?? requestedVolumes.get(b.name) ?? b.volume;
         if (current > 0) lastVolumes.set(b.name, current);
         volumeControl.set(b.name, current ? 0 : lastVolumes.get(b.name) || 50, true);
         return;
       }
-      case 'clear-queue': {
-        const expected=tracksFor('queue').map(t=>t.url);
-        return confirmAction('Clear the queue?', 'Remove all upcoming user requests? The current track will keep playing.',()=>action('clear',{expected}),'Clear queue');
+      case "clear-queue": {
+        const expected = tracksFor("queue").map((t) => t.url);
+        return confirmAction(
+          "Clear the queue?",
+          "Remove all upcoming user requests? The current track will keep playing.",
+          () => action("clear", { expected }),
+          "Clear queue",
+        );
       }
-      case 'queue-next': case 'queue-top': await moveTrack('queue',index+1,1);return;
-      case 'reorder': return reorderDialog(scope,index);
-      case 'remove-track': {
-        const expected=orderData(scope);
-        if(scope==='queue') await action('remove',{position:index+1,...expected});
-        else await mutate(listPath(scope)+'/tracks/'+(index+1),expected,'DELETE');
+      case "queue-next":
+      case "queue-top":
+        await moveTrack("queue", index + 1, 1);
+        return;
+      case "reorder":
+        return reorderDialog(scope, index);
+      case "remove-track": {
+        const expected = orderData(scope);
+        if (scope === "queue") await action("remove", { position: index + 1, ...expected });
+        else await mutate(listPath(scope) + "/tracks/" + (index + 1), expected, "DELETE");
         return;
       }
-      case 'play-track': case 'enqueue-track': {
-        const track=tracksFor(scope)[index];if(!track) throw new Error('This track is no longer available');
-        if(kind==='enqueue-track')await enqueueControl.add(b,track);
-        else await action('play-now',{tracks:[track]});return;
+      case "play-track":
+      case "enqueue-track": {
+        const track = tracksFor(scope)[index];
+        if (!track) throw new Error("This track is no longer available");
+        if (kind === "enqueue-track") await enqueueControl.add(b, track);
+        else await action("play-now", { tracks: [track] });
+        return;
       }
-      case 'favorite-current': await mutate('/api/favorites',{track:currentTrack()});return;
-      case 'favorite-track': await mutate('/api/favorites',{track:tracksFor(scope)[index]});return;
-      case 'save-track': return saveTrack(tracksFor(scope)[index]);
-      case 'save-current': return saveTrack(currentTrack());
-      case 'save-queue':
-        return showModal('Save queue to playlist','<label class="field-label" for="queue-playlist-name">Playlist name</label><input class="field" id="queue-playlist-name" name="name" required maxlength="80" placeholder="e.g. Tonight’s session">',async data=>{
-          const result=await mutate('/api/playlists',{name:data.get('name')});
-          await mutate(listPath(result.playlist.id)+'/save',{bot:b.name});
-        },'Save queue');
-      case 'search-source': searchSource=id;if(id!=='youtube')searchType='tracks';render(true);if(query.trim()) void search();return;
-      case 'search-type': searchType=id;render(true);if(query.trim()) void search();return;
-      case 'search-more': await loadMoreResults();return;
-      case 'search-playlist-queue': {
-        const list=searchResults[index];if(!list) throw new Error('This playlist is no longer available');
-        await action('play',{input:list.url,all:true});return;
+      case "favorite-current":
+        await mutate("/api/favorites", { track: currentTrack() });
+        return;
+      case "favorite-track":
+        await mutate("/api/favorites", { track: tracksFor(scope)[index] });
+        return;
+      case "save-track":
+        return saveTrack(tracksFor(scope)[index]);
+      case "save-current":
+        return saveTrack(currentTrack());
+      case "save-queue":
+        return showModal(
+          "Save queue to playlist",
+          '<label class="field-label" for="queue-playlist-name">Playlist name</label><input class="field" id="queue-playlist-name" name="name" required maxlength="80" placeholder="e.g. Tonight’s session">',
+          async (data) => {
+            const result = await mutate("/api/playlists", { name: data.get("name") });
+            await mutate(listPath(result.playlist.id) + "/save", { bot: b.name });
+          },
+          "Save queue",
+        );
+      case "search-source":
+        searchSource = id;
+        if (id !== "youtube") searchType = "tracks";
+        render(true);
+        if (query.trim()) void search();
+        return;
+      case "search-type":
+        searchType = id;
+        render(true);
+        if (query.trim()) void search();
+        return;
+      case "search-more":
+        await loadMoreResults();
+        return;
+      case "search-playlist-queue": {
+        const list = searchResults[index];
+        if (!list) throw new Error("This playlist is no longer available");
+        await action("play", { input: list.url, all: true });
+        return;
       }
-      case 'search-playlist-import': {
-        const list=searchResults[index];if(!list) throw new Error('This playlist is no longer available');
-        await importPlaylist(list.url);return;
+      case "search-playlist-import": {
+        const list = searchResults[index];
+        if (!list) throw new Error("This playlist is no longer available");
+        await importPlaylist(list.url);
+        return;
       }
-      case 'new-station': return stationEditor();
-      case 'edit-station': return stationEditor(state.radioStations.find(r=>r.id===id));
-      case 'delete-station': return confirmAction('Delete station?', 'It is removed from your saved stations. A bot playing it keeps playing until you turn the radio off.',()=>mutate('/api/radio-stations/'+encodeURIComponent(id),{},'DELETE'));
-      case 'play-station': await action('radio',{stationId:id});return;
-      case 'radio-off': await action('radio',{url:''});return;
+      case "new-station":
+        return stationEditor();
+      case "edit-station":
+        return stationEditor(state.radioStations.find((r) => r.id === id));
+      case "delete-station":
+        return confirmAction(
+          "Delete station?",
+          "It is removed from your saved stations. A bot playing it keeps playing until you turn the radio off.",
+          () => mutate("/api/radio-stations/" + encodeURIComponent(id), {}, "DELETE"),
+        );
+      case "play-station":
+        await action("radio", { stationId: id });
+        return;
+      case "radio-off":
+        await action("radio", { url: "" });
+        return;
     }
-  } catch(error) { toast(error.message,true); }
+  } catch (error) {
+    toast(error.message, true);
+  }
 });
-$('#modal-form').addEventListener('submit',async event=>{
+$("#modal-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (panelNeedsReload) { $('#modal-error').textContent='A new panel version is available. Close this dialog and reload the panel.'; return; }
-  const submit=$('#modal-submit'), handler=modalSubmit;
-  submit.disabled=true;$('#modal-error').textContent='';
-  try { await handler(new FormData(event.target));clearModalSecrets();$('#modal').close(); }
-  catch(error) { $('#modal-error').textContent=error.message; }
-  finally { submit.disabled=false; }
-});
-document.addEventListener('submit',async event=>{
-  if(event.target.id==='modal-form') return;
-  event.preventDefault();
-  if (panelNeedsReload) { toast('Reload the panel to use the updated controls.',true); return; }
-  const form=event.target, data=new FormData(form), submit=form.querySelector('[type=submit]');
-  if(form.id==='search-form') {query=String(data.get('query'));void search();return;}
-  if(form.id==='playlist-filter'){playlistFilters.set(playlistId,{q:String(data.get('q')||''),duplicates:data.get('duplicates')==='on'});pages.set(playlistId,0);playlistSelections.delete(playlistId);render(true);return;}
-  if(!submit) return;
-  submit.disabled=true;
+  if (panelNeedsReload) {
+    $("#modal-error").textContent =
+      "A new panel version is available. Close this dialog and reload the panel.";
+    return;
+  }
+  const submit = $("#modal-submit"),
+    handler = modalSubmit;
+  submit.disabled = true;
+  $("#modal-error").textContent = "";
   try {
-    if(form.id==='transfer-form') {
-      const file=form.querySelector('[name=archive]').files[0];
-      if(!file||file.size>16*1024*1024)throw new Error('Choose an export smaller than 16 MB');
-      const archive=JSON.parse(await file.text()),applySettings=data.get('applySettings')==='on';
-      const preview=await request('/api/transfer',{archive,applySettings,preview:true});
-      showModal('Import settings & playlists','<p>'+preview.playlists+' playlists, '+preview.collections+' collections, '+preview.tracks+' tracks and '+preview.stations+' radio stations will be added.</p><p>'+(applySettings?'Preferences for matching bot IDs will be applied; imported schedules replace schedules for those bots.':'Current bot settings will be kept.')+'</p>',()=>mutate('/api/transfer',{archive,applySettings}),'Import');
-    } else if(form.id==='nickname-form') {
-      await action('nickname',{nickname:data.get('nickname')});
-    } else if(form.id==='performance-form') {
-      const settings={audioProfile:data.get('audioProfile'),queue:{maxTracks:Number(data.get('maxTracks')),perRequester:Number(data.get('perRequester')),cooldownSeconds:Number(data.get('cooldownSeconds'))},avoidRecent:Number(data.get('avoidRecent')),idleReleaseSeconds:Number(data.get('idleReleaseSeconds')),failover:data.getAll('failover').filter(Boolean),silence:{enabled:data.get('silenceEnabled')==='on',thresholdDb:Number(data.get('silenceThreshold')),seconds:Number(data.get('silenceSeconds')),radioFailover:data.get('silenceFailover')==='on'}};
-      await action('settings',{settings});
-    } else if(form.id==='schedule-form') {
-      await mutate('/api/schedules',scheduleData(data,bot().name));
-    } else if(form.id==='account-form') {
-      await mutate('/api/accounts',{username:data.get('username'),password:data.get('password'),role:data.get('role')});accessData=null;render(true);
-    } else if(form.id==='chat-access-form') {
-      const assignments=text=>Object.fromEntries(String(text).split(/\n/).map(line=>line.trim()).filter(Boolean).map(line=>{
-        const parts=line.split(/\s+/);if(parts.length!==2||!['listener','dj','admin'].includes(parts[1]))throw new Error('Use one ID and role per line.');return parts;
-      }));
-      await mutate('/api/access',{chatAccess:{enabled:data.get('enabled')==='on',users:assignments(data.get('users')),groups:assignments(data.get('groups'))}});accessData=null;render(true);
-    } else if(form.id==='playlist-import') {
-      await mutate('/api/imports',{playlistId,input:data.get('input'),skipDuplicates:data.get('skipDuplicates')==='on'});form.reset();
-    } else if(form.id==='quick-import') {
-      await importPlaylist(String(data.get('url')));
-    }
-    renderedView='';render();
-  } catch(error) {toast(error.message,true);}
-  finally {submit.disabled=false;}
+    await handler(new FormData(event.target));
+    clearModalSecrets();
+    $("#modal").close();
+  } catch (error) {
+    $("#modal-error").textContent = error.message;
+  } finally {
+    submit.disabled = false;
+  }
 });
-document.addEventListener('input',event=>{
+document.addEventListener("submit", async (event) => {
+  if (event.target.id === "modal-form") return;
+  event.preventDefault();
+  if (panelNeedsReload) {
+    toast("Reload the panel to use the updated controls.", true);
+    return;
+  }
+  const form = event.target,
+    data = new FormData(form),
+    submit = form.querySelector("[type=submit]");
+  if (form.id === "search-form") {
+    query = String(data.get("query"));
+    void search();
+    return;
+  }
+  if (form.id === "playlist-filter") {
+    playlistFilters.set(playlistId, {
+      q: String(data.get("q") || ""),
+      duplicates: data.get("duplicates") === "on",
+    });
+    pages.set(playlistId, 0);
+    playlistSelections.delete(playlistId);
+    render(true);
+    return;
+  }
+  if (!submit) return;
+  submit.disabled = true;
+  try {
+    if (form.id === "transfer-form") {
+      const file = form.querySelector("[name=archive]").files[0];
+      if (!file || file.size > 16 * 1024 * 1024)
+        throw new Error("Choose an export smaller than 16 MB");
+      const archive = JSON.parse(await file.text()),
+        applySettings = data.get("applySettings") === "on";
+      const preview = await request("/api/transfer", { archive, applySettings, preview: true });
+      showModal(
+        "Import settings & playlists",
+        "<p>" +
+          preview.playlists +
+          " playlists, " +
+          preview.collections +
+          " collections, " +
+          preview.tracks +
+          " tracks and " +
+          preview.stations +
+          " radio stations will be added.</p><p>" +
+          (applySettings
+            ? "Preferences for matching bot IDs will be applied; imported schedules replace schedules for those bots."
+            : "Current bot settings will be kept.") +
+          "</p>",
+        () => mutate("/api/transfer", { archive, applySettings }),
+        "Import",
+      );
+    } else if (form.id === "nickname-form") {
+      await action("nickname", { nickname: data.get("nickname") });
+    } else if (form.id === "performance-form") {
+      const settings = {
+        audioProfile: data.get("audioProfile"),
+        queue: {
+          maxTracks: Number(data.get("maxTracks")),
+          perRequester: Number(data.get("perRequester")),
+          cooldownSeconds: Number(data.get("cooldownSeconds")),
+        },
+        avoidRecent: Number(data.get("avoidRecent")),
+        idleReleaseSeconds: Number(data.get("idleReleaseSeconds")),
+        failover: data.getAll("failover").filter(Boolean),
+        silence: {
+          enabled: data.get("silenceEnabled") === "on",
+          thresholdDb: Number(data.get("silenceThreshold")),
+          seconds: Number(data.get("silenceSeconds")),
+          radioFailover: data.get("silenceFailover") === "on",
+        },
+      };
+      await action("settings", { settings });
+    } else if (form.id === "schedule-form") {
+      await mutate("/api/schedules", scheduleData(data, bot().name));
+    } else if (form.id === "account-form") {
+      await mutate("/api/accounts", {
+        username: data.get("username"),
+        password: data.get("password"),
+        role: data.get("role"),
+      });
+      accessData = null;
+      render(true);
+    } else if (form.id === "chat-access-form") {
+      const assignments = (text) =>
+        Object.fromEntries(
+          String(text)
+            .split(/\n/)
+            .map((line) => line.trim())
+            .filter(Boolean)
+            .map((line) => {
+              const parts = line.split(/\s+/);
+              if (parts.length !== 2 || !["listener", "dj", "admin"].includes(parts[1]))
+                throw new Error("Use one ID and role per line.");
+              return parts;
+            }),
+        );
+      await mutate("/api/access", {
+        chatAccess: {
+          enabled: data.get("enabled") === "on",
+          users: assignments(data.get("users")),
+          groups: assignments(data.get("groups")),
+        },
+      });
+      accessData = null;
+      render(true);
+    } else if (form.id === "playlist-import") {
+      await mutate("/api/imports", {
+        playlistId,
+        input: data.get("input"),
+        skipDuplicates: data.get("skipDuplicates") === "on",
+      });
+      form.reset();
+    } else if (form.id === "quick-import") {
+      await importPlaylist(String(data.get("url")));
+    }
+    renderedView = "";
+    render();
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    submit.disabled = false;
+  }
+});
+document.addEventListener("input", (event) => {
   if (panelNeedsReload) return;
-  const el=event.target;
+  const el = event.target;
   // Suggest an instance ID from the TeamSpeak name until the ID is edited by hand.
-  if(el.id==='instance-nickname' && !$('#instance-id').dataset.edited) $('#instance-id').value=el.value.toLowerCase().replace(/[^a-z0-9_-]+/g,'-').replace(/^[-_]+|-+$/g,'').slice(0,24);
-  if(el.id==='instance-id') el.dataset.edited='1';
-  if(el.id==='search-input') {
-    query=el.value;
+  if (el.id === "instance-nickname" && !$("#instance-id").dataset.edited)
+    $("#instance-id").value = el.value
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, "-")
+      .replace(/^[-_]+|-+$/g, "")
+      .slice(0, 24);
+  if (el.id === "instance-id") el.dataset.edited = "1";
+  if (el.id === "search-input") {
+    query = el.value;
     clearTimeout(searchTimer);
-    searchController?.abort();searchController=null;
-    if(query.trim().length>=2) searchTimer=setTimeout(search,650);
-    else {searchStatus='idle';searchResults=[];searchHasMore=false;if($('#search-results')) $('#search-results').innerHTML=searchResultsMarkup();}
+    searchController?.abort();
+    searchController = null;
+    if (query.trim().length >= 2) searchTimer = setTimeout(search, 650);
+    else {
+      searchStatus = "idle";
+      searchResults = [];
+      searchHasMore = false;
+      if ($("#search-results")) $("#search-results").innerHTML = searchResultsMarkup();
+    }
   }
-  if(el.type==='range') {
-    el.style.setProperty('--fill',(Number(el.value)/Number(el.max)*100)+'%');
-    if(el.id==='volume') volumeControl.set(bot().name, Number(el.value));
-    if(el.id==='seek') $('#elapsed').textContent=time(Number(el.value));
+  if (el.type === "range") {
+    el.style.setProperty("--fill", (Number(el.value) / Number(el.max)) * 100 + "%");
+    if (el.id === "volume") volumeControl.set(bot().name, Number(el.value));
+    if (el.id === "seek") $("#elapsed").textContent = time(Number(el.value));
   }
 });
-document.addEventListener('change',async event=>{
+document.addEventListener("change", async (event) => {
   if (panelNeedsReload) return;
-  const el=event.target;
+  const el = event.target;
   // Importing into an existing playlist needs no new name.
-  if(el.id==='import-target') {const name=$('#import-name');name.required=!el.value;name.closest('.import-new').hidden=!!el.value;return;}
+  if (el.id === "import-target") {
+    const name = $("#import-name");
+    name.required = !el.value;
+    name.closest(".import-new").hidden = !!el.value;
+    return;
+  }
   try {
-    if(el.dataset.control==='select-track'){const selected=selectionFor(playlist());if(selected.allMatching){selected.excluded=el.checked?selected.excluded.filter(i=>i!==Number(el.dataset.index)):[...new Set([...selected.excluded,Number(el.dataset.index)])];}else selected.indices=el.checked?[...new Set([...selected.indices,Number(el.dataset.index)])]:selected.indices.filter(i=>i!==Number(el.dataset.index));render(true);return;}
-    if(el.id==='volume') volumeControl.set(bot().name, Number(el.value), true);
-    if(el.id==='seek') {await action('seek',{seconds:Number(el.value),url:bot().track?.url});}
-    if(el.id==='instance-platform'){syncPlatformFields();return;}
-    if(el.dataset.control==='channel') await action('channel',{channelId:el.value});
-    if(el.dataset.control==='repeat') await action('loop',{mode:el.value});
-    if(el.dataset.control==='default') await action('default',{playlistId:el.value||null});
-  } catch(error) {toast(error.message,true);}
-  finally {sliderActive=false;render();}
-});
-document.addEventListener('pointerdown',event=>{if(event.target.type==='range') sliderActive=true;});
-document.addEventListener('pointerup',()=>{sliderActive=false;});
-document.addEventListener('pointercancel',()=>{sliderActive=false;render();});
-document.addEventListener('focusout',()=>setTimeout(()=>render(),0));
-document.addEventListener('error',event=>{if(event.target.tagName==='IMG') event.target.classList.add('failed');},true);
-document.addEventListener('dragstart',event=>{
-  const row=event.target.closest('tr[draggable=true]');if(!row) return;
-  dragging={scope:row.dataset.scope,index:Number(row.dataset.index),expected:orderData(row.dataset.scope)};
-  row.classList.add('dragging');event.dataTransfer.effectAllowed='move';event.dataTransfer.setData('text/plain',row.dataset.index);
-});
-document.addEventListener('dragover',event=>{
-  const row=event.target.closest('tr[draggable=true]');
-  if(!row || !dragging || row.dataset.scope!==dragging.scope) return;
-  event.preventDefault();event.dataTransfer.dropEffect='move';
-  document.querySelectorAll('.drag-over').forEach(el=>el.classList.remove('drag-over'));row.classList.add('drag-over');
-});
-document.addEventListener('drop',async event=>{
-  const row=event.target.closest('tr[draggable=true]'), drag=dragging;
-  if(!row||!drag||row.dataset.scope!==drag.scope) return;
-  event.preventDefault();dragging=null;
-  try {await moveTrack(drag.scope,drag.index+1,Number(row.dataset.index)+1,drag.expected);}catch(error){toast(error.message,true);}
-  render(true);
-});
-document.addEventListener('dragend',()=>{
-  dragging=null;document.querySelectorAll('.dragging,.drag-over').forEach(el=>el.classList.remove('dragging','drag-over'));render();
-});
-document.addEventListener('keydown',event=>{
-  if(event.key==='Escape') {
-    $('#sidebar').classList.remove('open');$('[data-action="menu"]').setAttribute('aria-expanded','false');
-    if(!$('#switcher-menu').hidden) {toggleSwitcher(false);$('#switcher-button').focus();}
-  }
-  // Arrow keys move between instances while the switcher is open.
-  if(['ArrowDown','ArrowUp'].includes(event.key) && $('#switcher-menu').contains(document.activeElement)) {
-    const items=[...$('#switcher-menu').querySelectorAll('.switcher-item')], at=items.indexOf(document.activeElement);
-    items[(at+(event.key==='ArrowDown'?1:-1)+items.length)%items.length]?.focus();event.preventDefault();
+    if (el.dataset.control === "select-track") {
+      const selected = selectionFor(playlist());
+      if (selected.allMatching) {
+        selected.excluded = el.checked
+          ? selected.excluded.filter((i) => i !== Number(el.dataset.index))
+          : [...new Set([...selected.excluded, Number(el.dataset.index)])];
+      } else
+        selected.indices = el.checked
+          ? [...new Set([...selected.indices, Number(el.dataset.index)])]
+          : selected.indices.filter((i) => i !== Number(el.dataset.index));
+      render(true);
+      return;
+    }
+    if (el.id === "volume") volumeControl.set(bot().name, Number(el.value), true);
+    if (el.id === "seek") {
+      await action("seek", { seconds: Number(el.value), url: bot().track?.url });
+    }
+    if (el.id === "instance-platform") {
+      syncPlatformFields();
+      return;
+    }
+    if (el.dataset.control === "channel") await action("channel", { channelId: el.value });
+    if (el.dataset.control === "repeat") await action("loop", { mode: el.value });
+    if (el.dataset.control === "default") await action("default", { playlistId: el.value || null });
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    sliderActive = false;
+    render();
   }
 });
-connection.addEventListener('updateavailable',()=>{
-  panelNeedsReload = true;
-  notifications.add('A new panel version is available. Reload to continue; unsubmitted form edits will be cleared.',false,undefined,undefined,'panel-update');
-  if ($('#modal').open) $('#modal-error').textContent='A new panel version is available. Close this dialog and reload the panel.';
+document.addEventListener("pointerdown", (event) => {
+  if (event.target.type === "range") sliderActive = true;
 });
-connection.addEventListener('state',event=>{
-  for(const b of event.detail.bots) if(volumeControl.get(b.name)===undefined&&requestedVolumes.get(b.name)===b.volume) requestedVolumes.delete(b.name);
-  state={...event.detail,playlists:event.detail.playlists.map(p=>({...p,tracks:p.tracks||[]}))};receivedAt=Date.now();
-  for(const [id,detail] of playlistCache) if(state.playlists.find(p=>p.id===id)?.version!==detail.version) playlistCache.delete(id);
-  renderBackground();
-  if(lastRenderBot!==bot()?.name) {lastRenderBot=bot()?.name;renderedView='';}
+document.addEventListener("pointerup", () => {
+  sliderActive = false;
+});
+document.addEventListener("pointercancel", () => {
+  sliderActive = false;
   render();
 });
-connection.addEventListener('playback_progress',event=>{
-  for(const b of event.detail.bots) if(volumeControl.get(b.name)===undefined&&requestedVolumes.get(b.name)===b.volume) requestedVolumes.delete(b.name);
-  if(!state) return;
-  state={...state,bots:event.detail.bots,system:event.detail.system};
-  receivedAt=Date.now(); updateProgress(); renderBackground();
+document.addEventListener("focusout", () => setTimeout(() => render(), 0));
+document.addEventListener(
+  "error",
+  (event) => {
+    if (event.target.tagName === "IMG") event.target.classList.add("failed");
+  },
+  true,
+);
+document.addEventListener("dragstart", (event) => {
+  const row = event.target.closest("tr[draggable=true]");
+  if (!row) return;
+  dragging = {
+    scope: row.dataset.scope,
+    index: Number(row.dataset.index),
+    expected: orderData(row.dataset.scope),
+  };
+  row.classList.add("dragging");
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("text/plain", row.dataset.index);
 });
-connection.addEventListener('online',()=>{$('#offline-banner').hidden=true;});
-connection.addEventListener('offline',()=>{
-  notifications.add('Panel connection lost. Reconnecting automatically?',true,undefined,undefined,'panel-offline');
-  $('#connection').innerHTML='<span class="status-dot warning"></span>Panel disconnected';
-  renderedChrome='';
+document.addEventListener("dragover", (event) => {
+  const row = event.target.closest("tr[draggable=true]");
+  if (!row || !dragging || row.dataset.scope !== dragging.scope) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "move";
+  document.querySelectorAll(".drag-over").forEach((el) => el.classList.remove("drag-over"));
+  row.classList.add("drag-over");
 });
-window.addEventListener('hashchange',navigate);
-window.addEventListener('resize',()=>{renderedDock='';render();});
-document.querySelectorAll('[data-icon]').forEach(el=>{el.innerHTML=icon(el.dataset.icon);});
+document.addEventListener("drop", async (event) => {
+  const row = event.target.closest("tr[draggable=true]"),
+    drag = dragging;
+  if (!row || !drag || row.dataset.scope !== drag.scope) return;
+  event.preventDefault();
+  dragging = null;
+  try {
+    await moveTrack(drag.scope, drag.index + 1, Number(row.dataset.index) + 1, drag.expected);
+  } catch (error) {
+    toast(error.message, true);
+  }
+  render(true);
+});
+document.addEventListener("dragend", () => {
+  dragging = null;
+  document
+    .querySelectorAll(".dragging,.drag-over")
+    .forEach((el) => el.classList.remove("dragging", "drag-over"));
+  render();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    $("#sidebar").classList.remove("open");
+    $('[data-action="menu"]').setAttribute("aria-expanded", "false");
+    if (!$("#switcher-menu").hidden) {
+      toggleSwitcher(false);
+      $("#switcher-button").focus();
+    }
+  }
+  // Arrow keys move between instances while the switcher is open.
+  if (
+    ["ArrowDown", "ArrowUp"].includes(event.key) &&
+    $("#switcher-menu").contains(document.activeElement)
+  ) {
+    const items = [...$("#switcher-menu").querySelectorAll(".switcher-item")],
+      at = items.indexOf(document.activeElement);
+    items[(at + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]?.focus();
+    event.preventDefault();
+  }
+});
+connection.addEventListener("updateavailable", () => {
+  panelNeedsReload = true;
+  notifications.add(
+    "A new panel version is available. Reload to continue; unsubmitted form edits will be cleared.",
+    false,
+    undefined,
+    undefined,
+    "panel-update",
+  );
+  if ($("#modal").open)
+    $("#modal-error").textContent =
+      "A new panel version is available. Close this dialog and reload the panel.";
+});
+connection.addEventListener("state", (event) => {
+  for (const b of event.detail.bots)
+    if (volumeControl.get(b.name) === undefined && requestedVolumes.get(b.name) === b.volume)
+      requestedVolumes.delete(b.name);
+  state = {
+    ...event.detail,
+    playlists: event.detail.playlists.map((p) => ({ ...p, tracks: p.tracks || [] })),
+  };
+  receivedAt = Date.now();
+  for (const [id, detail] of playlistCache)
+    if (state.playlists.find((p) => p.id === id)?.version !== detail.version)
+      playlistCache.delete(id);
+  renderBackground();
+  if (lastRenderBot !== bot()?.name) {
+    lastRenderBot = bot()?.name;
+    renderedView = "";
+  }
+  render();
+});
+connection.addEventListener("playback_progress", (event) => {
+  for (const b of event.detail.bots)
+    if (volumeControl.get(b.name) === undefined && requestedVolumes.get(b.name) === b.volume)
+      requestedVolumes.delete(b.name);
+  if (!state) return;
+  state = { ...state, bots: event.detail.bots, system: event.detail.system };
+  receivedAt = Date.now();
+  updateProgress();
+  renderBackground();
+});
+connection.addEventListener("online", () => {
+  $("#offline-banner").hidden = true;
+});
+connection.addEventListener("offline", () => {
+  notifications.add(
+    "Panel connection lost. Reconnecting automatically?",
+    true,
+    undefined,
+    undefined,
+    "panel-offline",
+  );
+  $("#connection").innerHTML = '<span class="status-dot warning"></span>Panel disconnected';
+  renderedChrome = "";
+});
+window.addEventListener("hashchange", navigate);
+window.addEventListener("resize", () => {
+  renderedDock = "";
+  render();
+});
+document.querySelectorAll("[data-icon]").forEach((el) => {
+  el.innerHTML = icon(el.dataset.icon);
+});
 navigate();
 connection.start();
-setInterval(updateProgress,500);
+setInterval(updateProgress, 500);

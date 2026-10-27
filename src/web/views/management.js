@@ -1,0 +1,79 @@
+import { button, escape as e } from "../ui/components.js";
+
+export function playlistTools(list, filter, selection) {
+  return (
+    '<form id="playlist-filter" class="playlist-tools"><input class="field" type="search" name="q" aria-label="Search this playlist" placeholder="Search title or artist" value="' +
+    e(filter.q) +
+    '"><label class="check-label"><input name="duplicates" type="checkbox" ' +
+    (filter.duplicates ? "checked" : "") +
+    '> Duplicates only</label><button class="button secondary" type="submit">Filter tracks</button></form><div class="playlist-tools" data-min-role="dj">' +
+    button("Select this page", "check", "select-page", "", "secondary") +
+    button("Select all " + list.total + " matches", "check", "select-matches", "", "secondary") +
+    "</div>" +
+    selectionBar(
+      selection.allMatching ? list.total - selection.excluded.length : selection.indices.length,
+    )
+  );
+}
+
+/** Appears once tracks are ticked: what is selected and what can be done with it. */
+function selectionBar(count) {
+  if (!count)
+    return '<p class="selection-hint small subtle" data-min-role="dj">Tick tracks to delete, copy or move several at once.</p>';
+  return (
+    '<div class="selection-bar" data-min-role="dj" role="region" aria-label="Selected tracks"><span class="bulk-count"><strong>' +
+    count +
+    "</strong> track" +
+    (count === 1 ? "" : "s") +
+    " selected</span>" +
+    button("Delete selected", "trash", "delete-selected", "", "danger-button") +
+    button("Copy / move…", "library", "bulk-tracks", "", "secondary") +
+    button("Clear", "close", "clear-selection", "", "secondary") +
+    "</div>"
+  );
+}
+
+export function managementMarkup(audit) {
+  return (
+    '<section class="card card-padding settings-transfer" data-min-role="admin"><h2>Export & import</h2><p class="small subtle">Download playlists, collections, favorites, radio stations, schedules and bot preferences. Exports include media URLs. Identities, account passwords and server credentials stay on this server. Imported playlists are added with unique names; existing playlists are kept.</p>' +
+    button("Export settings & playlists", "download", "export-library", "", "secondary") +
+    '<form id="transfer-form"><label>Import a radiospeak export<input class="field" type="file" name="archive" accept="application/json,.json" required></label><label class="check-label"><input type="checkbox" name="applySettings"> Apply preferences for matching bot instance IDs and replace their imported schedules</label><button class="button primary" type="submit">Preview import</button></form></section>' +
+    '<section class="card card-padding operations-card" data-min-role="admin"><h2>Administrative audit log</h2><p class="small subtle">The latest 2,000 successful panel changes and state-changing TeamSpeak commands record the account, time, method and resource. Request bodies and passwords are excluded.</p>' +
+    button("Refresh log", "", "refresh-audit", "", "secondary") +
+    '<div class="audit-list">' +
+    (audit?.entries
+      ?.map(
+        (item) =>
+          "<p><time>" +
+          e(new Date(item.at).toLocaleString()) +
+          "</time> · <strong>" +
+          e(item.actor) +
+          "</strong> · " +
+          e(item.method) +
+          " " +
+          e(item.resource) +
+          "</p>",
+      )
+      .join("") || "<p>No changes recorded.</p>") +
+    "</div>" +
+    ((audit?.offset || 0) > 0
+      ? button(
+          "Newer entries",
+          "",
+          "audit-page",
+          'data-offset="' + Math.max(0, audit.offset - 50) + '"',
+          "secondary",
+        )
+      : "") +
+    ((audit?.total || 0) > (audit?.offset || 0) + 50
+      ? button(
+          "Older entries",
+          "",
+          "audit-page",
+          'data-offset="' + ((audit.offset || 0) + 50) + '"',
+          "secondary",
+        )
+      : "") +
+    "</section>"
+  );
+}
