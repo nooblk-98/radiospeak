@@ -2,6 +2,7 @@
   "name": "radiospeak",
   "version": "0.1.1",
   "description": "TeamSpeak and Discord music bots with shared playlists, search, radio and a web panel",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "engines": {

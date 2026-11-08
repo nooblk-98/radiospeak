@@ -244,3 +244,7 @@ Playlist names can contain spaces. In commands, you can use the playlist's numbe
 ## Contributing
 
 Contributions are welcome! Bug reports, feature ideas, fixes and documentation improvements all help. [Open an issue](https://github.com/nooblk-98/radiospeak/issues) to report a problem or suggest something, or send a pull request. See [CONTRIBUTING.md](CONTRIBUTING.md) to set up a local copy and run the tests.
+
+## License
+
+[MIT](LICENSE) © Lahiru S Liyanage
