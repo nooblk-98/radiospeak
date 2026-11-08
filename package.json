@@ -1,6 +1,6 @@
 {
   "name": "radiospeak",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "TeamSpeak and Discord music bots with shared playlists, search, radio and a web panel",
   "private": true,
   "type": "module",
