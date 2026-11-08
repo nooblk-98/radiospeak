@@ -559,3 +559,24 @@ test("deleting the current song removes it from its playlist and plays the next 
     await f.close();
   }
 });
+
+test("queue removals are undoable once; later queue edits invalidate undo", async () => {
+  const f = await fixture();
+  const botPath = "/api/bots/Test%20bot/";
+  try {
+    const original = f.app.bots[0]!.player.queue.map((t) => t.url);
+    const removed = await f.api(botPath + "remove", { position: 2, expected: original });
+    assert.ok(removed.data.undoToken);
+    assert.equal((await f.api(botPath + "undo", { token: removed.data.undoToken })).status, 200);
+    assert.deepEqual(
+      f.app.bots[0]!.player.queue.map((t) => t.url),
+      original,
+    );
+    assert.equal((await f.api(botPath + "undo", { token: removed.data.undoToken })).status, 409);
+    const next = await f.api(botPath + "remove", { position: 1 });
+    await f.api(botPath + "enqueue", { tracks: [tracks[0]] });
+    assert.equal((await f.api(botPath + "undo", { token: next.data.undoToken })).status, 409);
+  } finally {
+    await f.close();
+  }
+});
