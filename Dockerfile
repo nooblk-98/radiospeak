@@ -14,8 +14,6 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY src ./src
 COPY scripts ./scripts
 COPY config.example.json ./
-COPY Dockerfile ./
-COPY docker-compose.yml ./
 
 # Runtime state (identity files, playlists.json, optional config.json) lives in /data.
 # Runs as root so it can write to a bind-mounted ./data that Docker created as root.

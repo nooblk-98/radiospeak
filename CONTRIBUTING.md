@@ -27,19 +27,9 @@ $env:FFMPEG_PATH = 'C:\tools\ffmpeg\bin\ffmpeg.exe'
 npm test
 ```
 
-Optional diagnostics:
-
-```bash
-npm run test:audio -- "search words or a media URL" 10
-npm run benchmark:audio
-npm run soak:audio -- --seconds 300 --bots 3
-```
-
-The audio smoke test resolves real media. Benchmarks and soak tests generate synthetic audio in temporary storage and never join a voice server.
-
 ## Where changes belong
 
-Start with the [architecture and source map](docs/ARCHITECTURE.md). Keep provider lookups in `media/`, platform transport logic in `bots/`, persistence in store modules, and HTTP validation at the request boundary. Place browser templates in `web/views/`, reusable stateless markup in `web/ui/` and independent interaction controllers in `web/features/`.
+Keep provider lookups in `src/media/`, platform transport logic in `src/bots/`, persistence in store modules, and HTTP validation at the request boundary. Place browser templates in `src/web/views/`, reusable stateless markup in `src/web/ui/` and independent interaction controllers in `src/web/features/`.
 
 Add comments for lifecycle decisions, data ownership, security boundaries and concurrency assumptions. Prefer clear names over comments that repeat a statement. Avoid unrelated reformatting when reviewing a behavioral change.
 
@@ -51,4 +41,4 @@ Preserve these contracts when refactoring:
 - Lazy Discord initialization and shared gateway reference counting.
 - Live view context, revisioned module imports and CSS cascade order.
 
-Run the checks relevant to the change and the full suite before submitting a broad refactor. GitHub Actions checks formatting, types and tests, including real FFmpeg output. A push to `main` then triggers the configured deployment workflow.
+Run the checks relevant to the change and the full suite before submitting a broad refactor. GitHub Actions checks formatting, types and tests, including real FFmpeg output.

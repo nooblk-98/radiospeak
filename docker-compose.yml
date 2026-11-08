@@ -14,7 +14,8 @@ services:
         max-size: "10m"
         max-file: "3"
     environment:
-      FMBOT_SERVER: "150.230.134.243:9987"
+      # Set these in a .env file next to this file, or export them before `docker compose up`.
+      FMBOT_SERVER: "${FMBOT_SERVER:-ts.example.com:9987}"
       FMBOT_SERVER_PASSWORD: ""
       FMBOT_NICKNAME: "radiospeak"
       # Each bot's channel, idle playlist and radio stations are set in the web panel and kept in /data.
@@ -29,7 +30,7 @@ services:
       FMBOT_WEB_ENABLED: "true"
       FMBOT_WEB_HOST: "0.0.0.0"
       FMBOT_WEB_PORT: "8080"
-      FMBOT_WEB_PASSWORD: "12345678"
+      FMBOT_WEB_PASSWORD: "${FMBOT_WEB_PASSWORD:-change-me}"
       # More bots (e.g. one per channel): a JSON list, each inheriting the settings above.
       # FMBOT_BOTS: '[{"name":"lobby","channel":"Lobby"},{"name":"music","channel":"Music","defaultPlaylist":""}]'
     ports:

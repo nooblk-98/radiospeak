@@ -71,9 +71,14 @@ You need a machine with [Docker](https://docs.docker.com/get-docker/) and Docker
    cd radiospeak
    ```
 
-2. Open [docker-compose.yml](docker-compose.yml) and set at least:
+2. Create a file named `.env` next to [docker-compose.yml](docker-compose.yml) and set at least:
    - `FMBOT_SERVER`: your TeamSpeak server address, for example `ts.example.com:9987`. Skip this if you only use Discord.
    - `FMBOT_WEB_PASSWORD`: the password for the web panel. Choose a strong one.
+
+   ```bash
+   FMBOT_SERVER=ts.example.com:9987
+   FMBOT_WEB_PASSWORD=choose-a-strong-password
+   ```
 
 3. Start the bot:
 
@@ -92,7 +97,7 @@ To see what the bot is doing, run `docker compose logs -f`.
 
 ### Common settings
 
-All settings are environment variables in [docker-compose.yml](docker-compose.yml). Most per-bot settings (channel, name, idle playlist, radio) are easier to change in the panel.
+All settings are environment variables in [docker-compose.yml](docker-compose.yml) or its `.env` file. Most per-bot settings (channel, name, idle playlist, radio) are easier to change in the panel.
 
 | Variable                                | What it does                                                               |
 | --------------------------------------- | -------------------------------------------------------------------------- |
